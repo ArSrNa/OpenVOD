@@ -1,9 +1,5 @@
 version: '3'
 
-vars:
-  DB_SCHEMA:
-    sh: 'if [ "$DB_PROVIDER" = "sqlite" ]; then echo sqlite; else echo mysql; fi'
-
 tasks:
   install:
     cmds: [bun i]
@@ -23,8 +19,10 @@ tasks:
 
   # ---- 数据库（ADR-0004） ----
   db:generate:
+    desc: 生成两份 Prisma 客户端（src/index.ts 静态导入 mysql+sqlite，缺一会导致 Next 打包失败）
     cmds:
-      - bun run --cwd packages/db generate:{{.DB_SCHEMA}}
+      - bun run --cwd packages/db generate:mysql
+      - bun run --cwd packages/db generate:sqlite
 
   db:push:
     desc: 开发库建表（SQLite）
@@ -46,10 +44,19 @@ tasks:
         set -a; [ -f ../../.env ] && . ../../.env; set +a
         bun run dev
   dev:worker:
-    cmds: [bun run --cwd apps/worker dev]
+    desc: 转码 Worker（Bun --watch，需 ffmpeg/ffprobe）
+    dir: apps/worker
+    cmds:
+      - |
+        set -a; [ -f ../../.env ] && . ../../.env; set +a
+        bun run dev
   dev:delivery:
+    desc: 分发端（Go，:9000，需 MASTER_KEYS / URL_SIGN_KEY_HEX）
     dir: apps/delivery
-    cmds: [go run .]
+    cmds:
+      - |
+        set -a; [ -f ../../.env ] && . ../../.env; set +a
+        go run .
 
   build:admin:
     desc: 管理端生产构建（需先 task db:generate）

@@ -2,25 +2,34 @@
 
 自建云点播系统：媒资库、转码、加密分发（HLS AES-128 + URL 签名）、元数据、WebVTT 字幕。
 
-- 决策文档：[docs/vod/README.md](./docs/vod/README.md)（intent + ADR-0001 ~ 0011 + open-questions）
+- 决策文档：[docs/vod/README.md](./docs/vod/README.md)（intent + ADR-0001 ~ 0013 + open-questions）
+- 开发流程：[docs/vod/dev-workflow.md](./docs/vod/dev-workflow.md)（环境准备、启动、数据库、建号、排错）
+- 管理端 Control Plane：`apps/admin`（Next.js 全栈 UI + API + better-auth + Prisma，ADR-0013）、`apps/worker`（ffmpeg 常驻容器，ADR-0008）
 - 分发端 Data Plane：`apps/delivery`（Go 1.26 + Chi，EdgeOne Cloud Functions / SCF 容器）
-- 管理端 Control Plane：`apps/admin`（Bun + Hono + Prisma）、`apps/admin-web`（React + Vite + Ant Design）、`apps/worker`（ffmpeg 常驻容器）
 
 ## 快速开始
 
 ```bash
 bun i                     # 安装依赖（workspaces）
 sh scripts/gen-env.sh     # 生成 .env（优先取环境变量；无则回落 .env.example）
-task db:generate          # 生成 Prisma 客户端（按 DB_PROVIDER 方言）
+task db:generate          # 生成 Prisma 客户端（mysql + sqlite 两份，缺一 Next 无法打包）
 task db:push              # 开发库建表（SQLite）
 task contracts            # zod → JSON Schema → Go struct（生成物入库，ADR-0001 门禁）
 task vectors              # 生成 TS/Go 加密互通测试向量
-task dev:admin            # 管理端 API :8787
-task dev:web              # 管理端前端 :5173
-task dev:delivery         # 分发端 :9000
+
+./start.sh                # 一键启动（后台：管理端 + 分发端，日志在 .run/）
 task test                 # bun test + go test
 ```
 
+| 组件 | 端口 | 启动命令 |
+|---|---|---|
+| 管理端 admin（UI + API） | `:8787` | `./start-admin.sh` 或 `task dev:admin` |
+| 分发端 delivery | `:9000` | `./start-delivery.sh` 或 `task dev:delivery` |
+| 转码 Worker | — | `task dev:worker`（需 ffmpeg / ffprobe） |
+| 全部（后台） | — | `./start.sh`，另支持 `stop`、`status`、`logs` |
+
+数据库选择（SQLite / MySQL）、管理员建号、常见报错处理见
+[docs/vod/dev-workflow.md](./docs/vod/dev-workflow.md)；
 工具链要求见 `.ide/Dockerfile`（Bun 1.4 / Go 1.26 / ffmpeg / quicktype / Task）。
 
 ## 环境变量与 `.env`（scripts/gen-env.sh）
@@ -77,5 +86,6 @@ stages:
 - `.cnb.yml` 里 `env:` 优先级**高于** `imports`，别声明同名变量覆盖密钥。
 - 轮换密钥只改密钥仓库文件，下次启动开发环境生效。
 - `MASTER_KEYS` 必须 admin(TS) 与 delivery(Go) 完全一致；`URL_SIGN_KEY_HEX` 为 64 位 hex。
-- 开发环境建议 `DB_PROVIDER=sqlite` + `DATABASE_URL="file:./dev.db"`；切 MySQL 需
-  `bun run --cwd packages/db generate:mysql` + `prisma migrate dev --schema packages/db/prisma/schema.mysql.prisma --name init`。
+- 开发环境建议 `DB_PROVIDER=sqlite` + `DATABASE_URL="file:./dev.db"`（`task db:push` 建表）；
+  连 MySQL / TDSQL-C 时的客户端生成、迁移与空库 baseline 流程见
+  [dev-workflow §4](./docs/vod/dev-workflow.md)。

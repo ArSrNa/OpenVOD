@@ -40,6 +40,7 @@ flowchart LR
 1. [intent.md](./intent.md) — 项目意图、目标与非目标、成功标准
 2. `decisions/` 按编号阅读；**ADR-0006（视频加密与播放密钥）为核心**
 3. [open-questions.md](./open-questions.md) — 进入 specification 前必须关闭的问题
+4. [dev-workflow.md](./dev-workflow.md) — 本地开发环境与工作流（启动、数据库、建号、排错）
 
 ## 决策索引
 

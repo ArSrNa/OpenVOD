@@ -87,10 +87,4 @@ function LoginInner() {
   );
 }
 
-export default function LoginPage() {
-  return (
-    <Providers>
-      <LoginInner />
-    </Providers>
-  );
-}
+export default LoginInner;

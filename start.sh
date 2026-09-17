@@ -6,12 +6,11 @@
 #   ./start.sh                    启动全部（后台运行，日志写入 .run/）
 #   ./start.sh stop               停止全部
 #   ./start.sh status             查看运行状态
-#   ./start.sh logs <admin|web|delivery>   跟踪某个服务日志
+#   ./start.sh logs <admin|delivery>       跟踪某个服务日志
 #
 # 组件与端口：
-#   admin     管理端 API（apps/admin，Bun + Hono）    :8787   GET /healthz
-#   web       管理端前端（apps/admin-web，Vite）      :5173
-#   delivery  分发端（apps/delivery，Go + Chi）       :9000   GET /healthz
+#   admin     管理端 UI + API（apps/admin，Next.js 全栈，ADR-0013）  :8787   GET /healthz
+#   delivery  分发端（apps/delivery，Go + Chi）                      :9000   GET /healthz
 # =============================================================================
 set -euo pipefail
 
@@ -21,7 +20,6 @@ RUN_DIR="$ROOT/.run"
 mkdir -p "$RUN_DIR"
 
 SVC_ADMIN_URL="http://localhost:8787/healthz"
-SVC_WEB_URL="http://localhost:5173"
 SVC_DELIVERY_URL="http://localhost:9000/healthz"
 
 # ---- 公共：加载 .env / 依赖准备 ---------------------------------------------
@@ -78,9 +76,6 @@ cmd_start() {
   start_one admin "$RUN_DIR/admin.pid" "$RUN_DIR/admin.log" "$SVC_ADMIN_URL" \
     bun run --cwd apps/admin dev
 
-  start_one web "$RUN_DIR/web.pid" "$RUN_DIR/web.log" "$SVC_WEB_URL" \
-    bun run --cwd apps/admin-web dev
-
   if probe "$SVC_DELIVERY_URL"; then
     echo "[delivery] 已在运行，跳过（$SVC_DELIVERY_URL）"
   else
@@ -93,10 +88,9 @@ cmd_start() {
 
   echo
   echo "全部就绪："
-  echo "  管理端 API   http://localhost:8787"
-  echo "  管理端前端   http://localhost:5173"
-  echo "  分发端       http://localhost:9000"
-  echo "停止：./start.sh stop    状态：./start.sh status    日志：./start.sh logs <admin|web|delivery>"
+  echo "  管理端（UI + API）   http://localhost:8787"
+  echo "  分发端               http://localhost:9000"
+  echo "停止：./start.sh stop    状态：./start.sh status    日志：./start.sh logs <admin|delivery>"
 }
 
 stop_pidfile() { # $1=名称 $2=pidfile
@@ -104,9 +98,12 @@ stop_pidfile() { # $1=名称 $2=pidfile
     local pid
     pid="$(cat "$2")"
     if kill -0 "$pid" 2>/dev/null; then
+      # 先收子进程再杀父进程：bun run 会派生 next dev，反序会留下孤儿继续占用端口
+      pkill -P "$pid" 2>/dev/null || true
       kill "$pid" 2>/dev/null || true
       sleep 0.3
       if kill -0 "$pid" 2>/dev/null; then kill -9 "$pid" 2>/dev/null || true; fi
+      pkill -9 -P "$pid" 2>/dev/null || true
       echo "[$1] 已停止（pid $pid）"
     else
       echo "[$1] 未在运行（清理残留 pid $pid）"
@@ -119,7 +116,6 @@ stop_pidfile() { # $1=名称 $2=pidfile
 
 cmd_stop() {
   stop_pidfile delivery "$RUN_DIR/delivery.pid"
-  stop_pidfile web      "$RUN_DIR/web.pid"
   stop_pidfile admin    "$RUN_DIR/admin.pid"
 }
 
@@ -134,7 +130,6 @@ status_one() { # $1=名称 $2=url $3=pidfile
 cmd_status() {
   echo "OpenVOD 运行状态："
   status_one admin    "$SVC_ADMIN_URL"    "$RUN_DIR/admin.pid"
-  status_one web      "$SVC_WEB_URL"      "$RUN_DIR/web.pid"
   status_one delivery "$SVC_DELIVERY_URL" "$RUN_DIR/delivery.pid"
 }
 
@@ -143,9 +138,8 @@ cmd_logs() {
   local file=""
   case "$name" in
     admin)    file="$RUN_DIR/admin.log" ;;
-    web)      file="$RUN_DIR/web.log" ;;
     delivery) file="$RUN_DIR/delivery.log" ;;
-    *) echo "用法：./start.sh logs <admin|web|delivery>"; exit 1 ;;
+    *) echo "用法：./start.sh logs <admin|delivery>"; exit 1 ;;
   esac
   [ -f "$file" ] || { echo "[$name] 暂无日志（$file）"; exit 0; }
   tail -n 50 -f "$file"
@@ -156,5 +150,5 @@ case "${1:-start}" in
   stop)   cmd_stop ;;
   status) cmd_status ;;
   logs)   cmd_logs "${2:-}" ;;
-  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

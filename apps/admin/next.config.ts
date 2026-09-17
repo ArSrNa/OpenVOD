@@ -13,6 +13,7 @@ const nextConfig: NextConfig = {
   // Prisma 客户端保持外部化（引擎二进制不走打包器）
   serverExternalPackages: ["@prisma/client"],
   eslint: { ignoreDuringBuilds: true },
+  allowedDevOrigins: ['127.0.0.1']
 };
 
 export default nextConfig;

@@ -21,10 +21,10 @@ let _db: unknown;
 export function getDb<T = unknown>(): T {
   if (_db) return _db as T;
   const provider = currentProvider();
-  _db =
-    provider === "mysql"
-      ? new MySQLPrismaClient()
-      : new SQLitePrismaClient();
+  // 两份 PrismaClient 的联合推断会触发 TS2589（泛型实例化过深，next build 会失败），
+  // 故先擦除为「无参构造函数」再实例化；运行时行为不变。
+  const Ctor = (provider === "mysql" ? MySQLPrismaClient : SQLitePrismaClient) as unknown as new () => unknown;
+  _db = new Ctor();
   return _db as T;
 }
 

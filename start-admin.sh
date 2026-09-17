@@ -23,9 +23,11 @@ if [ ! -d "$ROOT/node_modules" ]; then
   echo "[deps] 安装 workspace 依赖（bun i）..."
   (cd "$ROOT" && bun i)
 fi
-if [ ! -d "$ROOT/packages/db/generated" ]; then
-  echo "[deps] 生成 Prisma 客户端（DB_PROVIDER=${DB_PROVIDER:-sqlite}）..."
-  (cd "$ROOT" && bun run --cwd packages/db "generate:${DB_PROVIDER:-sqlite}")
+# 注意：packages/db/src/index.ts 静态导入两份客户端（Next/webpack 打包时需同时可解析），
+# 因此 mysql 与 sqlite 生成物必须都存在，与 DB_PROVIDER 取值无关。
+if [ ! -d "$ROOT/packages/db/generated/mysql" ] || [ ! -d "$ROOT/packages/db/generated/sqlite" ]; then
+  echo "[deps] 生成 Prisma 客户端（mysql + sqlite）..."
+  (cd "$ROOT" && bun run --cwd packages/db generate:mysql && bun run --cwd packages/db generate:sqlite)
 fi
 
 echo "[admin] 启动 Next.js 管理端：http://localhost:${ADMIN_PORT:-8787}（Ctrl-C 退出）"

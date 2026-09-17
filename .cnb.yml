@@ -1,0 +1,19 @@
+.devenv: &devenv
+  docker:
+    image: docker.cnb.cool/arsrna/dev-image/nodejs
+  runner:
+    cpus: 32
+
+.install: &install
+  name: 安装固定版本 Bun 和仓库依赖
+  script:
+    - bun i
+
+$:
+  vscode:
+    - services:
+        - docker
+        - vscode
+      <<: *devenv
+      stages:
+        - <<: *install

@@ -12,6 +12,7 @@ coverage/
 # runtime data
 data/
 tmp/
+.run/
 *.log
 
 # prisma 生成物（按方言生成，不入库）

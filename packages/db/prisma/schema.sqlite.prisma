@@ -1,0 +1,287 @@
+// 与 schema.mysql.prisma 逐字一致（仅 generator/datasource 不同，ADR-0004 双方言纪律）
+// 修改模型时两份文件必须同步，`bun --cwd packages/db run parity` 与 CI 会校验。
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/sqlite"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum MediaStatus {
+  UPLOADED
+  PROBING
+  TRANSCODING
+  READY
+  FAILED
+  ARCHIVED
+}
+
+enum JobStatus {
+  QUEUED
+  PROBING
+  ENCODING
+  PACKAGING
+  DONE
+  FAILED
+}
+
+enum SubtitleStatus {
+  PROCESSING
+  READY
+  FAILED
+}
+
+enum SigningKeyKind {
+  JWT
+  URL_SIGN
+  EO_TYPEA
+  API_KEY
+}
+
+enum SigningKeyState {
+  ACTIVE
+  RETIRING
+  REVOKED
+}
+
+/// 播放端用户（管理端 CRUD，分发端登录校验，ADR-0007）
+model User {
+  id                    String     @id @default(cuid())
+  username              String     @unique
+  passwordHash          String     @map("password_hash")
+  displayName           String?    @map("display_name")
+  status                UserStatus @default(ACTIVE)
+  /// 单用户并发播放会话上限，0 = 不限（ADR-0007）
+  maxConcurrentSessions Int        @default(0) @map("max_concurrent_sessions")
+  lastLoginAt           DateTime?  @map("last_login_at")
+  createdAt             DateTime   @default(now()) @map("created_at")
+  updatedAt             DateTime   @updatedAt @map("updated_at")
+
+  playbackSessions PlaybackSession[]
+
+  @@map("users")
+}
+
+// ---- 管理端认证四表（better-auth，模型名映射见 ADR-0013） ----
+
+/// better-auth user（管理端控制台账号；本地兜底 = 邮箱+密码，ADR-0012/0013）
+model AdminUser {
+  id            String   @id
+  name          String
+  email         String   @unique
+  emailVerified Boolean  @default(false) @map("email_verified")
+  image         String?
+  /// 展示用账号名（better-auth additionalFields）
+  username      String?  @unique
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  sessions AdminSession[]
+  accounts AdminAccount[]
+
+  @@map("admin_users")
+}
+
+/// better-auth session（DB 会话，可吊销/踢下线）
+model AdminSession {
+  id        String   @id
+  userId    String   @map("user_id")
+  token     String   @unique
+  expiresAt DateTime @map("expires_at")
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user AdminUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("admin_sessions")
+}
+
+/// better-auth account：OAuth 绑定（providerId=generic-oidc, accountId=IdP sub）与本地密码
+model AdminAccount {
+  id                     String    @id
+  userId                 String    @map("user_id")
+  accountId              String    @map("account_id")
+  providerId             String    @map("provider_id")
+  accessToken            String?   @map("access_token")
+  refreshToken           String?   @map("refresh_token")
+  idToken                String?   @map("id_token")
+  accessTokenExpiresAt   DateTime? @map("access_token_expires_at")
+  refreshTokenExpiresAt  DateTime? @map("refresh_token_expires_at")
+  scope                  String?
+  /// 本地兜底账号的密码哈希（better-auth 内置哈希，ADR-0012 双轨）
+  password               String?
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  user AdminUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@unique([providerId, accountId])
+  @@map("admin_accounts")
+}
+
+/// better-auth verification
+model AdminVerification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime @map("expires_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@index([identifier])
+  @@map("admin_verifications")
+}
+
+/// 密钥材料（kind 区分），私密部分以 MK 封装（ADR-0004/0006/0007）
+model SigningKey {
+  id         String          @id @default(cuid())
+  kid        String          @unique
+  kind       SigningKeyKind
+  state      SigningKeyState @default(ACTIVE)
+  alg        String?
+  /// 公钥 JWK（JWT 用）
+  publicJwk  String?         @map("public_jwk")
+  /// MK(AES-256-GCM) 封装的私钥 JWK（JWT 用）
+  privateEnc String?         @map("private_enc")
+  /// MK 封装的对称密钥（URL_SIGN / EO_TYPEA 用）
+  secretEnc  String?         @map("secret_enc")
+  notBefore  DateTime        @default(now()) @map("not_before")
+  notAfter   DateTime?       @map("not_after")
+  createdAt  DateTime        @default(now()) @map("created_at")
+
+  @@index([kind, state])
+  @@map("signing_keys")
+}
+
+/// 媒资（ADR-0004）
+model Media {
+  id          String      @id @default(cuid())
+  title       String
+  status      MediaStatus @default(UPLOADED)
+  sourceKey   String?     @map("source_key")
+  /// ffprobe 系统元数据（ADR-0008）
+  probe       Json?
+  /// 业务自定义数据（标题/扩展字段，分发端按公开白名单输出，ADR-0004）
+  customData  Json?       @map("custom_data")
+  durationMs  Int?        @map("duration_ms")
+  posterKey   String?     @map("poster_key")
+  publishedAt DateTime?   @map("published_at")
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  subtitles MediaSubtitle[]
+  hlsKeys   HlsKey[]
+  jobs      TranscodeJob[]
+  sessions  PlaybackSession[]
+
+  @@index([status])
+  @@map("media")
+}
+
+/// WebVTT 字幕轨道（ADR-0009）
+model MediaSubtitle {
+  id         String         @id @default(cuid())
+  mediaId    String         @map("media_id")
+  lang       String
+  label      String
+  isDefault  Boolean        @default(false) @map("is_default")
+  status     SubtitleStatus @default(PROCESSING)
+  storageKey String         @map("storage_key")
+  bytes      Int            @default(0)
+  createdBy  String?        @map("created_by")
+  createdAt  DateTime       @default(now()) @map("created_at")
+  updatedAt  DateTime       @updatedAt @map("updated_at")
+
+  media Media @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@index([mediaId])
+  @@map("media_subtitles")
+}
+
+/// 转码任务队列（状态机 + lease，ADR-0008；不引入 Redis）
+model TranscodeJob {
+  id         String    @id @default(cuid())
+  mediaId    String    @map("media_id")
+  status     JobStatus @default(QUEUED)
+  /// ladder preset 名；override 为每媒资 ffmpeg argv 模板参数（ADR-0008）
+  preset     String?
+  override   Json?
+  attempts   Int       @default(0)
+  /// Worker 心跳续期；崩溃后过期重派
+  leaseUntil DateTime? @map("lease_until")
+  lastError  String?   @map("last_error")
+  startedAt  DateTime? @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  media Media @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@index([status, leaseUntil])
+  @@map("transcode_jobs")
+}
+
+/// 每媒资 HLS 内容密钥（明文 CEK 不入库，ADR-0006）
+model HlsKey {
+  id         String   @id @default(cuid())
+  mediaId    String   @map("media_id")
+  kid        String   @unique
+  method     String   @default("AES-128")
+  /// 显式随机 IV（hex，ADR-0006）
+  iv         String
+  /// MK(AES-256-GCM) 封装的 CEK（hex）
+  wrappedCek String   @map("wrapped_cek")
+  mkVer      Int      @map("mk_ver")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  media Media @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@map("hls_keys")
+}
+
+/// 播放会话（分发端写，可吊销，ADR-0006/0007/0011）
+model PlaybackSession {
+  id        String    @id @default(cuid())
+  userId    String    @map("user_id")
+  mediaId   String    @map("media_id")
+  ip        String?
+  userAgent String?   @map("user_agent")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  media Media @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@index([userId, mediaId])
+  @@index([expiresAt])
+  @@map("playback_sessions")
+}
+
+/// 控制台敏感操作审计（范围见 open-questions #14）
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorType String   @map("actor_type")
+  actorId   String   @map("actor_id")
+  action    String
+  target    String?
+  detail    Json?
+  ip        String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([actorType, actorId])
+  @@map("audit_logs")
+}

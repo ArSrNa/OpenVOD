@@ -1,0 +1,16 @@
+{
+  "name": "@openvod/contracts",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "gen": "bun run ../../packages/contracts/scripts/gen-json.ts"
+  },
+  "dependencies": {
+    "@openvod/shared": "workspace:*",
+    "zod": "^4.0.0"
+  }
+}

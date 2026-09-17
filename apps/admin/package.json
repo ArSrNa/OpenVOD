@@ -1,0 +1,35 @@
+{
+  "name": "@openvod/admin",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p ${ADMIN_PORT:-8787}",
+    "build": "next build",
+    "start": "next start -p ${ADMIN_PORT:-8787}",
+    "seed:admin": "bun scripts/create-admin.ts"
+  },
+  "dependencies": {
+    "@ant-design/icons": "^5.6.1",
+    "@ant-design/nextjs-registry": "^1.1.0",
+    "@ant-design/pro-components": "^2.8.10",
+    "@ant-design/v5-patch-for-react-19": "^1.0.3",
+    "@openvod/contracts": "workspace:*",
+    "@openvod/crypto": "workspace:*",
+    "@openvod/db": "workspace:*",
+    "@openvod/shared": "workspace:*",
+    "@openvod/storage": "workspace:*",
+    "@openvod/transcode": "workspace:*",
+    "@tanstack/react-query": "^5.62.0",
+    "antd": "^5.22.0",
+    "better-auth": "^1.2.0",
+    "next": "^16.3.5",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.8.0"
+  }
+}

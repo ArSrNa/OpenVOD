@@ -1,0 +1,29 @@
+# deps / builds
+node_modules/
+dist/
+.next/
+coverage/
+*.tsbuildinfo
+
+# env & secrets
+.env
+.env.*
+!.env.example
+
+# runtime data
+data/
+tmp/
+.run/
+*.log
+
+# prisma 生成物（按方言生成，不入库）
+packages/db/generated/
+# 开发库
+packages/db/prisma/*.db
+packages/db/prisma/*.db-journal
+
+# go
+apps/delivery/bin/
+
+# 桌面回收站等无关目录
+.Trash-0/

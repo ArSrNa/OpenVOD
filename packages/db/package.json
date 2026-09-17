@@ -1,0 +1,25 @@
+{
+  "name": "@openvod/db",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "generate:mysql": "prisma generate --schema prisma/schema.mysql.prisma",
+    "generate:sqlite": "prisma generate --schema prisma/schema.sqlite.prisma",
+    "push:sqlite": "prisma db push --schema prisma/schema.sqlite.prisma",
+    "migrate:deploy": "prisma migrate deploy --schema prisma/schema.mysql.prisma",
+    "migrate:dev": "prisma migrate dev --schema prisma/schema.mysql.prisma",
+    "studio": "prisma studio --schema prisma/schema.sqlite.prisma",
+    "parity": "bun scripts/parity.ts",
+    "format": "prisma format --schema prisma/schema.mysql.prisma && prisma format --schema prisma/schema.sqlite.prisma"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.10.0"
+  },
+  "devDependencies": {
+    "prisma": "^6.10.0"
+  }
+}

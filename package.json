@@ -1,0 +1,23 @@
+{
+  "name": "openvod",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "contracts:json": "bun packages/contracts/scripts/gen-json.ts",
+    "contracts:go": "bash packages/contracts/scripts/gen-go.sh",
+    "contracts": "bun run contracts:json && bun run contracts:go",
+    "check:contracts-go": "git diff --exit-code apps/delivery/internal/contracts/",
+    "crypto:vectors": "bun packages/crypto/scripts/gen-vectors.ts",
+    "dev:admin": "bun run --cwd apps/admin dev",
+    "dev:worker": "bun run --cwd apps/worker dev",
+    "dev:delivery": "go -C apps/delivery run .",
+    "test": "bun test && go -C apps/delivery test ./..."
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.8.0"
+  }
+}

@@ -136,4 +136,19 @@ RUN set -eux; \
     edgeone --version; \
     quicktype --version
 
+# ---------------------------------------------------------------------------
+# 8) ffmpeg/ffprobe wrapper —— 隔离 CodeBuddy 终端注入的 LD_LIBRARY_PATH
+#    CodeBuddy 终端会在运行时把 LD_LIBRARY_PATH 指向 /root/.codebuddy-server-cn/
+#    .../lib，其自带旧版 libstdc++.so.6（缺 GLIBCXX_3.4.29~3.4.32）会遮蔽系统库，
+#    导致系统 ffmpeg/ffprobe 报 "GLIBCXX_3.4.32 not found" 无法启动。
+#    在 /usr/local/bin（PATH 优先于 /usr/bin）放置 wrapper，运行时清空该变量；
+#    仅影响 ffmpeg/ffprobe 自身，不影响 CodeBuddy 工具链。
+# ---------------------------------------------------------------------------
+RUN set -eux; \
+    printf '#!/bin/sh\nLD_LIBRARY_PATH= exec /usr/bin/ffmpeg "$@"\n'  > /usr/local/bin/ffmpeg; \
+    printf '#!/bin/sh\nLD_LIBRARY_PATH= exec /usr/bin/ffprobe "$@"\n' > /usr/local/bin/ffprobe; \
+    chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe; \
+    LD_LIBRARY_PATH=/nonexistent ffmpeg -version | head -1; \
+    LD_LIBRARY_PATH=/nonexistent ffprobe -version | head -1
+
 WORKDIR /workspace

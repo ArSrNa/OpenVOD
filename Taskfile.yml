@@ -39,14 +39,22 @@ tasks:
 
   # ---- 开发 ----
   dev:admin:
-    cmds: [bun --cwd apps/admin dev]
-  dev:web:
-    cmds: [bun --cwd apps/admin-web dev]
+    desc: 管理端（Next.js 全栈，Node 运行时，ADR-0013）
+    dir: apps/admin
+    cmds:
+      - |
+        set -a; [ -f ../../.env ] && . ../../.env; set +a
+        bun run dev
   dev:worker:
-    cmds: [bun --cwd apps/worker dev]
+    cmds: [bun run --cwd apps/worker dev]
   dev:delivery:
     dir: apps/delivery
     cmds: [go run .]
+
+  build:admin:
+    desc: 管理端生产构建（需先 task db:generate）
+    dir: apps/admin
+    cmds: [bun run build]
 
   # ---- 构建 / 测试 / 发布（ADR-0003） ----
   build:delivery:

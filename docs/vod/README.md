@@ -15,8 +15,7 @@ flowchart LR
   end
 
   subgraph CP["管理端 Control Plane"]
-    WEB["Admin SPA（apps/admin-web · React + Vite）"]
-    AAPI["Admin API（apps/admin · Bun + Hono）"]
+    ADMIN["Admin（apps/admin · Next.js 全栈 + better-auth）"]
     WK["转码 Worker（apps/worker · ffmpeg + Bento4 常驻容器）"]
   end
 
@@ -30,9 +29,8 @@ flowchart LR
   DAPI -.->|"④ 读原始清单 → 改写"| ST
   APP -->|"③ 带签名 URL 取分片"| CDN
   CDN --> ST
-  WEB --> AAPI
-  AAPI --> DB
-  AAPI --> ST
+  ADMIN --> DB
+  ADMIN --> ST
   WK --> DB
   WK --> ST
 ```
@@ -58,6 +56,8 @@ flowchart LR
 | [ADR-0009](./decisions/0009-subtitles.md) | 字幕方案（WebVTT） | 提议（待复核） |
 | [ADR-0010](./decisions/0010-distribution-api-surface.md) | 分发端 API 面（v1） | 提议（待复核） |
 | [ADR-0011](./decisions/0011-deployment-topology.md) | 部署拓扑：两应用共享数据面 | 已接受 |
+| [ADR-0012](./decisions/0012-admin-oauth-login.md) | 管理端 OAuth 登录（OIDC + PKCE，双轨账号） | 已接受 |
+| [ADR-0013](./decisions/0013-admin-nextjs-betterauth.md) | 管理端迁移 Next.js 全栈 + better-auth | 已接受 |
 
 状态语义：**已接受** = 用户已拍板，或沿用仓库既有决策（开发镜像 / 前期文档）；**提议（待复核）** = 本文档给出的推荐方案，specification 前需确认。
 

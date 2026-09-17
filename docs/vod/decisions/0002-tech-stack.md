@@ -21,15 +21,18 @@
 | URL 签名 | HMAC-SHA256 | stdlib `crypto/hmac`；与 TS 侧共享测试向量（ADR-0001） |
 | 配置 | 环境变量 | 12-factor；`edgeone.json` / SCF 环境注入 |
 
-### 管理端 Control Plane — `apps/admin` / `apps/admin-web` / `apps/worker`
+### 管理端 Control Plane — `apps/admin`（Next.js 全栈）/ `apps/worker`
+
+> **修订（ADR-0013，2026-09-17）**：原「Bun + Hono + Vite SPA」由 **Next.js 全栈（Node 22）+ better-auth** 取代；Worker 仍 Bun。
 
 | 层 | 选型 | 说明 |
 |---|---|---|
-| 运行时 | Bun | 启动快、内置测试；Prisma 兼容性验证见 ADR-0004 |
-| API | Hono | 轻量；如 Bun+Prisma 验证不过可平滑迁 Node 22（容器内） |
+| 框架 | **Next.js（App Router）** | UI + API Routes 同应用，一个 Node 22 容器（ADR-0013） |
+| 认证 | **better-auth**（Prisma adapter + genericOAuth 插件） | OIDC + 本地邮箱密码双轨；DB 会话可吊销 |
+| 运行时 | Node 22 | Next.js 官方运行时 |
 | ORM | Prisma | schema / 迁移唯一真相源，双方言（ADR-0004） |
 | 校验 | zod（contracts 包） | API DTO 唯一真相源 |
-| 前端 | React + Vite + TanStack Query + **Ant Design** | 纯 SPA 无 SEO 需求；组件库用户已定 antd（2026-09-17，open-questions #10） |
+| UI | React + **Ant Design** + TanStack Query | 组件库用户已定 antd（open-questions #10） |
 | Worker | Bun + ffmpeg / Bento4 子进程 | 常驻容器专用，禁止上函数（P0） |
 | 任务队列 | DB 表 + SKIP LOCKED（MySQL）/ CAS（SQLite） | 不引入 Redis（ADR-0004） |
 
@@ -42,7 +45,8 @@
 ## 备选（否决 / 搁置）
 
 - 分发端 TypeScript + Hono：同语言效率最高，但放弃 EdgeOne CF Go 原生运行时与静态二进制优势 —— 用户已定 Go。
-- 管理端 NestJS：依赖重、对 Bun 兼容面窄 —— 否决。
+- 管理端 Bun + Hono + Vite SPA：前期选型，**已被 ADR-0013（Next.js 全栈 + better-auth）取代**。
+- 管理端 NestJS：依赖重 —— 否决。
 - 分发端 GORM：对只读场景过重，且 schema 已由 Prisma 管理，双 ORM 漂移风险大 —— 否决。
 
 ## 后果与风险

@@ -71,16 +71,78 @@ model User {
   @@map("users")
 }
 
-/// 控制台账号，与 users 分离（ADR-0007）
+// ---- 管理端认证四表（better-auth，模型名映射见 ADR-0013） ----
+
+/// better-auth user（管理端控制台账号；本地兜底 = 邮箱+密码，ADR-0012/0013）
 model AdminUser {
-  id           String    @id @default(cuid())
-  username     String    @unique
-  passwordHash String    @map("password_hash")
-  lastLoginAt  DateTime? @map("last_login_at")
-  createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @updatedAt @map("updated_at")
+  id            String   @id
+  name          String
+  email         String   @unique
+  emailVerified Boolean  @default(false) @map("email_verified")
+  image         String?
+  /// 展示用账号名（better-auth additionalFields）
+  username      String?  @unique
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  sessions AdminSession[]
+  accounts AdminAccount[]
 
   @@map("admin_users")
+}
+
+/// better-auth session（DB 会话，可吊销/踢下线）
+model AdminSession {
+  id        String   @id
+  userId    String   @map("user_id")
+  token     String   @unique
+  expiresAt DateTime @map("expires_at")
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user AdminUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("admin_sessions")
+}
+
+/// better-auth account：OAuth 绑定（providerId=generic-oidc, accountId=IdP sub）与本地密码
+model AdminAccount {
+  id                     String    @id
+  userId                 String    @map("user_id")
+  accountId              String    @map("account_id")
+  providerId             String    @map("provider_id")
+  accessToken            String?   @map("access_token")
+  refreshToken           String?   @map("refresh_token")
+  idToken                String?   @map("id_token")
+  accessTokenExpiresAt   DateTime? @map("access_token_expires_at")
+  refreshTokenExpiresAt  DateTime? @map("refresh_token_expires_at")
+  scope                  String?
+  /// 本地兜底账号的密码哈希（better-auth 内置哈希，ADR-0012 双轨）
+  password               String?
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  user AdminUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@unique([providerId, accountId])
+  @@map("admin_accounts")
+}
+
+/// better-auth verification
+model AdminVerification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime @map("expires_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@index([identifier])
+  @@map("admin_verifications")
 }
 
 /// 密钥材料（kind 区分），私密部分以 MK 封装（ADR-0004/0006/0007）

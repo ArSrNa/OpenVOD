@@ -31,7 +31,7 @@
 
 ### 管理端自身鉴权
 
-- 控制台登录 → 短期 Bearer JWT（独立密钥）；v1 不做 SSO / OAuth；敏感操作写审计日志（范围 open-questions #14）。
+- ~~控制台登录 → 短期 Bearer JWT（独立密钥）；v1 不做 SSO / OAuth~~ **已修订（ADR-0012）**：控制台登录 = 通用 OIDC（Authorization Code + PKCE，BFF 换发）+ 本地 bcrypt 账号兜底，会话以 httpOnly Cookie 承载（HMAC 签名短期会话，与播放端 JWT 体系分离）；敏感操作写审计日志（范围 open-questions #14）。
 
 ### 资源鉴权总表
 

@@ -1,6 +1,9 @@
-// @openvod/db — Prisma 客户端入口（ADR-0004）
+// @openvod/db — Prisma 客户端入口（ADR-0004 / ADR-0013）
 // 生成物在 packages/db/generated/{mysql,sqlite}（.gitignore 已忽略），
 // 先执行 `task db:generate`（按 DB_PROVIDER 方言）再使用。
+// 注意：两份客户端为静态导入（Next/webpack 可打包），仅按 provider 实例化其一。
+import { PrismaClient as MySQLPrismaClient } from "../generated/mysql";
+import { PrismaClient as SQLitePrismaClient } from "../generated/sqlite";
 
 export type DBProvider = "mysql" | "sqlite";
 
@@ -18,9 +21,10 @@ let _db: unknown;
 export function getDb<T = unknown>(): T {
   if (_db) return _db as T;
   const provider = currentProvider();
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const mod = require(`../generated/${provider}`);
-  _db = new mod.PrismaClient();
+  _db =
+    provider === "mysql"
+      ? new MySQLPrismaClient()
+      : new SQLitePrismaClient();
   return _db as T;
 }
 

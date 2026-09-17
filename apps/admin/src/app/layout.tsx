@@ -1,4 +1,3 @@
-import "@ant-design/v5-patch-for-react-19"; // antd v5 × React 19 官方补丁（ADR-0013）
 import type { Metadata } from "next";
 import { AntdRegistry } from "@ant-design/nextjs-registry";
 import { Providers } from "./providers";

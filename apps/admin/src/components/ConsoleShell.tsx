@@ -12,6 +12,7 @@ import {
 } from "@ant-design/icons";
 import { PageContainer, ProCard, ProLayout } from "@ant-design/pro-components";
 import { Dropdown, Empty, Typography } from "antd";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { authClient } from "@/lib/auth-client";
@@ -33,13 +34,19 @@ const ROUTE = {
   routes: MODULES.map(({ key, label, icon }) => ({ path: key, name: label, icon })),
 };
 
-/** 品牌标识（内联 SVG，避免额外静态资源） */
+/** 品牌标识（远程 logo，域名白名单见 next.config.ts images.remotePatterns） */
 function BrandLogo() {
   return (
-    <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden>
-      <rect width="32" height="32" rx="8" fill="#1a56db" />
-      <path d="M12.5 9.5 23 16l-10.5 6.5z" fill="#fff" />
-    </svg>
+    <Image
+      src="https://www.arsrna.cn/logo.png"
+      alt="OpenVOD"
+      width={28}
+      height={28}
+      // 显式给宽高：ProLayout 的 .ant-pro-sider-logo img 只设 height，内联样式压过它才能避免
+      // next/image 的 "width or height modified, but not the other" 警告与比例失真
+      style={{ width: 28, height: 28, objectFit: "contain" }}
+      priority
+    />
   );
 }
 

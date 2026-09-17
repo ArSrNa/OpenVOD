@@ -1,5 +1,9 @@
 "use client";
 
+// antd v5 × React 19 官方补丁（ADR-0013）：必须在**客户端组件**里引入才会在浏览器执行。
+// 放在 root layout（Server Component）只有副作用导入的 client reference，浏览器里 patch 不生效，
+// 点击 antd 组件（wave 效果）时会告警 "antd v5 support React is 16 ~ 18"。
+import "@ant-design/v5-patch-for-react-19";
 import { ProConfigProvider } from "@ant-design/pro-components";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App as AntApp, ConfigProvider, theme } from "antd";

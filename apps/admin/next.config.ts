@@ -10,10 +10,14 @@ const nextConfig: NextConfig = {
     "@openvod/transcode",
     "@openvod/contracts",
   ],
+  // 侧栏 logo 为远程图片，需显式放行域名（ADR-0013 单容器形态，运行时需能访问该域名）
+  images: {
+    remotePatterns: [{ protocol: "https", hostname: "www.arsrna.cn", pathname: "/logo.png" }],
+  },
   // Prisma 客户端保持外部化（引擎二进制不走打包器）
   serverExternalPackages: ["@prisma/client"],
-  eslint: { ignoreDuringBuilds: true },
-  allowedDevOrigins: ['127.0.0.1']
+  // Next 16 起 Turbopack 为默认打包器（无自定义 webpack 配置，直接生效）
+  allowedDevOrigins: ["127.0.0.1", "x9uqmzqsqo-8787.cnb.run"],
 };
 
 export default nextConfig;

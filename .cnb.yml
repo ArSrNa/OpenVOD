@@ -19,13 +19,28 @@
       script:
         - docker buildx build --platform linux/amd64 --push -f .ide/Dockerfile -t docker.cnb.cool/arsrna/media/openvod/dev:latest .
 
+# .env 注入：内容来自密钥仓库（.env 被 .gitignore，故不在代码仓内落盘）
+# 密钥仓库中存放 env.dev.yml，内含 OPENVOD_ENV_B64 = base64 -w 0 < .env
+.environ: &environ
+  name: 从密钥仓库注入 .env
+  script: |
+    set -e
+    sh scripts/gen-env.sh --force
+    # 让开发容器新开的终端也自动带上这些变量
+    touch ~/.bashrc
+    grep -q 'openvod-env' ~/.bashrc || \
+      printf '\n# openvod-env\n[ -f %s/.env ] && set -a && . %s/.env && set +a\n' "$PWD" "$PWD" >> ~/.bashrc
+
 $:
   vscode:
     - services:
         - docker
         - vscode
       <<: *devenv
+      imports:
+        - https://cnb.cool/arsrna/media/openvod-secrets/-/blob/main/env.dev.yml
       stages:
+        - <<: *environ
         - <<: *install
   web_trigger:
     - <<: *build-dev-image

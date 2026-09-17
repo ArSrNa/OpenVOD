@@ -27,8 +27,8 @@ SVC_DELIVERY_URL="http://localhost:9000/healthz"
 # ---- 公共：加载 .env / 依赖准备 ---------------------------------------------
 load_env() {
   if [ ! -f "$ROOT/.env" ]; then
-    cp "$ROOT/.env.example" "$ROOT/.env"
-    echo "[env] .env 不存在，已从 .env.example 生成（开发库建议改用 SQLite，见该文件注释）"
+    # 优先用 scripts/gen-env.sh（环境变量 / 密钥仓库注入 → .env），失败再回落模板
+    sh "$ROOT/scripts/gen-env.sh" || cp "$ROOT/.env.example" "$ROOT/.env"
   fi
   set -a; . "$ROOT/.env"; set +a
 }

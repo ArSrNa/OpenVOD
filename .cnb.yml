@@ -1,6 +1,7 @@
 .devenv: &devenv
   docker:
-    image: docker.cnb.cool/arsrna/dev-image/nodejs
+    # build: .ide/Dockerfile
+    image: docker.cnb.cool/arsrna/media/openvod/dev:latest
   runner:
     cpus: 32
 
@@ -8,6 +9,15 @@
   name: 安装固定版本 Bun 和仓库依赖
   script:
     - bun i
+
+.build-dev-image: &build-dev-image
+  name: 构建并推送开发环境镜像
+  services:
+    - docker
+  stages:
+    - name: buildx 构建并推送 dev 镜像
+      script:
+        - docker buildx build --platform linux/amd64 --push -f .ide/Dockerfile -t docker.cnb.cool/arsrna/media/openvod/dev:latest .
 
 $:
   vscode:
@@ -17,3 +27,5 @@ $:
       <<: *devenv
       stages:
         - <<: *install
+  web_trigger:
+    - <<: *build-dev-image

@@ -1,0 +1,18 @@
+{
+  "name": "@openvod/admin",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@openvod/crypto": "workspace:*",
+    "@openvod/db": "workspace:*",
+    "@openvod/shared": "workspace:*",
+    "@openvod/storage": "workspace:*",
+    "hono": "^4.6.0"
+  }
+}

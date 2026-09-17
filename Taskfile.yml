@@ -1,0 +1,76 @@
+version: '3'
+
+vars:
+  DB_SCHEMA:
+    sh: 'if [ "$DB_PROVIDER" = "sqlite" ]; then echo sqlite; else echo mysql; fi'
+
+tasks:
+  install:
+    cmds: [bun i]
+
+  # ---- 契约与向量（ADR-0001 / ADR-0006） ----
+  contracts:
+    cmds:
+      - bun run contracts
+    sources:
+      - packages/contracts/src/**/*.ts
+    generates:
+      - packages/contracts/jsonschema/*.json
+      - apps/delivery/internal/contracts/*.go
+
+  vectors:
+    cmds: [bun run crypto:vectors]
+
+  # ---- 数据库（ADR-0004） ----
+  db:generate:
+    cmds:
+      - bun run --cwd packages/db generate:{{.DB_SCHEMA}}
+
+  db:push:
+    desc: 开发库建表（SQLite）
+    cmds: [bun run --cwd packages/db push:sqlite]
+
+  db:migrate:
+    desc: 生产迁移（MySQL，ADR-0003 deploy 第 1 步）
+    cmds: [bun run --cwd packages/db migrate:deploy]
+
+  db:parity:
+    cmds: [bun run --cwd packages/db parity]
+
+  # ---- 开发 ----
+  dev:admin:
+    cmds: [bun --cwd apps/admin dev]
+  dev:web:
+    cmds: [bun --cwd apps/admin-web dev]
+  dev:worker:
+    cmds: [bun --cwd apps/worker dev]
+  dev:delivery:
+    dir: apps/delivery
+    cmds: [go run .]
+
+  # ---- 构建 / 测试 / 发布（ADR-0003） ----
+  build:delivery:
+    dir: apps/delivery
+    cmds: [go build -trimpath -ldflags="-s -w" -o bin/delivery .]
+
+  image:delivery:
+    desc: SCF 仅接受 x86，必须显式 --platform（ADR-0003）
+    cmds:
+      - docker buildx build --platform linux/amd64 -t openvod-delivery:latest apps/delivery
+
+  test:
+    cmds:
+      - bun test
+      - go -C apps/delivery test ./...
+
+  smoke:
+    desc: P0 冒烟断言（无签名 403 / 密钥与清单 no-store，ADR-0003）
+    cmds:
+      - echo 'TODO specification：scripts/assert-unsigned-403.sh + assert-no-store.sh'
+
+  deploy:
+    desc: 全链路发布，分步见 ADR-0003
+    cmds:
+      - task: db:migrate
+      - task: image:delivery
+      - echo 'TODO specification：推 TCR → admin/worker 滚动更新 → edgeone pages deploy → smoke'

@@ -1,0 +1,28 @@
+{
+  "wrap": {
+    "mk_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "plaintext_hex": "0123456789abcdef0123456789abcdef",
+    "gcm_iv_hex": "bbbbbbbbbbbbbbbbbbbbbbbb",
+    "wrapped_hex": "bbbbbbbbbbbbbbbbbbbbbbbbcb320ec1ffb6973731b7e8fa64ce17f54f6ed58bcb0cbb05ab88361c59598b0a"
+  },
+  "token": {
+    "key_hex": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "payload": {
+      "ver": 1,
+      "typ": "k",
+      "mid": "media_test_01",
+      "sid": "sess_test_01",
+      "exp": 1893456000,
+      "kid": "k_test_01"
+    },
+    "token": "eyJ2ZXIiOjEsInR5cCI6ImsiLCJtaWQiOiJtZWRpYV90ZXN0XzAxIiwic2lkIjoic2Vzc190ZXN0XzAxIiwiZXhwIjoxODkzNDU2MDAwLCJraWQiOiJrX3Rlc3RfMDEifQ.4621Fbg6g0AQ4Mk0tpnvSSGU0oYEvLYJcuUnnkI2sTs"
+  },
+  "typea": {
+    "key": "typea_test_key",
+    "uri": "/hls/media_test_01/720p/seg-0.ts",
+    "timestamp": 1893456000,
+    "rand": "0",
+    "uid": "0",
+    "sign": "167bf0843af2a0c14241ec06a01812b6"
+  }
+}

@@ -1,2 +1,24 @@
-.Trash-0/*
-.DS_Store
+# deps / builds
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# env & secrets
+.env
+.env.*
+!.env.example
+
+# runtime data
+data/
+tmp/
+*.log
+
+# prisma 生成物（按方言生成，不入库）
+packages/db/generated/
+
+# go
+apps/delivery/bin/
+
+# 桌面回收站等无关目录
+.Trash-0/

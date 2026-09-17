@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "error": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "unauthorized",
+            "invalid_credentials",
+            "forbidden",
+            "bad_token",
+            "not_found",
+            "not_playable",
+            "session_limit",
+            "rate_limited",
+            "not_implemented",
+            "internal"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ]
+    }
+  },
+  "required": [
+    "error"
+  ],
+  "$id": "ErrorEnvelope.json",
+  "title": "ErrorEnvelope"
+}

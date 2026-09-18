@@ -69,7 +69,7 @@ root 下按资产类别分四个分区，互不嵌套：
 - 上传协议（M1）：原视频 / 封面上传以**原始文件字节流**为请求体（`Content-Type: application/octet-stream`），文件名 / 展示名走查询参数——流式直传不经过 multipart 缓冲，服务端内存占用与文件大小无关；
 - 管理端 API 响应一律 `Cache-Control: no-store`；敏感操作（上传 / 重命名 / 删除 / 封面）落 `audit_logs`（open-questions #14）。
 
-### 2.1 已实现（M1 媒资管理 + 密钥管理，2026-09-18）
+### 2.1 已实现（M1 媒资管理 + 密钥管理 + M2 转码，2026-09-18）
 
 | 端点 | 方法 | 说明 |
 |---|---|---|
@@ -86,14 +86,15 @@ root 下按资产类别分四个分区，互不嵌套：
 | `/api/admin/keys/{mediaId}` | DELETE | 删除该媒资密钥行；存在未过期播放会话时 **409 拒绝**；落 `audit_logs`（`key.delete`） |
 | `/api/admin/keys/mk` | GET | MK 版本状态：当前封装版本 + 各版本密钥用量（只暴露版本号与计数，无密钥材料） |
 | `/api/admin/keys/rotate-mk` | POST | MK 轮换：把旧版本封装的 CEK 重封装到当前版本（`MASTER_KEYS` 最大版本），**无需重转码**；落 `audit_logs`（`key.rotate_mk`）。v1 同步执行，超大数据量演进为任务化分批 |
+| `/api/admin/media/{id}/transcode` | POST | 发起转码（M2，§5）：校验媒资与原始文件存在、模板存在、`encrypt && format!=='HLS'` 拒绝、同媒资无未终结任务（409）→ 模板**快照**入队 `transcode_jobs`（`QUEUED`）；返回 202 `{job_id,status}`；落 `audit_logs`（`media.transcode_submit`）。**此阶段不生成 argv**（源参数未知，ADR-0014） |
+| `/api/admin/jobs` | GET | 转码任务列表（创建时间倒序，最多 200 条）：状态、模板名（取快照，模板已删也可追溯）、`attempts`、`last_error`、各时间戳，并关联媒资展示名 |
 
 ### 2.2 未实现（501 占位，随里程碑落地）
 
 | 端点 | 归属 | 说明 |
 |---|---|---|
-| `/api/admin/media/{id}/transcode` | M2（ADR-0008） | 转码发起：弹窗选 ladder / 模板 → `transcode_jobs` 入队；Worker `tick()` 同为空实现 |
 | `/api/admin/media/{id}/subtitles` | M4（ADR-0009） | 字幕上传 / 管理：VTT → `proceed/{id}/subtitles/` 并绑定媒资 ID |
-| 其余 `/api/admin/*` | 随 specification | `/users`、`/jobs` 等 |
+| 其余 `/api/admin/*` | 随 specification | `/users` 等 |
 
 - 未实现端点统一由 `/api/admin/[...path]` 返回 501 `not_implemented`（会话守卫仍然生效）；管理端 UI 对应项为 TODO 提示（点击提示所属里程碑）。
 
@@ -130,7 +131,8 @@ root 下按资产类别分四个分区，互不嵌套：
 - `/media`（媒资管理，M1 已实现）：媒资列表表格——媒资 ID、展示名、生命周期状态、原始文件（格式 / 大小 / 上传时间）、转码产物 / 封面 / 元数据的资产数量概览；
 - `/templates`（转码模板，ADR-0014 已实现）：模板列表表格——模板名（默认标记）、描述、模式（转码 / 保持原视频）、加密（AES-128）、格式（M3U8）、参数摘要（编码器 / 码率或 CRF / 分辨率档位 / 帧率 / preset）、更新时间；操作：新建 / 编辑（弹窗表单，含分辨率档位多行编辑：固定宽×高或自适应上限约束）、删除（确认弹窗注明已发起任务不受影响）；API 见 §2（`/api/admin/templates`）。
 - `/keys`（密钥管理，已实现）：密钥列表表格——媒资 ID、展示名、媒资状态、kid（截断 + Tooltip 全量）、算法、MK 版本（非当前版本标「待轮换」）、加密产物对象数、生成时间；顶部条展示当前封装版本与各版本密钥用量；操作：详情（弹窗：kid / IV / mk_ver / 生成时间 / 使用中会话数，并明确标注「明文密钥不展示」）、删除（确认弹窗警告需重转码才能恢复可播）、「轮换 MK」（确认后重封装旧版本，无需重转码）；API 见 §2.1 与 §4.3。**页面不提供任何明文密钥的展示 / 导出入口**。
-- 操作（对应 §2.1）：上传视频（原始字节流直传，带进度）、预览（弹窗 `<video>` 播放 original，local 支持 Range 拖动）、详情（弹窗展示元数据：probe 摘要结构化展示——容器 / 分辨率 / 帧率 / 编码 / 像素格式 / 色彩空间 / 码率 / 音轨等 + 摘要 JSON 折叠块）、重命名（仅展示名）、删除（确认后硬删除全级联）、设置封面（弹窗双模式：手动上传 / 视频截帧，§2.3）、「更多 → 生成元数据」（ffprobe 探测，§2.1）；「更多」菜单中转码 / 字幕管理为 TODO（§2.2）。
+- `/jobs`（转码任务，M2 已实现）：任务列表表格——任务 ID、媒资（ID + 展示名）、状态（排队 / 探测中 / 转码中 / 封装上传中 / 完成 / 失败）、模板名（取任务快照）、尝试次数、耗时、失败原因、创建时间；支持刷新与「自动刷新（5s）」；API 见 §2.1（`/api/admin/jobs`），执行规则见 §5。
+- 操作（对应 §2.1）：上传视频（原始字节流直传，带进度）、预览（弹窗 `<video>` 播放 original，local 支持 Range 拖动）、详情（弹窗展示元数据：probe 摘要结构化展示——容器 / 分辨率 / 帧率 / 编码 / 像素格式 / 色彩空间 / 码率 / 音轨等 + 摘要 JSON 折叠块）、重命名（仅展示名）、删除（确认后硬删除全级联）、设置封面（弹窗双模式：手动上传 / 视频截帧，§2.3）、「更多 → 生成元数据」（ffprobe 探测，§2.1）、「更多 → 转码」（M2 已实现：弹窗选模板 → 展示该模板的模式 / 加密 / 输出格式 → 发起入队，落 `transcode_jobs`，进度跳「转码任务」页查看）；「更多 → 字幕管理」为 TODO（§2.2）。
 
 ## 4. 密钥管理与视频加密（以 ADR-0006 为决策源）
 
@@ -205,3 +207,43 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 | `MASTER_KEYS` | 无（必填） | `"版本:64位hex"`，逗号分隔多版本。**轮换必须保留旧版本**（否则旧行无法解封，轮换会逐行失败并跳过）；未配置 / 非法时密钥接口报 500、页面顶栏提示（ADR-0006 §1） |
 | `URL_SIGN_KEY_HEX` | 无（必填） | 分发端 URL 签名 HMAC 密钥；**仅用于鉴权签名，与 CEK 封装无关**，全站一套、不按媒资区分 |
 | `EO_TYPEA_KEY` | 无 | EdgeOne URL 鉴权 TypeA 密钥（与 EO 控制台一致，ADR-0005） |
+
+## 5. 转码执行（Worker，M2）
+
+> 队列与状态机的原始决策在 ADR-0008；本节记录进入实现后的具体规则与不变量（与 ADR 冲突时以本节为准并回写 ADR）。
+
+### 5.1 状态机与认领
+
+- 任务状态：`QUEUED → PROBING → ENCODING → PACKAGING → DONE`；异常 → `FAILED`（取值与 Prisma `JobStatus` 逐字一致，`@openvod/contracts JOB_STATUSES`）；
+- **认领用 CAS 条件更新**：候选 = `status ∈ {QUEUED,PROBING,ENCODING,PACKAGING}` 且（`lease_until` 为空或已过期）→ 条件更新为 `PROBING`、续 `lease_until`、`attempts+1`、写 `started_at`；`updateMany` 受影响行数 = 1 才算认领成功。MySQL 与 SQLite 语义一致，多实例并发下只有一个实例能拿到；ADR-0008 里的 MySQL `FOR UPDATE SKIP LOCKED` 作为**高并发演进项**（v1 不做方言分支）；
+- 执行期按 `leaseMs/3` 心跳续期 → 长转码任务不会被重派；
+- Worker 崩溃 → lease 过期 → 任务被重新认领（`attempts+1`）；`attempts` 超过 `WORKER_MAX_ATTEMPTS`（默认 3）→ 直接判 `FAILED`，防止崩溃循环；
+- **同一媒资同时只允许一个未终结任务**：管理端发起时校验（409），避免并发转码互相覆盖产物。
+
+### 5.2 执行顺序（顺序即正确性）
+
+1. 产物先落本地 `{os.tmpdir()}/openvod-jobs/{jobId}/out/`（`{variant}/index.m3u8` + `{variant}/seg-%05d.ts`，主清单 `master.m3u8`），**全部成功后再整体上传**；
+2. 上传完成后**才**落 `hls_keys`（§4.2）——提前落库会让一次失败的转码换掉旧密钥，使既有密文无法解密；
+3. 上传成功后清理该媒资 `proceed/{id}/` 下**本次未产出**的对象（旧档位 / 旧分片），避免新旧混播；清理发生在上传之后，因此失败不会先毁掉旧产物；
+4. 任意路径（成功 / 失败 / 取消）都要删除任务临时目录——其中含明文 CEK 与 `key_info`。
+
+### 5.3 失败时的媒资状态
+
+- 该媒资此前已是 `READY` → **保持 `READY`**：旧产物仍在且可播，不误报失败（此时只有 `job.last_error` 变化）；
+- 否则 → `FAILED`；
+- 失败原因写 `transcode_jobs.last_error`（管理端「转码任务」页展示，支持重派）。
+
+### 5.4 产物布局与清单
+
+- 上传后的键与 §1.3 布局一一对应：`proceed/{id}/master.m3u8`、`proceed/{id}/{variant}/index.m3u8`、`proceed/{id}/{variant}/seg-*.ts`；Content-Type：`.m3u8` = `application/vnd.apple.mpegurl`，`.ts` = `video/mp2t`；
+- 变体目录名按**实际输出高度**命名（如 `1080p` / `150p`，同名追加序号）；`keep_original`（只加密流程）单档同规则；
+- 主清单 `BANDWIDTH`：模板声明了目标码率则用之；CRF 模式与只加密流程按高度粗估（仅影响播放器起播选档提示，不影响编码）；
+- 加密档位的子清单里 `EXT-X-KEY` 的 URI 是转码期**占位**，分发端改写清单时整体替换为带签名 token 的密钥 URL（ADR-0006 §3）。
+
+### 5.5 Worker 环境变量
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `WORKER_POLL_INTERVAL_MS` | `2000` | 轮询间隔（毫秒） |
+| `WORKER_LEASE_MS` | `60000` | 任务 lease 时长（执行期按 1/3 续期） |
+| `WORKER_MAX_ATTEMPTS` | `3` | 单任务最大尝试次数 |

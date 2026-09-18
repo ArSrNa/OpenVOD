@@ -52,6 +52,7 @@ root 下按资产类别分四个分区，互不嵌套：
 
 - 第一级是媒资 ID，第二级是**模板 ID**（即 `transcode_templates.id`，cuid）：目录名就是模板 ID，所以「这份产物是哪个模板转出来的」可以直接从存储键读出；
 - 同一媒资**允许多套模板产物并存**（如「原画加密」与「1080p 加密」各一套），互不覆盖；重转某个模板只替换 / 清理**该模板子树**（§5.2）；
+- 单次发起转码可**多选模板**（§2.1）：每个模板各入队一条任务、各落一个 `proceed/{id}/{templateId}/` 子树，一次提交即可同时产出多套互不覆盖的产物；
 - `proceed/{id}/subtitles/` 是**保留段**：字幕不属于模板产物，不参与模板分组。模板 ID 为 cuid 形状（`TEMPLATE_ID_PATTERN = /^c[a-z0-9]{20,}$/`），与保留段不会冲突；
 - **旧布局兼容**：M2 之前的产物落在 `proceed/{id}/{variant}/…`（无模板段），列举时归入空模板 ID 并展示为「未分组（旧布局）」；对该媒资重转码一次即可迁到新布局。
 
@@ -94,8 +95,13 @@ root 下按资产类别分四个分区，互不嵌套：
 | `/api/admin/keys/{mediaId}` | DELETE | 删除该媒资密钥行；存在未过期播放会话时 **409 拒绝**；落 `audit_logs`（`key.delete`） |
 | `/api/admin/keys/mk` | GET | MK 版本状态：当前封装版本 + 各版本密钥用量（只暴露版本号与计数，无密钥材料） |
 | `/api/admin/keys/rotate-mk` | POST | MK 轮换：把旧版本封装的 CEK 重封装到当前版本（`MASTER_KEYS` 最大版本），**无需重转码**；落 `audit_logs`（`key.rotate_mk`）。v1 同步执行，超大数据量演进为任务化分批 |
-| `/api/admin/media/{id}/transcode` | POST | 发起转码（M2，§5）：校验媒资与原始文件存在、模板存在、`encrypt && format!=='HLS'` 拒绝、同媒资无未终结任务（409）→ 模板**快照**入队 `transcode_jobs`（`QUEUED`）；返回 202 `{job_id,status}`；落 `audit_logs`（`media.transcode_submit`）。**此阶段不生成 argv**（源参数未知，ADR-0014） |
+| `/api/admin/media/{id}/transcode` | POST | 发起转码（M2，§5）：请求体 `template_ids[]`（**多选**，去重、单次上限见契约 `TRANSCODE_SUBMIT_MAX_TEMPLATES`）；校验媒资与原始文件存在、每个模板存在、`encrypt && format!=='HLS'` 拒绝、同一媒资**同一模板**无未终结任务（409，不同模板可并行）→ 每个模板各自**快照**入队 `transcode_jobs`（`QUEUED`，整批同一事务）；返回 202 `{jobs:[{job_id,template_id,template_name,status}]}`；落 `audit_logs`（`media.transcode_submit`，detail 含全部 `job_id` / `template_id`）。**此阶段不生成 argv**（源参数未知，ADR-0014） |
 | `/api/admin/jobs` | GET | 转码任务列表（创建时间倒序，最多 200 条）：状态、模板名（取快照，模板已删也可追溯）、`attempts`、`last_error`、各时间戳，并关联媒资展示名 |
+| `/api/admin/jobs/stream` | GET | 转码任务实时推送（SSE，`text/event-stream`）：连接即回放全量快照（`event: jobs`），此后**仅当任务快照变化时**推送全量（幂等覆盖，避免空转）；15s `event: ping` 保活心跳；断线由浏览器按 `retry` 提示自动重连（重连即重新校验会话）、连接 10 min 到期主动断开重连。**客户端不轮询**；服务端由进程内 hub（`lib/jobs-stream`）观察 DB 变化——Worker 是独立进程且 MySQL/SQLite 无跨进程通知，管理端只能观察自己的库；全部连接共享同一观察循环，订阅者归零即停机；响应 `no-store` / `X-Accel-Buffering: no` |
+| `/api/admin/media/{id}/preview-play` | POST | 「产物解密播放」预览：请求体 `template_id`（可选；**空串 = 显式请求旧布局产物**，缺省由分发端自动选择，§6.3）。服务端以**预览账号**（`DELIVERY_PREVIEW_USERNAME/PASSWORD`）调分发端 login + play，返回 `{sid, manifest_url, expires_at, template_id, encrypted}`；浏览器用 hls.js / Safari 原生直接播该签名清单——清单 / 密钥 / 分片直达浏览器，**管理端不接触密钥材料**（P0，§4.3）。未配置预览账号返回 501 |
+| `/api/admin/media/{id}/products/{templateId}` | DELETE | 删除一套转码产物：`templateId` 为模板 cuid（删 `proceed/{id}/{templateId}/` 子树）或 `legacy`（旧布局：删 `proceed/{id}/` 顶层非保留段对象）。**只删存储对象**：`hls_keys`（可能被其它模板产物共用）与 `transcode_jobs` 历史保留；同模板存在未终结任务 → 409；不存在 → 404；落 `audit_logs`（`media.product_delete`，detail 含 template_id / objects / bytes） |
+| `/api/admin/jobs/{id}/stop` | POST | 停止（取消）任务：置 FAILED（`last_error=已手动停止（管理端）`）+ 清租约。仅对 **QUEUED**（撤下队列，不再被认领）或**租约已过期**的执行中任务（worker 失联，安全终止）开放；租约有效（worker 正在执行）→ 409。写入用 CAS（状态未变才生效）。落 `audit_logs`（`transcode.stop`） |
+| `/api/admin/jobs/{id}/restart` | POST | 重启（重新入队）：仅 **FAILED**（失败或手动停止）——`attempts` 清零（否则认领逻辑会立即判「超过重试上限」）+ 清错误 / 租约 / 时间戳 → QUEUED，由 worker 重新认领。落 `audit_logs`（`transcode.restart`） |
 
 ### 2.2 未实现（501 占位，随里程碑落地）
 
@@ -136,11 +142,15 @@ root 下按资产类别分四个分区，互不嵌套：
 
 ### 3.1 已实现页面
 
-- `/media`（媒资管理，M1/M2 已实现）：媒资列表表格——媒资 ID、展示名、生命周期状态、原始文件（格式 / 大小 / 上传时间）、**转码产物（按模板分组：`N 组产物 · M 个对象`，悬停列出每套产物的模板名与档位）**、封面图片；详情弹窗额外逐套列出「模板名 / 变体 / 对象数 / 体积 / 模板 ID」（模板已删时显示「模板已删除（id 前缀）」），旧布局产物显示「未分组（旧布局）」；
+- `/media`（媒资管理，M1/M2 已实现，M3 增产物操作）：媒资列表表格——媒资 ID、展示名、生命周期状态、原始文件（格式 / 大小 / 上传时间）、**转码产物（按模板分组：`N 组产物 · M 个对象`，悬停列出每套产物的模板名与档位，点击打开产物列表）**、封面图片；详情弹窗显示产物组数并提供「产物列表（播放 / 删除）」入口（不再逐套平铺）；
+  - **产物列表（抽屉，按模板一行）**：模板名（已删显示「模板已删除（id 前缀）」；旧布局显示「未分组（旧布局）」）、存储前缀 `proceed/{id}/{模板id}/`、变体（`1080p / 720p`）、对象数、体积；操作：
+    - **播放** = 解密播放预览（`POST /media/{id}/preview-play` → 分发端签名主清单 URL → hls.js / Safari 原生播放，浏览器本地解密；管理端不出密钥，§4.3），播放弹窗标注「AES-128 加密（浏览器本地解密）」或「未加密」与模板 ID；
+    - **删除** = 按模板删除该套产物（`DELETE /media/{id}/products/{templateId}`；确认弹窗给出前缀 / 对象数 / 体积与不可恢复警告；同模板有进行中任务时 409，需等待其结束）；
+  - 播放失败的常见排查提示直接展示在弹窗内：分发端 CORS（`DELIVERY_CORS_ORIGINS`）或对象桶 CORS 未放行管理端源站；预览账号未配置时接口 501（dev-workflow §5.3）；
 - `/templates`（转码模板，ADR-0014 已实现）：模板列表表格——模板名（默认标记）、描述、模式（转码 / 保持原视频）、加密（AES-128）、格式（M3U8）、参数摘要（编码器 / 码率或 CRF / 分辨率档位 / 帧率 / preset）、更新时间；操作：新建 / 编辑（弹窗表单，含分辨率档位多行编辑：固定宽×高或自适应上限约束）、删除（确认弹窗注明已发起任务不受影响）；API 见 §2（`/api/admin/templates`）。
 - `/keys`（密钥管理，已实现）：密钥列表表格——媒资 ID、展示名、媒资状态、kid（截断 + Tooltip 全量）、算法、MK 版本（非当前版本标「待轮换」）、加密产物对象数、生成时间；顶部条展示当前封装版本与各版本密钥用量；操作：详情（弹窗：kid / IV / mk_ver / 生成时间 / 使用中会话数，并明确标注「明文密钥不展示」）、删除（确认弹窗警告需重转码才能恢复可播）、「轮换 MK」（确认后重封装旧版本，无需重转码）；API 见 §2.1 与 §4.3。**页面不提供任何明文密钥的展示 / 导出入口**。
-- `/jobs`（转码任务，M2 已实现）：任务列表表格——任务 ID、媒资（ID + 展示名）、状态（排队 / 探测中 / 转码中 / 封装上传中 / 完成 / 失败）、模板名（取任务快照）、尝试次数、耗时、失败原因、创建时间；支持刷新与「自动刷新（5s）」；API 见 §2.1（`/api/admin/jobs`），执行规则见 §5。
-- 操作（对应 §2.1）：上传视频（原始字节流直传，带进度）、预览（弹窗 `<video>` 播放 original，local 支持 Range 拖动）、详情（弹窗展示元数据：probe 摘要结构化展示——容器 / 分辨率 / 帧率 / 编码 / 像素格式 / 色彩空间 / 码率 / 音轨等 + 摘要 JSON 折叠块）、重命名（仅展示名）、删除（确认后硬删除全级联）、设置封面（弹窗双模式：手动上传 / 视频截帧，§2.3）、「更多 → 生成元数据」（ffprobe 探测，§2.1）、「更多 → 转码」（M2 已实现：弹窗选模板 → 展示该模板的模式 / 加密 / 输出格式 → 发起入队，落 `transcode_jobs`，进度跳「转码任务」页查看）；「更多 → 字幕管理」为 TODO（§2.2）。
+- `/jobs`（转码任务，M2 已实现，M3 增停止 / 重启）：任务列表表格——任务 ID、媒资（ID + 展示名）、状态（排队 / 探测中 / 转码中 / 封装上传中 / 完成 / 失败；worker 失联的执行中任务标「中断」）、模板名（取任务快照）、尝试次数、耗时、失败原因、创建时间；**操作列**：停止（取消）/ 重启（重新入队），规则见 §5.1；**实时推送（SSE）**——连接即回放全量快照，任务变化由服务端主动推送（客户端零轮询），断线自动重连并展示连接状态；「刷新」= 重建连接（服务端随即回放最新快照），「耗时」列由本地时钟每秒重算（不发请求）；API 见 §2.1（`/api/admin/jobs`、`/api/admin/jobs/stream`、`/api/admin/jobs/{id}/stop|restart`），执行规则见 §5。
+- 操作（对应 §2.1）：上传视频（原始字节流直传，带进度）、预览（弹窗 `<video>` 播放 original，local 支持 Range 拖动）、详情（弹窗展示元数据：probe 摘要结构化展示——容器 / 分辨率 / 帧率 / 编码 / 像素格式 / 色彩空间 / 码率 / 音轨等 + 摘要 JSON 折叠块）、重命名（仅展示名）、删除（确认后硬删除全级联）、设置封面（弹窗双模式：手动上传 / 视频截帧，§2.3）、「更多 → 生成元数据」（ffprobe 探测，§2.1）、「更多 → 转码」（M2 已实现：弹窗**多选**模板（默认勾选默认模板）→ 逐个展示所选模板的模式 / 加密 / 输出格式 → 一次发起入队多条 `transcode_jobs`（每个模板各一条、各落 `proceed/{id}/{模板id}/`），进度跳「转码任务」页查看）；「更多 → 字幕管理」为 TODO（§2.2）。
 
 ## 4. 密钥管理与视频加密（以 ADR-0006 为决策源）
 
@@ -226,7 +236,13 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 - **认领用 CAS 条件更新**：候选 = `status ∈ {QUEUED,PROBING,ENCODING,PACKAGING}` 且（`lease_until` 为空或已过期）→ 条件更新为 `PROBING`、续 `lease_until`、`attempts+1`、写 `started_at`；`updateMany` 受影响行数 = 1 才算认领成功。MySQL 与 SQLite 语义一致，多实例并发下只有一个实例能拿到；ADR-0008 里的 MySQL `FOR UPDATE SKIP LOCKED` 作为**高并发演进项**（v1 不做方言分支）；
 - 执行期按 `leaseMs/3` 心跳续期 → 长转码任务不会被重派；
 - Worker 崩溃 → lease 过期 → 任务被重新认领（`attempts+1`）；`attempts` 超过 `WORKER_MAX_ATTEMPTS`（默认 3）→ 直接判 `FAILED`，防止崩溃循环；
-- **同一媒资同时只允许一个未终结任务**：管理端发起时校验（409），避免并发转码互相覆盖产物。
+- **同一媒资 + 同一模板同时只允许一个未终结任务**：管理端发起时校验（409）。产物按 `proceed/{id}/{templateId}/` 分树存放（§1.3），不同模板互不覆盖，故**同一媒资可并行不同模板的转码**；单次 submit 可多选模板，每个模板各入队一条任务。
+- **同一媒资的任务串行执行**：Worker 每轮只认领并执行一个任务，单实例下同媒资不同模板任务天然串行。加密任务对同一媒资**必须**串行——否则两个任务各自 `generateMediaKey` 会产出两把不同的 CEK，只有最后落库的一把能解密，另一套产物永久不可解（ADR-0006 §4.2 密钥唯一约束）。v1 单 worker 实例（`start.sh`）满足此约束；多实例横向扩展属演进项（认领时需做媒资级串行）；
+- **停止 / 重启（管理端「转码任务」页操作，M3）**：
+  - **停止（取消）** = 置 `FAILED`（`last_error=已手动停止（管理端）`）+ 清租约。仅对 **QUEUED**（撤下队列，不再被认领）或**租约已过期**的执行中任务（worker 失联 / 已死，安全终止）开放；**租约有效（worker 正在执行）拒绝**——任务状态会被 worker 覆盖，执行中的中途取消需要 worker 侧检查点配合（演进项）。写入用 CAS（`where status = 原状态`），与 worker 的完成写竞态时返回 409 让用户刷新；
+  - **重启（重新入队）** = 仅 **FAILED**（失败或手动停止）→ `QUEUED`，且 `attempts` **清零**（不清零会被认领逻辑立即判「超过重试上限」，worker `job-store.claim`）+ 清 `last_error` / 租约 / `started_at` / `finished_at`；
+  - 两者均落 `audit_logs`（`transcode.stop` / `transcode.restart`），并 poke 任务页 SSE 立即推送新状态；
+  - 任务 DTO 携带 `lease_active`（分发端是否持有有效租约），前端据此渲染「停止 / 重启」可用性与「中断」提示。
 
 ### 5.2 执行顺序（顺序即正确性）
 
@@ -241,17 +257,100 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 - 否则 → `FAILED`；
 - 失败原因写 `transcode_jobs.last_error`（管理端「转码任务」页展示，支持重派）。
 
-### 5.4 产物布局与清单
+### 5.4 档位判定与全档跳过兜底（2026-09-18 修订）
+
+判定发生在 Worker 探测之后，以 `media.probe` 实测参数为唯一事实来源；判定维度为 **分辨率 / 帧率 / 码率**（intent.md「转码模板管理」规则 1–4）：
+
+- **只降不升、高位取源**：低于源的维度按模板执行（缩放 / `-r` 降帧率 / `-b:v` 降码率）；**不低于源的维度一律取源值**——不写 `scale` 滤镜、不写 `-r`、`-b:v` 取源码率，即分辨率 / 帧率可「保持原视频」；
+- **跳过**：三维度全部不低于源 → 该档跳过（保留 `skipReason` 供日志追溯，不产 argv，不占变体目录名）；
+- **全档跳过兜底**：某模板**全部档位**均被判跳过时，Worker 追加一档**源规格兜底**（`compileSourceMatched`）——编码器 / preset / CRF / 加密按模板，分辨率 / 帧率 / 码率保持原视频；任务不再以「所有档位均被跳过」失败，必有产物（`ExecuteJobResult.sourceFallback = true` 供日志与排查）；
+- **码率比较口径**：源码率优先取视频轨 `probe.video.bitrate`，缺失回退容器总码率；源码率未知或模板为 CRF 模式（无目标码率）时码率维度不参与降级判定（按模板原值编码）；
+- 自适应档：源已在约束内 → 分辨率维度取源值，是否执行由三维度合并判定（open-questions #18 已收敛）；
+- 兜底档的变体目录名按源输出高度命名（如 `1080p`），与主清单 `RESOLUTION` 一致。
+
+### 5.5 产物布局与清单
 
 - 上传后的键与 §1.3 布局一一对应：`proceed/{id}/{templateId}/master.m3u8`、`.../{variant}/index.m3u8`、`.../{variant}/seg-*.ts`（`templateId` 取任务快照的 `template_id`，缺失时回退任务记录的 `template_id`，都没有则任务直接失败）；Content-Type：`.m3u8` = `application/vnd.apple.mpegurl`，`.ts` = `video/mp2t`；
 - 变体目录名按**实际输出高度**命名（如 `1080p` / `150p`，同名追加序号）；`keep_original`（只加密流程）单档同规则；
-- 主清单 `BANDWIDTH`：模板声明了目标码率则用之；CRF 模式与只加密流程按高度粗估（仅影响播放器起播选档提示，不影响编码）；
+- 主清单 `BANDWIDTH`：模板声明了目标码率则用之（经三维度归一化，不高于源码率；见 §5.4）；CRF 模式与只加密流程按高度粗估（仅影响播放器起播选档提示，不影响编码）；
 - 加密档位的子清单里 `EXT-X-KEY` 的 URI 是转码期**占位**，分发端改写清单时整体替换为带签名 token 的密钥 URL（ADR-0006 §3）。
 
-### 5.5 Worker 环境变量
+### 5.6 Worker 环境变量
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `WORKER_POLL_INTERVAL_MS` | `2000` | 轮询间隔（毫秒） |
 | `WORKER_LEASE_MS` | `60000` | 任务 lease 时长（执行期按 1/3 续期） |
 | `WORKER_MAX_ATTEMPTS` | `3` | 单任务最大尝试次数 |
+
+## 6. 播放链路（分发端，M3）
+
+> 决策源 ADR-0006（加密与密钥下发）/ ADR-0010（API 面）；本节记录实现细节与 M3 落地范围。与 ADR 冲突时以本节为准并回写 ADR。
+
+### 6.1 端点与 token 传递
+
+| 端点 | 鉴权 | 说明 |
+|---|---|---|
+| `POST /v1/auth/login` | 凭据 | bcrypt 校验 `users`（须 `status=ACTIVE`）→ ES256 JWT（`kid` / `exp=DELIVERY_JWT_TTL_SEC`；未配置签名密钥时 503） |
+| `GET /v1/media` | JWT | 上架列表（`status=READY`；`limit` ≤200，默认 50；`poster_url` s3 形态为预签名） |
+| `GET /v1/media/{id}` | JWT | 详情：probe 摘要（契约 `Probe` 子集）+ 就绪字幕轨道 + `playable` |
+| `POST /v1/media/{id}/play` | JWT | 建 / 复用播放会话：`template_id` 可选（见 §6.3）；同用户同媒资未过期末吊销会话**默认复用**（幂等），`force_new=true` 强制新建；并发上限命中 → 409 `session_limit`；媒资非 READY → 409 `not_playable`；返回 `{sid, manifest_url, expires_at, template_id}` |
+| `GET /v1/media/{id}/manifest/master.m3u8` | token(m) | 改写主清单：变体行替换为分发端 URL（typ=m + `tpl`）；`no-store` |
+| `GET /v1/media/{id}/manifest/{variant}/index.m3u8` | token(m) | 改写子清单：`EXT-X-KEY` URI → key 接口（typ=k）；分片行 → typ=s / 预签名；`no-store` |
+| `GET /v1/media/{id}/key` | token(k) | **16B CEK**（`application/octet-stream`，`no-store`）：验签 + 会话有效 → 按 `hls_keys.mk_ver` 取 MK 解封 |
+| `GET /v1/media/{id}/local/{tpl}/{variant}/{seg}` | token(s) | **local 驱动**分片流式输出（支持 Range）；s3 驱动分片为预签名直出，不走此处 |
+| `GET /v1/media/{id}/subtitles/{trackId}.vtt` | token(v) | M4（ADR-0009），当前 501 |
+
+**token 传递（用户定，2026-09-18）**：URL query `t` 优先，其次请求头 `X-Playback-Token`（App / hls.js 可带自定义头；**Safari 原生 HLS 的密钥与分片请求无法带头**，因此 query 是必须形态）。token 自包含（`ver|typ|mid|sid|exp|kid`，HMAC-SHA256），`typ` 作用域 `m 清单 / s 分片 / k 密钥 / v 字幕`，`mid` 绑定防跨媒资重放，`sid` 绑定会话可吊销。
+
+### 6.2 解密链路（一次播放的顺序）
+
+1. `login` 取 JWT（业务 API 用；**不用于清单 / 密钥 / 分片**）；
+2. `play` 建会话并返回签名主清单 URL；
+3. 拉主清单 → 子清单（`tpl` + typ=m token）；
+4. 子清单里 `#EXT-X-KEY` 的 URI 已被改写为 `/v1/media/{id}/key?t=<typ=k>`（`METHOD` / 显式 `IV` 原样保留）；分片行改写为 typ=s 分发端 URL（local）或**预签名直出 URL**（s3，字节不经过函数）；
+5. 播放器自动 GET key → 验签 + 会话有效 → **MK 解封 `wrapped_cek`** → 返回 16B CEK（`no-store`，绝不缓存）；
+6. 播放器用 CEK + 清单显式 IV 本地 AES-128-CBC 解密分片——Safari 原生 HLS / hls.js / ExoPlayer 均原生支持，**业务侧零解密代码**。
+
+吊销语义：会话有效性**每请求查库**（比 ADR-0006 §6 的 ≤60s 收敛更严格；进程内 60s 缓存为演进项）——置 `revoked_at` 后新的清单 / 密钥 / 分片请求立即 403。
+
+### 6.3 模板产物选择（多套并存，ADR-0014）
+
+`play` 的 `template_id`（可选）：
+
+- 显式指定 → 必须存在，否则 409 `not_playable`（消息列出可选值）；
+- 未指定 → 唯一产物直接使用；多套 → 取**默认模板**（`transcode_templates.is_default`）的那套；仍无法唯一确定 → 409 `not_playable` 列出可选值；
+- 无模板子树 → 旧布局（`proceed/{id}/{variant}/`），返回 `template_id=""`。
+
+### 6.4 签名密钥材料形态与引导
+
+- `signing_keys.private_enc`（JWT）＝ `hex(MK(AES-256-GCM)(P-256 标量 32B))`；`public_jwk` 存公钥 JWK。
+  用标量而非 PKCS#8 DER：该列是 `VARCHAR(191)`，DER 的 hex（276 字符）会触发 P2000；
+- 生成 / 轮换：`bun apps/admin/scripts/bootstrap-playback.ts <username> <password≥8位> [显示名] [--rotate-jwt-key]`
+  —— 幂等：生成 JWT 签名密钥（轮换时旧 key 置 `RETIRING`，双 kid 宽限）并创建 / 重置播放端用户（bcrypt cost 12）；
+- 分发端启动时把 ACTIVE 的 JWT 私钥全部解封加载（`signing_keys` 无 `mk_ver` 列 → 按 MK 版本逐个尝试解封，版本号大者优先）；无可用密钥不致命，login 返回 503。
+
+### 6.5 相关环境变量
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `DELIVERY_DATABASE_URL` | 无（必填） | 分发端受限账号（ADR-0011：只读约定表 + `playback_sessions` 读写）。支持 `mysql://user:pw@host:port/db` 或 go-sql-driver DSN；**本地调试需指向可达库**（仓库 `.env` 里的 127.0.0.1 是占位） |
+| `DELIVERY_PUBLIC_BASE_URL` | 空 → `http://127.0.0.1:{端口}` | 资源 URL 基址（拼清单 / 密钥 / 本地分片 URL）；生产填分发域名 / CDN 域名 |
+| `URL_SIGN_KEY_KID` | `urlsign-v1` | 播放 token 的 `kid`（多 kid 宽限轮换为演进项） |
+| `DELIVERY_JWT_ISSUER` | `openvod-delivery` | JWT `iss` |
+| `DELIVERY_JWT_TTL_SEC` | `86400` | JWT 有效期（ADR-0007：默认 24h，无 refresh） |
+| `PLAYBACK_SESSION_TTL_SEC` | `14400` | 播放会话有效期 |
+| `PLAYBACK_MANIFEST_TTL_SEC` | `14400` | 清单 token / 预签名有效期上限（token exp ≤ 会话 exp） |
+| `STORAGE_DRIVER` / `STORAGE_ROOT_PREFIX` / `STORAGE_LOCAL_ROOT` / `S3_*` | 对齐管理端 | 与 `packages/storage` 同源命名（§1.5） |
+| `DELIVERY_CORS_ORIGINS` | `*` | 允许跨域读取清单 / 密钥 / 分片（管理端「产物解密播放」的 hls.js 需要）；播放鉴权全走 URL token、不带 Cookie，`*` 不引入凭证泄露面，可收敛为管理端源站（逗号分隔） |
+
+### 6.6 M3 已落地范围外（演进项）
+
+- **CDN + EdgeOne TypeA 分片鉴权**：当前 s3 形态用预签名直出（私有桶，字节不经过函数）；配置 CDN 基址后按 ADR-0005 接 TypeA（含 `signing_keys.kind=EO_TYPEA` 的读取与轮换双密钥窗口）；
+- 登录 / play **限频**（ADR-0010）；严格模式（key 一次性 nonce、IP / UA 绑定、并发上限的踢下线，ADR-0006 §7 默认关）；
+- 会话吊销的进程内 60s 缓存（当前每请求查库，语义更严格、量级可接受）；
+- SQLite 自托管驱动（当前 Go 侧仅 MySQL；ADR-0004 的单机同卷形态待补）；
+- `poster_url` 的 local 直出与 `custom_data` **公开白名单**（当前返回空对象，避免泄露内部字段）；
+- 字幕链路（M4）。
+
+**部署前置（非未完成项）**：管理端「产物 → 播放」由浏览器直连对象存储拉分片（s3 形态），要求**对象桶 CORS 放行管理端源站**（与封面截帧同一前提，§2.3）——未配置时表现为「有总时长但一直转圈」（分片请求被浏览器拦截），播放弹窗会在等待超时后给出该提示；`local` 形态分片经分发端流式输出（已带 CORS 头），无需桶配置。播放器为 Video.js v10（与媒资预览同一皮肤），HLS 由 `@videojs/hlsjs-video`（hls.js / MSE）承载，Safari 由 Video.js 自行回退原生 HLS。

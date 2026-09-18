@@ -21,6 +21,8 @@
     "@openvod/storage": "workspace:*",
     "@openvod/transcode": "workspace:*",
     "@tanstack/react-query": "^5.62.0",
+    "@videojs/hlsjs-video": "10.0.0-rc.2",
+    "@videojs/react": "^10.0.0-rc.2",
     "antd": "^5.22.0",
     "better-auth": "^1.2.0",
     "next": "^16.3.5",

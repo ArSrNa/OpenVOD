@@ -1,7 +1,14 @@
-// 模板 → ffmpeg argv 编译器单测（intent.md「转码模板管理」规则 1/2；ADR-0014）
+// 模板 → ffmpeg argv 编译器单测（intent.md「转码模板管理」规则 1–4；ADR-0014）
+// 判定维度 = 分辨率 / 帧率 / 码率：低于源的维度按模板降级；不低于源的维度取源值；
+// 三维度均不低于源 → 跳过；全档跳过由 Worker 走 compileSourceMatched 兜底出片。
 import { describe, expect, test } from "bun:test";
 import { buildKeyInfoFile } from "../src/index";
-import { compileKeepOriginal, compileTemplate, TemplateCompileError } from "../src/template";
+import {
+  compileKeepOriginal,
+  compileSourceMatched,
+  compileTemplate,
+  TemplateCompileError,
+} from "../src/template";
 
 const OPTS = { input: "/tmp/in.mp4", outRoot: "/tmp/out" };
 
@@ -53,14 +60,27 @@ describe("规则 1：只降不升", () => {
     expect(argv[ri + 1]).toBe("30");
   });
 
-  test("目标帧率高于源（帧率升格）：跳过", () => {
+  test("目标帧率高于源（帧率升格）：不补帧 → 分辨率降级时仍执行且 argv 不带 -r", () => {
     const plans = compileTemplate(
       params({ fps: 60, resolutions: [{ mode: "fixed", width: 1280, height: 720 }] }),
       { width: 1920, height: 1080, fps: 30 },
       OPTS,
     );
+    expect(executed(plans)).toHaveLength(1);
+    expect(plans[0].argv).not.toContain("-r");
+    expect(plans[0].width).toBe(1280);
+    expect(plans[0].height).toBe(720);
+  });
+
+  test("帧率升格且分辨率、码率均不低于源 → 三维度无降级：跳过", () => {
+    const plans = compileTemplate(
+      params({ fps: 60, resolutions: [{ mode: "fixed", width: 1920, height: 1080 }] }),
+      { width: 1920, height: 1080, fps: 30, bitrateBps: 4_000_000 },
+      OPTS,
+    );
     expect(skipped(plans)).toHaveLength(1);
     expect(plans[0].skipReason).toContain("帧率升格");
+    expect(plans[0].skipReason).toContain("无降级维度");
   });
 
   test("分辨率降级 + 帧率持平：执行且不写 -r", () => {
@@ -81,9 +101,86 @@ describe("规则 1：只降不升", () => {
     );
     expect(executed(plans)).toHaveLength(1);
   });
+
+  test("码率降级（模板 3Mbps < 源 8Mbps）+ 分辨率持平：执行且分辨率/帧率取源值", () => {
+    const plans = compileTemplate(
+      params({ bitrate_kbps: 3000, resolutions: [{ mode: "fixed", width: 1920, height: 1080 }] }),
+      { width: 1920, height: 1080, fps: 30, bitrateBps: 8_000_000 },
+      OPTS,
+    );
+    expect(executed(plans)).toHaveLength(1);
+    const argv = plans[0].argv!;
+    expect(argv.join(" ")).toContain("-b:v 3000k");
+    expect(argv).not.toContain("-vf"); // 分辨率不低于源 → 不缩放
+    expect(argv).not.toContain("-r"); // 帧率不低于源 → 不补帧
+    expect(plans[0].videoBitrateK).toBe(3000);
+  });
+
+  test("码率高于源：取源码率（不抬码率），分辨率降级仍执行", () => {
+    const plans = compileTemplate(
+      params({ bitrate_kbps: 12000, resolutions: [{ mode: "fixed", width: 1280, height: 720 }] }),
+      { width: 1920, height: 1080, fps: 30, bitrateBps: 8_000_000 },
+      OPTS,
+    );
+    expect(executed(plans)).toHaveLength(1);
+    expect(plans[0].argv!.join(" ")).toContain("-b:v 8000k");
+    expect(plans[0].videoBitrateK).toBe(8000);
+  });
+
+  test("自适应档源已在约束内 + 码率低于源：不再整档跳过，执行且分辨率取源", () => {
+    const plans = compileTemplate(
+      params({ bitrate_kbps: 2000, resolutions: [{ mode: "adaptive", max_width: 1920 }] }),
+      { width: 1600, height: 900, fps: 30, bitrateBps: 6_000_000 },
+      OPTS,
+    );
+    expect(executed(plans)).toHaveLength(1);
+    expect(plans[0].width).toBe(1600);
+    expect(plans[0].height).toBe(900);
+    expect(plans[0].argv).not.toContain("-vf");
+  });
+
+  test("三维度全部不低于源（约束内 + 码率更高）：跳过，原因含三维度说明", () => {
+    const plans = compileTemplate(
+      params({ bitrate_kbps: 9000, resolutions: [{ mode: "adaptive", max_width: 1920 }] }),
+      { width: 1600, height: 900, fps: 30, bitrateBps: 6_000_000 },
+      OPTS,
+    );
+    expect(skipped(plans)).toHaveLength(1);
+    expect(plans[0].skipReason).toContain("约束内");
+    expect(plans[0].skipReason).toContain("码率不低于源");
+    expect(plans[0].skipReason).toContain("无降级维度");
+  });
 });
 
-describe("规则 2：自适应分辨率", () => {
+describe("全档跳过兜底（compileSourceMatched）", () => {
+  test("按模板产出单档：编码器/preset 按模板，分辨率/帧率/码率保持原视频", () => {
+    const plan = compileSourceMatched(
+      params({ codec: "libx265", preset: "fast", bitrate_kbps: 12000 }),
+      { width: 1600, height: 900, fps: 30, bitrateBps: 6_000_000 },
+      OPTS,
+    );
+    expect(plan.skipped).toBe(false);
+    expect(plan.fallback).toBe(true);
+    expect(plan.name).toBe("900p");
+    expect(plan.width).toBe(1600);
+    expect(plan.height).toBe(900);
+    const argv = plan.argv!;
+    expect(argv.join(" ")).toContain("-c:v libx265");
+    expect(argv).not.toContain("-vf"); // 分辨率保持原视频
+    expect(argv).not.toContain("-r"); // 帧率保持原视频
+    expect(argv.join(" ")).toContain("-b:v 6000k"); // 码率取源（模板 12000k 高于源）
+  });
+
+  test("加密模板兜底同样注入 key_info", () => {
+    const plan = compileSourceMatched(params(), { width: 1920, height: 1080, fps: 30 }, {
+      ...OPTS,
+      keyInfoPath: "/tmp/jobs/1/keyinfo",
+    });
+    expect(plan.argv!.join(" ")).toContain("-hls_key_info_file /tmp/jobs/1/keyinfo");
+  });
+});
+
+describe("规则 4：自适应分辨率", () => {
   test("源 2160x1080 + 宽≤1920：等比缩放为 1920x960", () => {
     const plans = compileTemplate(
       params({ resolutions: [{ mode: "adaptive", max_width: 1920 }] }),

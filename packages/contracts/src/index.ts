@@ -64,13 +64,17 @@ export const MediaDetail = MediaListItem.extend({
 export const PlaybackRequest = z.object({
   /** 同媒资未过期会话默认复用；true 则强制新会话 */
   force_new: z.boolean().optional(),
+  /** 指定播放哪套模板产物（proceed/{id}/{templateId}/）；省略时自动选择：唯一产物直接用，多套取默认模板产物 */
+  template_id: z.string().nullable().optional(),
 });
 
 export const PlaybackResponse = z.object({
   sid: z.string(),
-  /** 签名主清单 URL（EO TypeA + 分发端 token，ADR-0005/0006） */
+  /** 签名主清单 URL（分发端 token；query `t` 为清单 token，另带 `tpl` 指明模板产物） */
   manifest_url: z.string(),
   expires_at: z.string(), // ISO 8601
+  /** 实际选用的模板产物 ID；旧布局产物（无模板段）为空字符串 */
+  template_id: z.string(),
 });
 
 export const PageQuery = z.object({
@@ -86,7 +90,7 @@ export const PageResponse = z.object({
 // ---- 转码模板（ADR-0014；管理端与 Worker 共用校验。Go 分发端不消费模板，
 // 故本节 schema 不进 gen-json.ts 清单、不生成 Go struct） ----
 
-/** 分辨率档位：固定宽×高 或 自适应上限约束（intent.md「转码模板管理」规则 2：等比缩放） */
+/** 分辨率档位：固定宽×高 或 自适应上限约束（intent.md「转码模板管理」规则 4：等比缩放） */
 export const TemplateResolution = z.discriminatedUnion("mode", [
   z.object({
     mode: z.literal("fixed"),
@@ -211,13 +215,28 @@ export const TranscodeTemplateSnapshot = z.object({
   params: TranscodeTemplateParams.nullable(),
 });
 
+/** submit 单次最多可选的模板数（每个模板各入队一条任务；products 各落 proceed/{mediaId}/{templateId}/） */
+export const TRANSCODE_SUBMIT_MAX_TEMPLATES = 10;
+
+/** 发起转码：**多选**模板（template_ids）。每个模板独立快照、各自入队一条 transcode_jobs（ADR-0014）。 */
 export const TranscodeSubmitRequest = z.object({
-  template_id: z.string().min(1, "请选择转码模板"),
+  template_ids: z
+    .array(z.string().min(1))
+    .min(1, "请至少选择一个转码模板")
+    .max(TRANSCODE_SUBMIT_MAX_TEMPLATES, `单次最多选择 ${TRANSCODE_SUBMIT_MAX_TEMPLATES} 个模板`),
+});
+
+/** 单条已入队任务（一个模板一条；便于 UI 逐个反馈） */
+export const TranscodeSubmitJob = z.object({
+  job_id: z.string(),
+  template_id: z.string(),
+  template_name: z.string(),
+  status: z.enum(JOB_STATUSES),
 });
 
 export const TranscodeSubmitResponse = z.object({
-  job_id: z.string(),
-  status: z.enum(JOB_STATUSES),
+  /** 已入队任务（顺序与请求 template_ids 去重后一致） */
+  jobs: z.array(TranscodeSubmitJob),
 });
 
 /** 转码任务列表项（管理端「转码任务」页） */
@@ -230,6 +249,8 @@ export const TranscodeJobDTO = z.object({
   /** 取快照里的模板名（模板被删也能追溯） */
   template_name: z.string().nullable(),
   attempts: z.number().int(),
+  /** 分发端是否持有有效租约（执行中）；未认领 / worker 失联（租约过期）时为 false —— 「停止」操作的依据 */
+  lease_active: z.boolean(),
   last_error: z.string().nullable(),
   created_at: z.string(),
   started_at: z.string().nullable(),

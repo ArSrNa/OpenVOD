@@ -159,7 +159,7 @@ model SigningKey {
   alg        String?
   /// 公钥 JWK（JWT 用）
   publicJwk  String?         @map("public_jwk")
-  /// MK(AES-256-GCM) 封装的私钥 JWK（JWT 用）
+  /// MK(AES-256-GCM) 封装的私钥材料（JWT = P-256 标量 32B；hex(MK(scalar))）
   privateEnc String?         @map("private_enc")
   /// MK 封装的对称密钥（URL_SIGN / EO_TYPEA 用）
   secretEnc  String?         @map("secret_enc")

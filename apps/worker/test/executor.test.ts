@@ -258,44 +258,60 @@ describe("M2 执行器", () => {
   );
 
   it.skipIf(!hasFFmpeg)(
-    "全部档位被跳过：任务失败、媒资按既有产物回退、无产物与密钥残留",
+    "全档无降级维度：不失败，按源规格兜底产出一档（分辨率/帧率保持原视频，仍按模板加密）",
     async () => {
       const env = setup();
       await seedSource(env, sourcePathOf(env));
 
-      // 源 320×240，模板要求 1920×1080 → 升格被拒 → 无可用档位
-      await expect(
-        executeClaimedJob(
-          job({
-            ...TEMPLATE_ENCRYPTED,
-            name: "1080p 升格",
-            params: {
-              codec: "libx264",
-              bitrate_kbps: 5000,
-              audio_bitrate_kbps: 128,
-              resolutions: [{ mode: "fixed", width: 1920, height: 1080 }],
-            },
-          }),
-          env.deps,
-        ),
-      ).rejects.toThrow(/所有档位均被跳过/);
+      // 源 320×240：模板固定 1920×1080 属升格（取源分辨率）、码率不低于源 → 三维度均无降级 → 兜底
+      const result = await executeClaimedJob(
+        job({
+          ...TEMPLATE_ENCRYPTED,
+          name: "1080p 升格（兜底）",
+          params: {
+            codec: "libx264",
+            bitrate_kbps: 5000,
+            audio_bitrate_kbps: 128,
+            resolutions: [{ mode: "fixed", width: 1920, height: 1080 }],
+          },
+        }),
+        env.deps,
+      );
 
-      expect(await env.storage.listObjects(`proceed/${MEDIA_ID}/`)).toEqual([]);
-      expect(env.keyStore.rows.size).toBe(0);
-      expect(env.mediaStore.statuses).toEqual(["TRANSCODING", "FAILED"]); // 此前非 READY
-      expect(env.jobStore.statuses).toEqual([]); // 计划阶段即失败，未进入 ENCODING
+      // 判定：1 档跳过 + 1 档兜底执行，源尺寸 320×240
+      expect(result.sourceFallback).toBe(true);
+      expect(result.skipped).toHaveLength(1);
+      expect(result.skipped[0]).toContain("升格");
+      expect(result.variants).toHaveLength(1);
+      expect(result.variants[0]).toMatchObject({ name: "240p", width: 320, height: 240 });
+
+      // 状态机与产物落位（模板子树；兜底档仍按模板加密）
+      expect(env.jobStore.statuses).toEqual(["ENCODING", "PACKAGING", "DONE"]);
+      expect(env.mediaStore.statuses).toEqual(["TRANSCODING", "READY"]);
+      expect(result.encrypted).toBe(true);
+      expect(env.keyStore.rows.size).toBe(1);
+      const keys = (await env.storage.listObjects(`proceed/${MEDIA_ID}/`)).map((o) => o.key);
+      expect(keys).toContain(`${prefixOf(TEMPLATE_A)}/master.m3u8`);
+      expect(keys).toContain(`${prefixOf(TEMPLATE_A)}/240p/index.m3u8`);
+      // 兜底档不缩放（分辨率保持原视频）
+      expect(result.uploadedObjects).toBeGreaterThan(0);
+      const variant = new TextDecoder().decode(
+        await env.storage.get(`${prefixOf(TEMPLATE_A)}/240p/index.m3u8`),
+      );
+      expect(variant).toContain("METHOD=AES-128");
       expect(existsSync(join(env.jobsRoot, JOB_ID))).toBe(false);
       env.cleanup();
     },
-    30_000,
+    45_000,
   );
 
   it.skipIf(!hasFFmpeg)(
-    "重转码：既有 READY 的媒资在失败时保持 READY（旧产物仍可播，不误报失败）",
+    "重转码失败（脏快照）：既有 READY 的媒资保持 READY（旧产物仍可播，不误报失败）",
     async () => {
       const env = setup("READY");
       await seedSource(env, sourcePathOf(env));
 
+      // 脏快照（bitrate 与 crf 并存）→ 快照校验即失败，不进入转码
       await expect(
         executeClaimedJob(
           job({
@@ -303,15 +319,17 @@ describe("M2 执行器", () => {
             params: {
               codec: "libx264",
               bitrate_kbps: 5000,
+              crf: 23,
               audio_bitrate_kbps: 128,
               resolutions: [{ mode: "fixed", width: 1920, height: 1080 }],
             },
           }),
           env.deps,
         ),
-      ).rejects.toThrow(/所有档位均被跳过/);
+      ).rejects.toThrow(/模板快照非法/);
 
       expect(env.mediaStore.statuses).toEqual(["TRANSCODING", "READY"]);
+      expect(env.jobStore.statuses).toEqual([]);
       env.cleanup();
     },
     30_000,

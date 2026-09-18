@@ -79,6 +79,7 @@ async function tick(): Promise<void> {
     const variants = result.variants.map((v) => `${v.name}(${v.files} 文件)`).join(" / ");
     console.log(
       `[worker] 任务 ${job.id} 完成：${variants}${result.encrypted ? "｜AES-128 加密" : ""}` +
+        `${result.sourceFallback ? "｜按源规格兜底产出（无降级维度）" : ""}` +
         `｜上传 ${result.uploadedObjects} 个对象` +
         `${result.deletedStaleObjects ? `｜清理旧产物 ${result.deletedStaleObjects} 个` : ""}`,
     );

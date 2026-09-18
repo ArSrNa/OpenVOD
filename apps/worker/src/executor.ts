@@ -16,6 +16,7 @@ import type { StorageAdapter } from "@openvod/storage";
 import {
   buildMasterPlaylist,
   compileKeepOriginal,
+  compileSourceMatched,
   compileTemplate,
   ffprobeJSON,
   runFFmpeg,
@@ -57,8 +58,10 @@ export interface ExecutedVariant {
 
 export interface ExecuteJobResult {
   variants: ExecutedVariant[];
-  /** 被判定跳过的档位（升格 / 与源持平 / 源已满足约束） */
+  /** 被判定跳过的档位（三维度均不低于源） */
   skipped: string[];
+  /** 该模板全部档位均无降级维度 → 已按源规格兜底产出一档（分辨率 / 帧率 / 码率保持原视频） */
+  sourceFallback: boolean;
   encrypted: boolean;
   /** 密钥行是否替换了既有行（encrypted=false 时为 null；复用已有密钥时为 null） */
   replacedKey: boolean | null;
@@ -103,33 +106,55 @@ function estimateVideoKbps(height: number, declared?: number | null): number {
   return 800;
 }
 
-/** 按模板快照编译逐档计划（keep_original = 只加密流程，单档 -c copy） */
+/**
+ * 按模板快照编译逐档计划（keep_original = 只加密流程，单档 -c copy）。
+ * 常规模板若**全部档位均无降级维度**（分辨率 / 帧率 / 码率都 ≥ 源），
+ * 不空手失败：追加一档「源规格兜底」（compileSourceMatched）——编码器 / 加密按模板，
+ * 分辨率 / 帧率 / 码率保持原视频（intent 规则 3，2026-09-18 修订）。
+ */
 function buildPlans(
   snapshot: TranscodeSnapshot,
   source: SourceInfo,
   opts: { input: string; outRoot: string; keyInfoPath?: string; hlsTimeSec: number },
-): { plans: VariantPlan[]; entries: LadderEntry[] } {
-  const plans: VariantPlan[] = snapshot.keep_original
-    ? [
-        {
-          name: source.height > 0 ? `${source.height}p` : "source",
-          width: source.width,
-          height: source.height,
-          skipped: false,
-          argv: compileKeepOriginal({
-            input: opts.input,
-            outDir: `${opts.outRoot}/${source.height > 0 ? `${source.height}p` : "source"}`,
-            keyInfoPath: opts.keyInfoPath,
-            hlsTimeSec: opts.hlsTimeSec,
-          }),
-        },
-      ]
-    : compileTemplate(snapshot.params, source, {
-        input: opts.input,
-        outRoot: opts.outRoot,
-        keyInfoPath: opts.keyInfoPath,
-        hlsTimeSec: opts.hlsTimeSec,
-      });
+): { plans: VariantPlan[]; entries: LadderEntry[]; sourceFallback: boolean } {
+  let plans: VariantPlan[];
+  let sourceFallback = false;
+
+  if (snapshot.keep_original) {
+    plans = [
+      {
+        name: source.height > 0 ? `${source.height}p` : "source",
+        width: source.width,
+        height: source.height,
+        skipped: false,
+        argv: compileKeepOriginal({
+          input: opts.input,
+          outDir: `${opts.outRoot}/${source.height > 0 ? `${source.height}p` : "source"}`,
+          keyInfoPath: opts.keyInfoPath,
+          hlsTimeSec: opts.hlsTimeSec,
+        }),
+      },
+    ];
+  } else {
+    plans = compileTemplate(snapshot.params, source, {
+      input: opts.input,
+      outRoot: opts.outRoot,
+      keyInfoPath: opts.keyInfoPath,
+      hlsTimeSec: opts.hlsTimeSec,
+    });
+    if (plans.every((p) => p.skipped)) {
+      plans = [
+        ...plans,
+        compileSourceMatched(snapshot.params, source, {
+          input: opts.input,
+          outRoot: opts.outRoot,
+          keyInfoPath: opts.keyInfoPath,
+          hlsTimeSec: opts.hlsTimeSec,
+        }),
+      ];
+      sourceFallback = true;
+    }
+  }
 
   const params = (snapshot.params ?? null) as { bitrate_kbps?: number; audio_bitrate_kbps?: number } | null;
   const entries: LadderEntry[] = plans
@@ -138,10 +163,10 @@ function buildPlans(
       name: p.name,
       width: p.width,
       height: p.height,
-      videoBitrateK: estimateVideoKbps(p.height, params?.bitrate_kbps ?? null),
+      videoBitrateK: p.videoBitrateK ?? estimateVideoKbps(p.height, params?.bitrate_kbps ?? null),
       audioBitrateK: params?.audio_bitrate_kbps ?? 128,
     }));
-  return { plans, entries };
+  return { plans, entries, sourceFallback };
 }
 
 /** local 直读文件路径；s3 走预签名 GET（字节不经 Worker 落盘，ffmpeg 原生支持 http 输入） */
@@ -244,6 +269,8 @@ export async function executeClaimedJob(
       width: summary.video?.width ?? 0,
       height: summary.video?.height ?? 0,
       fps: summary.video?.fps ?? null,
+      // 码率维度判定用：优先视频轨码率，缺失回退容器总码率（intent 规则 1 三维度判定）
+      bitrateBps: summary.video?.bitrate ?? summary.bitrate ?? null,
     };
     if (!source.width || !source.height) {
       throw new JobExecutionError("探测失败：未能取得视频分辨率（可能不是有效视频文件）");
@@ -269,14 +296,23 @@ export async function executeClaimedJob(
       keyInfoPath = paths.keyInfoPath;
     }
 
-    // 3) 编译计划（升格 / 持平档在此被跳过）
-    const { plans, entries } = buildPlans(snapshot, source, { input, outRoot, keyInfoPath, hlsTimeSec });
+    // 3) 编译计划（三维度均不低于源的档位在此被跳过；全档跳过则按源规格兜底出一档）
+    const { plans, entries, sourceFallback } = buildPlans(snapshot, source, {
+      input,
+      outRoot,
+      keyInfoPath,
+      hlsTimeSec,
+    });
     const executed = plans.filter((p) => !p.skipped && p.argv);
     const skipped = plans.filter((p) => p.skipped).map((p) => `${p.name}：${p.skipReason ?? "跳过"}`);
     if (!executed.length) {
+      // 防御性兜底：keep_original 与 compileSourceMatched 都必产一档，正常不会走到这里
       throw new JobExecutionError(`所有档位均被跳过，无可用输出（${skipped.join("；") || "模板未产出任何档位"}）`);
     }
     for (const reason of skipped) log(`任务 ${job.id}：跳过 ${reason}`);
+    if (sourceFallback) {
+      log(`任务 ${job.id}：模板档位均无降级维度（分辨率 / 帧率 / 码率 ≥ 源），已按源规格兜底产出一档`);
+    }
 
     // 4) 逐档转码（顺序执行：转码是 CPU 密集，v1 不做并行以免打满容器）
     await deps.jobStore.setStatus(job.id, "ENCODING");
@@ -316,6 +352,7 @@ export async function executeClaimedJob(
         files: [...keys].filter((k) => k.startsWith(`${prefix}/${p.name}/`)).length,
       })),
       skipped,
+      sourceFallback,
       encrypted: Boolean(key),
       replacedKey,
       keyReused: Boolean(key?.reused),

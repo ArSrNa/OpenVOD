@@ -2,11 +2,16 @@
 
 // 转码任务页（/jobs，M2；ADR-0008 队列 + ADR-0014 模板快照）：
 // 列表来自 transcode_jobs，展示状态机（排队 → 探测 → 转码 → 封装上传 → 完成/失败）、
-// 模板名（取任务快照，模板被删也能追溯）与失败原因；支持自动刷新观察执行进度。
-import { ReloadOutlined, ThunderboltOutlined } from "@ant-design/icons";
+// 模板名（取任务快照，模板被删也能追溯）与失败原因；
+// 操作：**停止**（取消：排队中的撤下队列；worker 失联的安全终止，spec.md §5.1）与
+// **重启**（失败 / 手动停止的任务清零尝试次数重新入队）。
+// 实时性走 SSE（/api/admin/jobs/stream，spec.md §2.1）：客户端零轮询，服务端仅在快照变化时推全量，
+// 断线由 EventSource 自动重连（重连即拿最新快照）；「耗时」列用本地时钟每秒重算，不产生请求。
+import { ReloadOutlined, StopOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { ProCard } from "@ant-design/pro-components";
-import { App, Button, Empty, Space, Switch, Table, Tag, Tooltip, Typography } from "antd";
+import { App, Button, Empty, Space, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
+import { jobActionState } from "@/lib/job-actions";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTableBodyHeight } from "./tableScroll";
 
@@ -18,6 +23,8 @@ interface JobItem {
   template_id: string | null;
   template_name: string | null;
   attempts: number;
+  /** 分发端是否持有有效租约（执行中）；未认领 / worker 失联时为 false */
+  lease_active: boolean;
   last_error: string | null;
   created_at: string;
   started_at: string | null;
@@ -35,68 +42,124 @@ const STATUS_META: Record<string, { color: string; label: string }> = {
 
 const ACTIVE = new Set(["QUEUED", "PROBING", "ENCODING", "PACKAGING"]);
 
+/** SSE 连接状态：网络类断线浏览器自动重连；HTTP 非 200（如会话过期）会永久关闭，需人工刷新 */
+type ConnState = "connecting" | "live" | "error" | "closed";
+
+const CONN_META: Record<ConnState, { color: string; label: string }> = {
+  connecting: { color: "default", label: "连接中…" },
+  live: { color: "success", label: "实时推送中" },
+  error: { color: "warning", label: "连接中断，自动重连中…" },
+  closed: { color: "error", label: "连接已断开（会话可能过期），请刷新页面" },
+};
+
 function formatTime(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString("zh-CN", { hour12: false });
 }
 
-/** 耗时（开始 → 完成；未完成则显示已耗时） */
-function duration(item: JobItem): string {
+/** 耗时（开始 → 完成；未完成则显示已耗时，now 由本地时钟每秒推进） */
+function duration(item: JobItem, now: number): string {
   if (!item.started_at) return "—";
   const start = new Date(item.started_at).getTime();
-  const end = item.finished_at ? new Date(item.finished_at).getTime() : Date.now();
+  const end = item.finished_at ? new Date(item.finished_at).getTime() : now;
   const sec = Math.max(0, Math.round((end - start) / 1000));
   if (sec < 60) return `${sec} s`;
   return `${Math.floor(sec / 60)} min ${sec % 60} s`;
 }
 
-async function parseError(res: Response): Promise<string> {
-  try {
-    const body = (await res.json()) as { error?: { message?: string } };
-    return body?.error?.message ?? `请求失败（HTTP ${res.status}）`;
-  } catch {
-    return `请求失败（HTTP ${res.status}）`;
-  }
-}
-
 export function JobsManager() {
-  const { message } = App.useApp();
   // 表格滚动约定（spec.md §3.0）
   const tableRef = useRef<HTMLDivElement>(null);
   const bodyHeight = useTableBodyHeight(tableRef);
   const [items, setItems] = useState<JobItem[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [auto, setAuto] = useState(true);
+  const [loading, setLoading] = useState(true); // 首帧快照到达前
+  const [conn, setConn] = useState<ConnState>("connecting");
+  const [reconnect, setReconnect] = useState(0); // 手动刷新 = 重建 SSE 连接（服务端随即回放最新快照）
+  const [now, setNow] = useState(() => Date.now()); // 仅驱动「耗时」列重算，不发请求
 
-  const reload = useCallback(
-    async (silent = false) => {
-      if (!silent) setLoading(true);
-      try {
-        const res = await fetch("/api/admin/jobs", { cache: "no-store" });
-        if (!res.ok) throw new Error(await parseError(res));
-        const data = (await res.json()) as { items: JobItem[] };
-        setItems(data.items ?? []);
-      } catch (e) {
-        if (!silent) message.error((e as Error).message);
-      } finally {
-        if (!silent) setLoading(false);
-      }
-    },
-    [message],
-  );
-
+  // SSE：连上即收到全量快照（event: jobs），之后仅在服务端观察到变化时收帧；断线自动重连
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    setConn("connecting");
+    const es = new EventSource("/api/admin/jobs/stream");
+    const onJobs = (ev: MessageEvent) => {
+      try {
+        const data = JSON.parse(ev.data as string) as { items?: JobItem[] };
+        setItems(data.items ?? []);
+        setLoading(false);
+        setConn("live");
+      } catch {
+        // 单帧坏数据忽略：下一帧是全量覆盖，可自愈
+      }
+    };
+    es.addEventListener("jobs", onJobs);
+    es.onopen = () => setConn("live");
+    // 网络类错误 → readyState=CONNECTING，浏览器按 retry 自动重连（重连即重新校验会话）；
+    // HTTP 非 200（如 401）→ readyState=CLOSED，浏览器不再重试，提示人工刷新
+    es.onerror = () => setConn(es.readyState === EventSource.CLOSED ? "closed" : "error");
+    return () => {
+      es.removeEventListener("jobs", onJobs);
+      es.close();
+    };
+  }, [reconnect]);
 
-  // 自动刷新：仅在存在未终结任务时轮询，避免空转
+  // 「耗时」列：存在未终结任务时用本地时钟每秒重算（纯展示，零网络请求）
   const hasActive = items.some((i) => ACTIVE.has(i.status));
   useEffect(() => {
-    if (!auto) return;
-    const timer = setInterval(() => void reload(true), 5000);
+    if (!hasActive) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [auto, reload]);
+  }, [hasActive]);
+
+  // ---- 停止 / 重启（spec.md §5.1）：写入后由 SSE 自动推送新状态，无需手动刷新 ----
+  const { message, modal } = App.useApp();
+
+  const callAction = useCallback(async (id: string, action: "stop" | "restart") => {
+    const res = await fetch(`/api/admin/jobs/${id}/${action}`, { method: "POST" });
+    if (!res.ok) {
+      const body = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
+      throw new Error(body?.error?.message ?? `请求失败（HTTP ${res.status}）`);
+    }
+  }, []);
+
+  const handleStop = (row: JobItem) => {
+    modal.confirm({
+      title: `确认停止任务 ${row.id.slice(0, 12)}…？`,
+      content: (
+        <Typography.Text type="danger">
+          停止后任务标记为失败：排队中的不再执行；执行中（worker 失联）的安全终止。之后可用「重启」重新入队。
+        </Typography.Text>
+      ),
+      okText: "停止",
+      okButtonProps: { danger: true },
+      cancelText: "取消",
+      onOk: async () => {
+        try {
+          await callAction(row.id, "stop");
+          message.success("任务已停止");
+        } catch (e) {
+          message.error(e instanceof Error ? e.message : "停止失败");
+        }
+      },
+    });
+  };
+
+  const handleRestart = (row: JobItem) => {
+    modal.confirm({
+      title: `确认重启任务 ${row.id.slice(0, 12)}…？`,
+      content: <Typography.Text>将清零尝试次数并重新入队（排队中），由 worker 认领执行。</Typography.Text>,
+      okText: "重启",
+      cancelText: "取消",
+      onOk: async () => {
+        try {
+          await callAction(row.id, "restart");
+          message.success("任务已重新入队");
+        } catch (e) {
+          message.error(e instanceof Error ? e.message : "重启失败");
+        }
+      },
+    });
+  };
 
   const columns: ColumnsType<JobItem> = [
     {
@@ -129,10 +192,22 @@ export function JobsManager() {
     {
       title: "状态",
       dataIndex: "status",
-      width: 120,
-      render: (status: string) => {
+      width: 130,
+      render: (status: string, row) => {
         const meta = STATUS_META[status] ?? { color: "default", label: status };
-        return <Tag color={meta.color}>{meta.label}</Tag>;
+        const st = jobActionState({ status: row.status, leaseActive: row.lease_active });
+        return (
+          <Space size={4}>
+            <Tag color={meta.color}>{meta.label}</Tag>
+            {st.leaseExpired && (
+              <Tooltip title="worker 失联：租约已过期，任务不会再被继续执行；可停止，或重启 worker 后等待重派">
+                <Tag color="warning" style={{ marginInlineEnd: 0 }}>
+                  中断
+                </Tag>
+              </Tooltip>
+            )}
+          </Space>
+        );
       },
     },
     {
@@ -147,7 +222,7 @@ export function JobsManager() {
       title: "耗时",
       key: "duration",
       width: 110,
-      render: (_, row) => duration(row),
+      render: (_, row) => duration(row, now),
     },
     {
       title: "失败原因",
@@ -174,20 +249,44 @@ export function JobsManager() {
         </Typography.Text>
       ),
     },
+    {
+      title: "操作",
+      key: "ops",
+      width: 150,
+      render: (_, row) => {
+        const st = jobActionState({ status: row.status, leaseActive: row.lease_active });
+        if (!st.canStop && !st.canRestart) {
+          return (
+            <Tooltip title={st.stopBlocked ?? st.restartBlocked ?? "—"}>
+              <Typography.Text type="secondary">—</Typography.Text>
+            </Tooltip>
+          );
+        }
+        return (
+          <Space size={0}>
+            {st.canStop && (
+              <Button danger type="link" size="small" icon={<StopOutlined />} onClick={() => handleStop(row)}>
+                停止
+              </Button>
+            )}
+            {st.canRestart && (
+              <Button type="link" size="small" icon={<ReloadOutlined />} onClick={() => handleRestart(row)}>
+                重启
+              </Button>
+            )}
+          </Space>
+        );
+      },
+    },
   ];
 
   return (
     <ProCard bordered={false}>
       <Space style={{ marginBottom: 16 }} wrap>
-        <Button icon={<ReloadOutlined />} onClick={() => void reload()} loading={loading}>
+        <Button icon={<ReloadOutlined />} onClick={() => setReconnect((n) => n + 1)} loading={loading}>
           刷新
         </Button>
-        <Space size={6}>
-          <Switch checked={auto} onChange={setAuto} size="small" />
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            自动刷新（5s）
-          </Typography.Text>
-        </Space>
+        <Tag color={CONN_META[conn].color}>{CONN_META[conn].label}</Tag>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           <ThunderboltOutlined /> 任务由 Worker 认领执行；同一媒资同时只允许一个进行中的任务（发起入口在「媒资管理 → 更多 → 转码」）
         </Typography.Text>
@@ -201,8 +300,7 @@ export function JobsManager() {
           loading={loading}
           pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 个任务` }}
           size="middle"
-          scroll={{ x: 1180, y: bodyHeight }}
-          rowClassName={(row) => (hasActive && ACTIVE.has(row.status) ? "" : "")}
+          scroll={{ x: 1330, y: bodyHeight }}
           locale={{
             emptyText: <Empty description="暂无转码任务（在「媒资管理 → 更多 → 转码」发起）" />,
           }}

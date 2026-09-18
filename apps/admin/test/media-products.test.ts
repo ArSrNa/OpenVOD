@@ -1,7 +1,8 @@
 // 转码产物按模板归组单测（spec.md §1.3/§1.4）
-// 覆盖：新布局（proceed/{id}/{模板id}/）、多模板并存、旧布局兼容、保留段（subtitles）排除、跨媒资不串组。
+// 覆盖：新布局（proceed/{id}/{模板id}/）、多模板并存、旧布局兼容、保留段（subtitles）排除、跨媒资不串组；
+// 以及按模板删除产物的目标键选择（selectProductObjectKeys，接口 /api/admin/media/[id]/products/[templateId]）。
 import { describe, expect, it } from "bun:test";
-import { groupProductsByMedia } from "../src/lib/media-products";
+import { groupProductsByMedia, selectProductObjectKeys } from "../src/lib/media-products";
 
 const o = (key: string, size = 100) => ({ key, size });
 
@@ -72,5 +73,40 @@ describe("proceed 产物按模板归组", () => {
     expect(first[0].templateId).toBe("cmu6tpla0001mqe4uoyceqt3"); // 有模板 ID 的在前
     expect(first[1].templateId).toBe(""); // 旧布局兜底在后
     expect(map.get("00000002")!).toHaveLength(1);
+  });
+});
+
+describe("selectProductObjectKeys（按模板删除的键选择）", () => {
+  const media = "00000123";
+  const tplA = "cmu6tpla0001mqe4uoyceqt3";
+  const tplB = "cmu6tplb0002mqe4uoyceqt3";
+  const objs = [
+    o(`proceed/${media}/${tplA}/master.m3u8`, 300),
+    o(`proceed/${media}/${tplA}/1080p/seg-00000.ts`, 1000),
+    o(`proceed/${media}/${tplB}/master.m3u8`, 300),
+    o(`proceed/${media}/master.m3u8`, 300), // 旧布局
+    o(`proceed/${media}/720p/seg-00000.ts`, 700), // 旧布局
+    o(`proceed/${media}/subtitles/cmabc0001mqe4uoyceqt3.vtt`, 50), // 保留段
+    o(`proceed/00000999/${tplA}/master.m3u8`, 300), // 跨媒资
+    o(`original/${media}.mp4`, 999), // 非 proceed 分区
+  ];
+
+  it("按模板：只选该模板子树（其它模板 / 旧布局 / 保留段 / 跨媒资 / original 不动）", () => {
+    expect(selectProductObjectKeys(objs, media, tplA).map((x) => x.key)).toEqual([
+      `proceed/${media}/${tplA}/master.m3u8`,
+      `proceed/${media}/${tplA}/1080p/seg-00000.ts`,
+    ]);
+  });
+
+  it("旧布局（templateId 为空）：只选无模板段且非保留段的顶层对象", () => {
+    expect(selectProductObjectKeys(objs, media, "").map((x) => x.key)).toEqual([
+      `proceed/${media}/master.m3u8`,
+      `proceed/${media}/720p/seg-00000.ts`,
+    ]);
+  });
+
+  it("模板不存在 / 无旧布局产物 → 空数组（接口据此返回 404）", () => {
+    expect(selectProductObjectKeys(objs, media, "cnotexist0001mqe4uoyceqt3")).toEqual([]);
+    expect(selectProductObjectKeys([o(`proceed/${media}/${tplA}/master.m3u8`)], media, "")).toEqual([]);
   });
 });

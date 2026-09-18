@@ -449,7 +449,7 @@ export function TemplatesManager() {
                 <Form.Item
                   name="fps"
                   label="目标帧率"
-                  tooltip="留空保持源帧率；降帧率（如 60→30）会执行，升格不会"
+                  tooltip="留空保持源帧率；降帧率（如 60→30）会执行，升格不补帧（取源帧率）"
                 >
                   <InputNumber min={1} max={240} precision={0} placeholder="保持源" style={{ width: 120 }} />
                 </Form.Item>
@@ -555,7 +555,7 @@ function ResolutionRow({
           <Form.Item name={[fieldKey, "max_height"]} noStyle>
             <InputNumber min={16} max={4320} precision={0} placeholder="高度上限" style={{ width: 130 }} />
           </Form.Item>
-          <Tooltip title="等比缩放至约束内；源已在约束内则该档跳过（intent 规则 2）">
+          <Tooltip title="等比缩放至约束内；源已在约束内则分辨率取源值，是否执行按分辨率 / 帧率 / 码率三维度合并判定（intent 规则 4）">
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               上限约束（至少填一项）
             </Typography.Text>

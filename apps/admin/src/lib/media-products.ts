@@ -25,6 +25,36 @@ export interface MediaProduct {
 
 const PROCEED_UNDER_MEDIA_RE = new RegExp(`^${STORAGE_PARTITIONS.proceed}/(${MEDIA_ID_CHARS})/(.+)$`);
 
+/** 旧布局产物在 URL / 表单里的占位 ID（该层没有模板段；spec.md §1.3） */
+export const PRODUCT_LEGACY_ID = "legacy";
+
+/**
+ * 选出「删除这份产物」要删的对象键（纯函数，spec.md §1.3/§5.5）：
+ *   - templateId = cuid：只选该模板子树 `proceed/{id}/{templateId}/**`
+ *   - templateId = ""（旧布局）：选 `proceed/{id}/` 下所有**不属于**任何模板子树、也非保留段的对象
+ * 保留段（`subtitles/`）永不入选。
+ */
+export function selectProductObjectKeys(
+  objs: StorageObject[],
+  mediaId: string,
+  templateId: string,
+): StorageObject[] {
+  const out: StorageObject[] = [];
+  for (const o of objs) {
+    const m = PROCEED_UNDER_MEDIA_RE.exec(o.key);
+    if (!m || m[1] !== mediaId) continue;
+    const head = m[2].split("/")[0];
+    if ((PROCEED_RESERVED_SEGMENTS as readonly string[]).includes(head)) continue;
+    const isTemplate = TEMPLATE_ID_PATTERN.test(head);
+    if (templateId) {
+      if (isTemplate && head === templateId) out.push(o);
+    } else if (!isTemplate) {
+      out.push(o);
+    }
+  }
+  return out;
+}
+
 /**
  * 把 `proceed/` 分区对象按「媒资 → 模板」归组（一次遍历）。
  * 目录名匹配 cuid 视为模板产物；其余（旧布局的 `1080p/` 等）归入空模板 ID；

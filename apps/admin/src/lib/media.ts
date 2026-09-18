@@ -8,10 +8,16 @@ import {
   MEDIA_ID_PATTERN,
   STORAGE_KEYS,
   STORAGE_PARTITIONS,
+  TEMPLATE_ID_PATTERN,
   generateMediaId,
   resolveMediaIdLength,
 } from "@openvod/shared";
-import { groupProductsByMedia, type MediaProduct } from "./media-products";
+import {
+  PRODUCT_LEGACY_ID,
+  groupProductsByMedia,
+  selectProductObjectKeys,
+  type MediaProduct,
+} from "./media-products";
 import { getDb } from "@openvod/db";
 import { NextResponse } from "next/server";
 import { getStorage } from "./storage";
@@ -348,6 +354,51 @@ export async function deleteMedia(id: string): Promise<{ removed: boolean }> {
     }
   }
   return { removed };
+}
+
+// ---- 删除某套转码产物（proceed/{id}/{模板id}/ 子树；spec.md §1.3/§5.5） ----
+
+/** 未终结任务状态（与 spec.md §5.1 状态机一致；此处独立常量避免与 transcode.ts 循环引用） */
+const ACTIVE_JOB_STATUSES = ["QUEUED", "PROBING", "ENCODING", "PACKAGING"] as const;
+
+/**
+ * 删除一份模板产物（按模板粒度，不动其它模板子树）：
+ *   - 只删存储对象：`hls_keys`（每媒资一份，可能被其它模板产物共用）与 `transcode_jobs` 历史一律保留；
+ *   - 同媒资同模板存在未终结任务时拒绝（Worker 上传与删除会互相打架，spec.md §5.1）；
+ *   - 旧布局（无模板段）用 PRODUCT_LEGACY_ID 触发，只删散落在 `proceed/{id}/` 顶层、非保留段的对象。
+ */
+export async function deleteMediaProduct(
+  id: string,
+  templateId: string,
+): Promise<{ deleted: number; bytes: number }> {
+  assertMediaId(id);
+  const tpl = templateId === PRODUCT_LEGACY_ID ? "" : templateId;
+  if (tpl && !TEMPLATE_ID_PATTERN.test(tpl)) {
+    throw new MediaError("bad_request", `模板 ID 形状非法：${templateId}`, 400);
+  }
+  if (tpl) {
+    const active = await db.transcodeJob
+      .findFirst({
+        where: { mediaId: id, templateId: tpl, status: { in: [...ACTIVE_JOB_STATUSES] } },
+        select: { id: true },
+      })
+      .catch(() => null);
+    if (active) {
+      throw new MediaError(
+        "bad_request",
+        `该模板存在进行中的转码任务（${active.id}），请等待其完成或失败后再删除产物`,
+        409,
+      );
+    }
+  }
+  const storage = getStorage();
+  const objs = await storage.listObjects(`${STORAGE_PARTITIONS.proceed}/${id}/`);
+  const targets = selectProductObjectKeys(objs, id, tpl);
+  if (!targets.length) {
+    throw new MediaError("not_found", "该产物不存在或已被删除", 404);
+  }
+  await Promise.all(targets.map((o) => storage.delete(o.key)));
+  return { deleted: targets.length, bytes: targets.reduce((sum, o) => sum + o.size, 0) };
 }
 
 // ---- 封面（上传到 cover/{id}/poster.{ext} 并回写 DB posterKey） ----

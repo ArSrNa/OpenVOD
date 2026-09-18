@@ -18,6 +18,11 @@ const hasFFmpeg = Boolean(Bun.which("ffmpeg"));
 const MK = parseMasterKeys(`1:${"c".repeat(64)}`);
 const MEDIA_ID = "00000123";
 const JOB_ID = "job_m2_test";
+/** 产物目录名 = 模板 ID（cuid 形状，spec.md §1.3） */
+const TEMPLATE_A = "cmu6tpla0001mqe4uoyceqt3";
+const TEMPLATE_B = "cmu6tplb0002mqe4uoyceqt3";
+/** 本模板产物的落位前缀 */
+const prefixOf = (templateId: string) => `proceed/${MEDIA_ID}/${templateId}`;
 
 // ---- 假 DB（依赖注入点，避免测试依赖真实 MySQL/SQLite 表结构） ----
 
@@ -135,7 +140,7 @@ function job(snapshot: Record<string, unknown>): TranscodeJobRow {
     id: JOB_ID,
     mediaId: MEDIA_ID,
     status: "PROBING",
-    templateId: "tpl_test",
+    templateId: (snapshot.template_id as string | undefined) ?? null,
     templateSnapshot: snapshot,
     attempts: 1,
     startedAt: new Date(),
@@ -144,7 +149,7 @@ function job(snapshot: Record<string, unknown>): TranscodeJobRow {
 
 /** 自适应 200 宽 + AES-128：源 320×240 → 目标 200×150（等比缩小后取偶） */
 const TEMPLATE_ENCRYPTED = {
-  template_id: "tpl_test",
+  template_id: TEMPLATE_A,
   name: "200p 加密",
   keep_original: false,
   encrypt: true,
@@ -170,8 +175,8 @@ describe("M2 执行器", () => {
     async () => {
       const env = setup();
       await seedSource(env, sourcePathOf(env));
-      // 预置一份"上次转码"留下的陈旧产物，验证会被清理
-      await env.storage.put(`proceed/${MEDIA_ID}/old/seg-00001.ts`, "stale", "video/mp2t");
+      // 预置一份"上次转码"留下的陈旧产物（同一模板子树内），验证会被清理
+      await env.storage.put(`${prefixOf(TEMPLATE_A)}/old/seg-00001.ts`, "stale", "video/mp2t");
 
       const result = await executeClaimedJob(job(TEMPLATE_ENCRYPTED), env.deps);
 
@@ -180,6 +185,9 @@ describe("M2 执行器", () => {
       expect(result.variants[0]).toMatchObject({ name: "150p", width: 200, height: 150 });
       expect(result.encrypted).toBe(true);
       expect(result.replacedKey).toBe(false);
+      expect(result.keyReused).toBe(false);
+      // 产物按「媒资 → 模板」两级落位（spec.md §1.3）
+      expect(result.outputPrefix).toBe(prefixOf(TEMPLATE_A));
       expect(env.jobStore.statuses).toEqual(["ENCODING", "PACKAGING", "DONE"]);
       expect(env.mediaStore.statuses).toEqual(["TRANSCODING", "READY"]);
       expect(result.deletedStaleObjects).toBe(1);
@@ -188,20 +196,22 @@ describe("M2 执行器", () => {
       const probe = env.mediaStore.probe as { video: { width: number; height: number } };
       expect(probe.video).toMatchObject({ width: 320, height: 240 });
 
-      // 3) 产物落位：master + 变体清单 + 分片，且旧目录已被清掉
+      // 3) 产物落位：{模板id}/master + {模板id}/{变体}/清单 + 分片，且本模板子树内的旧目录已被清掉
       const objects = (await env.storage.listObjects(`proceed/${MEDIA_ID}/`)).map((o) => o.key);
-      expect(objects).toContain(`proceed/${MEDIA_ID}/master.m3u8`);
-      expect(objects).toContain(`proceed/${MEDIA_ID}/150p/index.m3u8`);
+      expect(objects).toContain(`${prefixOf(TEMPLATE_A)}/master.m3u8`);
+      expect(objects).toContain(`${prefixOf(TEMPLATE_A)}/150p/index.m3u8`);
       const segments = objects.filter((k) => k.endsWith(".ts"));
       expect(segments.length).toBeGreaterThan(0);
       expect(objects.some((k) => k.includes("/old/"))).toBe(false);
 
       // 4) 主清单带宽/分辨率与子清单加密标签（IV 不得出现双重 0x）
-      const master = new TextDecoder().decode(await env.storage.get(`proceed/${MEDIA_ID}/master.m3u8`));
+      const master = new TextDecoder().decode(
+        await env.storage.get(`${prefixOf(TEMPLATE_A)}/master.m3u8`),
+      );
       expect(master).toContain("RESOLUTION=200x150");
       expect(master).toContain("150p/index.m3u8");
       const variant = new TextDecoder().decode(
-        await env.storage.get(`proceed/${MEDIA_ID}/150p/index.m3u8`),
+        await env.storage.get(`${prefixOf(TEMPLATE_A)}/150p/index.m3u8`),
       );
       expect(variant).toContain("METHOD=AES-128");
       expect(variant).toContain("IV=0x");
@@ -236,9 +246,10 @@ describe("M2 执行器", () => {
 
       expect(result.encrypted).toBe(false);
       expect(result.replacedKey).toBeNull();
+      expect(result.keyReused).toBe(false);
       expect(env.keyStore.rows.size).toBe(0);
       const variant = new TextDecoder().decode(
-        await env.storage.get(`proceed/${MEDIA_ID}/150p/index.m3u8`),
+        await env.storage.get(`${prefixOf(TEMPLATE_A)}/150p/index.m3u8`),
       );
       expect(variant).not.toContain("EXT-X-KEY");
       env.cleanup();
@@ -304,5 +315,71 @@ describe("M2 执行器", () => {
       env.cleanup();
     },
     30_000,
+  );
+
+  it.skipIf(!hasFFmpeg)(
+    "多模板并存：两套产物互不覆盖、共用同一份 CEK、清理只作用于本模板子树",
+    async () => {
+      const env = setup();
+      await seedSource(env, sourcePathOf(env));
+
+      // 模板 A 出一套
+      const a = await executeClaimedJob(job(TEMPLATE_ENCRYPTED), env.deps);
+      expect(a.outputPrefix).toBe(prefixOf(TEMPLATE_A));
+      expect(a.keyReused).toBe(false);
+      const kidAfterA = env.keyStore.rows.get(MEDIA_ID)!.kid;
+      // A 子树里留一个"上次转码"的旧档位，稍后重转 A 时应被清掉
+      await env.storage.put(`${prefixOf(TEMPLATE_A)}/old/seg-00001.ts`, "stale", "video/mp2t");
+
+      // 模板 B 再出一套（不同档位）
+      const b = await executeClaimedJob(
+        job({
+          ...TEMPLATE_ENCRYPTED,
+          template_id: TEMPLATE_B,
+          name: "120p 加密",
+          // 自适应 160 宽 → 源 320×240 等比缩放为 160×120 → 变体目录按输出高度命名即 120p
+          params: { ...TEMPLATE_ENCRYPTED.params, resolutions: [{ mode: "adaptive", max_width: 160 }] },
+        }),
+        env.deps,
+      );
+      expect(b.outputPrefix).toBe(prefixOf(TEMPLATE_B));
+      // 复用同一份密钥：不新增/替换密钥行 → 不会让 A 的密文失效
+      expect(b.keyReused).toBe(true);
+      expect(b.replacedKey).toBeNull();
+      expect(env.keyStore.rows.size).toBe(1);
+      expect(env.keyStore.rows.get(MEDIA_ID)!.kid).toBe(kidAfterA);
+
+      // 两套产物并存（B 的转码没有清掉 A）
+      const keys = (await env.storage.listObjects(`proceed/${MEDIA_ID}/`)).map((o) => o.key);
+      expect(keys).toContain(`${prefixOf(TEMPLATE_A)}/master.m3u8`);
+      expect(keys).toContain(`${prefixOf(TEMPLATE_A)}/150p/index.m3u8`);
+      expect(keys).toContain(`${prefixOf(TEMPLATE_B)}/master.m3u8`);
+      expect(keys).toContain(`${prefixOf(TEMPLATE_B)}/120p/index.m3u8`);
+      const bObjects = keys.filter((k) => k.startsWith(`${prefixOf(TEMPLATE_B)}/`)).length;
+
+      // 重转 A：只清 A 子树内的陈旧对象，B 原封不动
+      const a2 = await executeClaimedJob(job(TEMPLATE_ENCRYPTED), env.deps);
+      expect(a2.deletedStaleObjects).toBe(1);
+      const after = (await env.storage.listObjects(`proceed/${MEDIA_ID}/`)).map((o) => o.key);
+      expect(after.some((k) => k.includes(`${TEMPLATE_A}/old/`))).toBe(false);
+      expect(after.filter((k) => k.startsWith(`${prefixOf(TEMPLATE_B)}/`)).length).toBe(bObjects);
+
+      // 两套产物都能用同一份落库 CEK 解开（共同体现「每媒资一份密钥」）
+      const stored = env.keyStore.rows.get(MEDIA_ID)!;
+      const cek = openMediaKey(pickWrappingMasterKey(MK), stored.wrappedCekHex);
+      for (const templateId of [TEMPLATE_A, TEMPLATE_B]) {
+        const segment = after.find((k) => k.startsWith(`${prefixOf(templateId)}/`) && k.endsWith(".ts"));
+        expect(segment).toBeDefined();
+        const decipher = createDecipheriv("aes-128-cbc", cek, Buffer.from(stored.ivHex, "hex"));
+        const plain = Buffer.concat([
+          decipher.update(Buffer.from(await env.storage.get(segment!))),
+          decipher.final(),
+        ]);
+        expect(plain[0]).toBe(0x47);
+      }
+
+      env.cleanup();
+    },
+    45_000,
   );
 });

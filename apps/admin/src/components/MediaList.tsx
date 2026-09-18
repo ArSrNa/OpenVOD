@@ -41,6 +41,17 @@ import { useRouter } from "next/navigation";
 import { useTableBodyHeight } from "./tableScroll";
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 
+/** 一份模板产物（spec.md §1.3：proceed/{媒资id}/{模板id}/…） */
+interface MediaProduct {
+  /** 模板 ID（cuid）；空串 = 旧布局产物 */
+  templateId: string;
+  /** 模板展示名（模板已删为 null） */
+  templateName: string | null;
+  objects: number;
+  bytes: number;
+  variants: string[];
+}
+
 interface MediaListItem {
   id: string;
   title: string | null;
@@ -50,6 +61,7 @@ interface MediaListItem {
   size: number;
   lastModified?: string;
   assets: { proceed: number; cover: number; metadata: number };
+  products: MediaProduct[];
 }
 
 interface MediaDetail {
@@ -67,6 +79,7 @@ interface MediaDetail {
   posterKey: string | null;
   sourceKey: string | null;
   assets: { proceed: number; cover: number; metadata: number };
+  products: MediaProduct[];
 }
 
 // ffprobe 归一化摘要（服务端 @openvod/transcode summarizeProbe 落库 media.probe 的形状）
@@ -116,8 +129,8 @@ interface TemplateOption {
 }
 
 // 存储布局分区（spec.md §1；列展示与 API 响应字段一一对应）
+// 转码产物单独成列（按模板分组展示，见下方 products 列）；这里只放简单计数的分区
 const ASSET_COLUMNS: { key: keyof MediaListItem["assets"]; label: string }[] = [
-  { key: "proceed", label: "转码产物" },
   { key: "cover", label: "封面图片" },
 ];
 
@@ -129,6 +142,12 @@ const STATUS_META: Record<string, { color: string; label: string }> = {
   FAILED: { color: "error", label: "失败" },
   ARCHIVED: { color: "warning", label: "已下架" },
 };
+
+/** 产物归属展示名：模板名 → 模板已删除（id 前缀）→ 旧布局 */
+function productLabel(p: MediaProduct): string {
+  if (!p.templateId) return p.templateName ?? "未分组（旧布局）";
+  return p.templateName ?? `模板已删除（${p.templateId.slice(0, 8)}…）`;
+}
 
 function formatSize(bytes: number | null | undefined): string {
   if (bytes == null) return "—";
@@ -624,6 +643,32 @@ export function MediaList() {
         <Typography.Text type="secondary">{formatTime(iso)}</Typography.Text>
       ),
     },
+    {
+      title: "转码产物",
+      key: "products",
+      width: 200,
+      render: (_, row) =>
+        row.products.length ? (
+          <Tooltip
+            title={
+              <div style={{ fontSize: 12 }}>
+                {row.products.map((p) => (
+                  <div key={p.templateId || "legacy"}>
+                    {productLabel(p)}：{p.objects} 个对象
+                    {p.variants.length > 0 ? `（${p.variants.join(" / ")}）` : ""}
+                  </div>
+                ))}
+              </div>
+            }
+          >
+            <span style={{ cursor: "help" }}>
+              {row.products.length} 组产物 · {row.assets.proceed} 个对象
+            </span>
+          </Tooltip>
+        ) : (
+          <Tag color="default">无</Tag>
+        ),
+    },
     ...ASSET_COLUMNS.map(({ key, label }) => ({
       title: label,
       dataIndex: ["assets", key],
@@ -784,8 +829,31 @@ export function MediaList() {
                 {detail.sourceKey ?? "—"}
               </Typography.Text>
             </Descriptions.Item>
-            <Descriptions.Item label="转码产物" span={1}>
-              {detail.assets.proceed} 个对象
+            <Descriptions.Item label="转码产物" span={2}>
+              {detail.products.length ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {detail.products.map((p) => (
+                    <Space key={p.templateId || "legacy"} size={6} wrap>
+                      <Tag color={p.templateId ? "geekblue" : "default"}>{productLabel(p)}</Tag>
+                      {p.variants.length > 0 && <Tag>{p.variants.join(" / ")}</Tag>}
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        {p.objects} 个对象 · {formatSize(p.bytes)}
+                      </Typography.Text>
+                      {p.templateId && (
+                        <Tooltip title={`proceed/${detail.id}/${p.templateId}/`}>
+                          <Typography.Text code style={{ fontSize: 11 }}>
+                            {p.templateId}
+                          </Typography.Text>
+                        </Tooltip>
+                      )}
+                    </Space>
+                  ))}
+                </div>
+              ) : (
+                <Typography.Text type="secondary">
+                  尚无转码产物（「更多 → 转码」发起，产物按模板落在 proceed/{detail.id}/{"{模板id}"}/）
+                </Typography.Text>
+              )}
             </Descriptions.Item>
             <Descriptions.Item label="封面" span={1}>
               {detail.assets.cover} 个对象{detail.posterKey ? "（已设 poster）" : ""}

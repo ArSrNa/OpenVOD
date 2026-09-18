@@ -41,13 +41,16 @@ export type StoragePartition = (typeof STORAGE_PARTITIONS)[keyof typeof STORAGE_
 export const STORAGE_KEYS = {
   // original：媒资唯一确定对象，{id}.{ext} 即媒资索引本身
   original: (mediaId: string, ext: string) => `original/${mediaId}.${ext}`,
-  // proceed：HLS
-  proceedHlsMaster: (mediaId: string) => `proceed/${mediaId}/master.m3u8`,
-  proceedHlsVariantPlaylist: (mediaId: string, variant: string) =>
-    `proceed/${mediaId}/${variant}/index.m3u8`,
-  proceedHlsSegment: (mediaId: string, variant: string, n: number) =>
-    `proceed/${mediaId}/${variant}/seg-${n}.ts`,
-  // proceed：字幕（处理产物，spec.md §1.2）
+  // proceed：按「媒资 → 模板」两级分组（spec.md §1.3）——同一媒资可由多个模板各出一套产物并存，
+  // 目录名即模板 ID，从而能回答「这份产物是哪个模板转出来的」
+  proceedRoot: (mediaId: string, templateId: string) => `proceed/${mediaId}/${templateId}`,
+  proceedHlsMaster: (mediaId: string, templateId: string) =>
+    `proceed/${mediaId}/${templateId}/master.m3u8`,
+  proceedHlsVariantPlaylist: (mediaId: string, templateId: string, variant: string) =>
+    `proceed/${mediaId}/${templateId}/${variant}/index.m3u8`,
+  proceedHlsSegment: (mediaId: string, templateId: string, variant: string, n: number) =>
+    `proceed/${mediaId}/${templateId}/${variant}/seg-${n}.ts`,
+  // proceed：字幕仍挂在媒资下（不属于任何模板产物；保留段，spec.md §1.3）
   proceedSubtitle: (mediaId: string, trackId: string) =>
     `proceed/${mediaId}/subtitles/${trackId}.vtt`,
   // cover：封面与图片（ext 按实际上传格式落键，默认 jpg）
@@ -56,6 +59,14 @@ export const STORAGE_KEYS = {
   metadataProbe: (mediaId: string) => `metadata/${mediaId}/probe.json`,
   metadataCustom: (mediaId: string) => `metadata/${mediaId}/custom.json`,
 } as const;
+
+// ---- proceed 分区的产物目录识别（spec.md §1.3/§1.4） ----
+/** 模板 ID 形状：Prisma cuid（`c` + 20 位以上小写字母数字）——用它区分「模板产物目录」与旧布局目录 */
+export const TEMPLATE_ID_PATTERN = /^c[a-z0-9]{20,}$/;
+/** `proceed/{id}/` 下不参与模板分组的保留段（字幕等非转码产物） */
+export const PROCEED_RESERVED_SEGMENTS = ["subtitles"] as const;
+/** 旧布局（无模板段，`proceed/{id}/{variant}/…`）在列表/详情里归入的名称 */
+export const LEGACY_PRODUCT_LABEL = "未分组（旧布局）";
 
 // 媒资 ID：纯数字字符串，默认 8 位（MEDIA_ID_LENGTH 可配，4–16），保留前导零；为
 // original/proceed/cover/metadata 四分区资产的唯一索引（spec.md §1.3）

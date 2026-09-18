@@ -4,6 +4,8 @@
 // 若提前落库，一次失败的转码就会把该媒资原有密钥换掉，使既有加密产物无法解密（spec.md §4.2）。
 import {
   createMediaKey,
+  findMasterKey,
+  openMediaKey,
   parseMasterKeys,
   pickWrappingMasterKey,
   type MasterKey,
@@ -70,4 +72,38 @@ export async function persistMediaKey(
     wrappedCekHex: key.wrappedCekHex,
     mkVer: key.mkVer,
   });
+}
+
+/** 本次转码实际使用的密钥 + 是否为复用 */
+export interface ResolvedMediaKey extends GeneratedMediaKey {
+  /** true = 沿用该媒资已有密钥（未落库，也无需落库） */
+  reused: boolean;
+}
+
+/**
+ * 取该媒资本次转码要用的密钥（spec.md §1.3 / §4.2）：
+ *
+ * - **已有密钥行 → 解封复用**：同一媒资的多个模板产物（`proceed/{id}/{templateId}/`）共用同一份
+ *   CEK。否则「用模板 B 转码」会换掉该媒资的密钥行，让模板 A 的既有密文变得无法解密；
+ * - **没有 → 新生成**，且由调用方在**产物上传成功后**落库（persistMediaKey）。
+ */
+export async function resolveMediaKey(
+  store: MediaKeyStore,
+  mks: MasterKey[],
+  mediaId: string,
+): Promise<ResolvedMediaKey> {
+  const existing = await store.find(mediaId);
+  if (!existing) {
+    return { ...generateMediaKey(mks), reused: false };
+  }
+  return {
+    kid: existing.kid,
+    method: existing.method,
+    ivHex: existing.ivHex,
+    wrappedCekHex: existing.wrappedCekHex,
+    mkVer: existing.mkVer,
+    // 明文只在本次任务的临时目录里出现，随任务目录一起清理
+    cek: openMediaKey(findMasterKey(mks, existing.mkVer), existing.wrappedCekHex),
+    reused: true,
+  };
 }

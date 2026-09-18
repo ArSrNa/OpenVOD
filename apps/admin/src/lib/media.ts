@@ -1,7 +1,8 @@
-// 媒资管理业务逻辑（M1 竖切：上传 → 列表 / 详情 → 重命名 / 删除 / 封面；spec.md §1/§2）
+// 媒资管理业务逻辑（M1 竖切 + M2 转码产物归组；spec.md §1/§2）
 // 存储视角与数据库视角合并：媒资集合以 original/ 分区为准（spec.md §1.4），
 // 数据库行补充展示名（title，可重命名）与生命周期状态。
-// 转码 / 字幕链路暂未实现（ADR-0008 TODO）；元数据探测（ffprobe）见 lib/probe.ts。
+// 转码产物按 `proceed/{id}/{模板id}/` 分组展示（spec.md §1.3），模板名来自 transcode_templates；
+// 元数据探测（ffprobe）见 lib/probe.ts。
 import {
   MEDIA_ID_CHARS,
   MEDIA_ID_PATTERN,
@@ -10,6 +11,7 @@ import {
   generateMediaId,
   resolveMediaIdLength,
 } from "@openvod/shared";
+import { groupProductsByMedia, type MediaProduct } from "./media-products";
 import { getDb } from "@openvod/db";
 import { NextResponse } from "next/server";
 import { getStorage } from "./storage";
@@ -141,6 +143,22 @@ export async function uploadOriginal(input: {
   throw new MediaError("internal", "媒资 ID 冲突重试次数过多，请重试", 500);
 }
 
+// ---- 转码产物按模板归组（spec.md §1.3：proceed/{媒资id}/{模板id}/…） ----
+// 纯函数在 lib/media-products.ts（不碰 DB，便于单测）；这里只负责补模板名。
+
+/** 批量补模板名（transcode_templates）；查询失败降级为 null，不影响列表可用性 */
+async function attachTemplateNames(products: MediaProduct[]): Promise<void> {
+  const ids = [...new Set(products.map((p) => p.templateId).filter(Boolean))];
+  if (!ids.length) return;
+  const rows: Array<{ id: string; name: string }> = await db.transcodeTemplate
+    .findMany({ where: { id: { in: ids } }, select: { id: true, name: true } })
+    .catch(() => []);
+  const nameById = new Map(rows.map((r) => [r.id, r.name]));
+  for (const p of products) {
+    if (p.templateId) p.templateName = nameById.get(p.templateId) ?? null;
+  }
+}
+
 // ---- 列表（存储视角 + DB 合并；spec.md §1.4） ----
 
 export interface MediaRow {
@@ -154,6 +172,8 @@ export interface MediaRow {
   size: number;
   lastModified?: string;
   assets: { proceed: number; cover: number; metadata: number };
+  /** 转码产物按模板分组（spec.md §1.3）；空数组 = 尚无转码产物 */
+  products: MediaProduct[];
 }
 
 export async function listMedia(): Promise<{ total: number; items: MediaRow[] }> {
@@ -184,6 +204,8 @@ export async function listMedia(): Promise<{ total: number; items: MediaRow[] }>
   const proceedCounts = countUnder(proceeds, STORAGE_PARTITIONS.proceed);
   const coverCounts = countUnder(covers, STORAGE_PARTITIONS.cover);
   const metadataCounts = countUnder(metadatas, STORAGE_PARTITIONS.metadata);
+  const productsByMedia = groupProductsByMedia(proceeds);
+  await attachTemplateNames([...productsByMedia.values()].flat());
 
   const items: MediaRow[] = [];
   for (const o of originals) {
@@ -203,6 +225,7 @@ export async function listMedia(): Promise<{ total: number; items: MediaRow[] }>
         cover: coverCounts.get(m[1]) ?? 0,
         metadata: metadataCounts.get(m[1]) ?? 0,
       },
+      products: productsByMedia.get(m[1]) ?? [],
     });
   }
   items.sort((a, b) => Number(b.id) - Number(a.id)); // 数值语义降序（新媒资在前）
@@ -228,6 +251,8 @@ export interface MediaDetail {
   posterKey: string | null;
   sourceKey: string | null;
   assets: { proceed: number; cover: number; metadata: number };
+  /** 转码产物按模板分组（spec.md §1.3） */
+  products: MediaProduct[];
 }
 
 export async function getMediaDetail(id: string): Promise<MediaDetail> {
@@ -242,6 +267,8 @@ export async function getMediaDetail(id: string): Promise<MediaDetail> {
   ]);
   const original = originals.find((o) => ORIGINAL_RE.exec(o.key)?.[1] === id);
   const ext = original ? ORIGINAL_RE.exec(original.key)?.[2]?.toLowerCase() ?? null : null;
+  const products = groupProductsByMedia(proceeds).get(id) ?? [];
+  await attachTemplateNames(products);
   return {
     id,
     title: row?.title ?? null,
@@ -257,6 +284,7 @@ export async function getMediaDetail(id: string): Promise<MediaDetail> {
     posterKey: row?.posterKey ?? null,
     sourceKey: row?.sourceKey ?? original?.key ?? null,
     assets: { proceed: proceeds.length, cover: covers.length, metadata: metadatas.length },
+    products,
   };
 }
 

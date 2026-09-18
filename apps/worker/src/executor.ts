@@ -1,7 +1,8 @@
 // 转码任务执行器（ADR-0008；M2 主干）
 //
 // 流程：认领后 → 探测(ffprobe) → 编译 argv（模板快照 + 实测源参数）→ 逐档 ffmpeg →
-//       上传 proceed/{id}/ → 生成主清单 → **产物上传成功后**落 hls_keys → 媒资状态联动 → 清理临时目录。
+//       上传 proceed/{id}/{模板id}/ → 生成主清单 → **产物上传成功后**落 hls_keys → 媒资状态联动 → 清理临时目录。
+// 产物按模板分组（spec.md §1.3）：同一媒资可由多个模板各出一套产物并存，故清理只作用于本模板子树。
 //
 // 依赖全部注入（jobStore / mediaStore / keyStore / storage），便于单测用假实现 + 真实 ffmpeg 跑端到端。
 // 纪律：argv 一律数组插值（绝不经 shell，ADR-0008）；明文 CEK 只存在于任务临时目录，finally 必删。
@@ -25,7 +26,7 @@ import {
 } from "@openvod/transcode";
 import type { TranscodeJobRow, TranscodeJobStore } from "./job-store";
 import { cleanupJobDir, writeKeyFiles } from "./key-files";
-import { generateMediaKey, loadMasterKeys, persistMediaKey, type GeneratedMediaKey } from "./media-keys";
+import { loadMasterKeys, persistMediaKey, resolveMediaKey, type ResolvedMediaKey } from "./media-keys";
 import type { MediaKeyStore } from "./media-key-store";
 import type { MediaStatusName, MediaStore } from "./media-store";
 
@@ -59,8 +60,12 @@ export interface ExecuteJobResult {
   /** 被判定跳过的档位（升格 / 与源持平 / 源已满足约束） */
   skipped: string[];
   encrypted: boolean;
-  /** 密钥行是否替换了既有行（encrypted=false 时为 null） */
+  /** 密钥行是否替换了既有行（encrypted=false 时为 null；复用已有密钥时为 null） */
   replacedKey: boolean | null;
+  /** 是否复用了该媒资已有密钥（多模板产物共用一份 CEK，spec.md §4.2） */
+  keyReused: boolean;
+  /** 产物落位前缀 `proceed/{id}/{templateId}` */
+  outputPrefix: string;
   uploadedObjects: number;
   deletedStaleObjects: number;
 }
@@ -189,7 +194,10 @@ async function uploadTree(
   return { keys, count: keys.size };
 }
 
-/** 清掉该媒资上一次转码留下的、本次未产出的对象（旧档位 / 旧分片），避免新旧混播 */
+/**
+ * 清掉**本模板子树内**上一次转码留下的、本次未产出的对象（旧档位 / 旧分片），避免新旧混播。
+ * 只作用于 `proceed/{id}/{templateId}/`：同一媒资其它模板的产物不受影响（spec.md §1.3）。
+ */
 async function pruneStale(storage: StorageAdapter, prefix: string, keep: Set<string>): Promise<number> {
   const existing = await storage.listObjects(`${prefix}/`);
   const stale = existing.filter((o) => !keep.has(o.key));
@@ -242,14 +250,21 @@ export async function executeClaimedJob(
     }
     await deps.mediaStore.saveProbe(media.id, summary, summary.durationMs);
     const { snapshot } = parseSnapshot(job.templateSnapshot);
-    log(`任务 ${job.id}：源 ${source.width}×${source.height}${source.fps ? `@${source.fps}` : ""}，模板「${snapshot.name}」`);
+    // 产物目录 = 模板 ID（spec.md §1.3）；快照优先，兼容只写了 templateId 的旧任务
+    const templateId = snapshot.template_id || job.templateId;
+    if (!templateId) {
+      throw new JobExecutionError("任务缺少模板 ID（快照与任务记录都没有），无法确定产物目录 proceed/{id}/{模板id}/");
+    }
+    log(
+      `任务 ${job.id}：源 ${source.width}×${source.height}${source.fps ? `@${source.fps}` : ""}，模板「${snapshot.name}」（${templateId}）`,
+    );
 
-    // 2) 加密则先生成密钥材料（**不落库**，spec.md §4.2）
-    let key: GeneratedMediaKey | null = null;
+    // 2) 加密则先备好密钥材料（**不落库**，spec.md §4.2）；已有密钥则复用（多模板产物共用一份 CEK）
+    let key: ResolvedMediaKey | null = null;
     let keyInfoPath: string | undefined;
     if (snapshot.encrypt) {
       const mks = deps.masterKeys ?? loadMasterKeys();
-      key = generateMediaKey(mks);
+      key = await resolveMediaKey(deps.keyStore, mks, media.id);
       const paths = await writeKeyFiles({ jobDir, mediaId: media.id, key });
       keyInfoPath = paths.keyInfoPath;
     }
@@ -275,16 +290,18 @@ export async function executeClaimedJob(
     // 5) 生成主清单并上传（先写盘再整体上传）
     await deps.jobStore.setStatus(job.id, "PACKAGING");
     await writeFile(join(outRoot, "master.m3u8"), buildMasterPlaylist(entries, { mediaId: media.id }));
-    const prefix = `${STORAGE_PARTITIONS.proceed}/${media.id}`;
+    const prefix = `${STORAGE_PARTITIONS.proceed}/${media.id}/${templateId}`;
     const { keys, count } = await uploadTree(deps.storage, outRoot, prefix);
     if (!count) throw new JobExecutionError("产物上传为空（疑似转码未产出任何文件）");
     const deletedStale = await pruneStale(deps.storage, prefix, keys);
 
-    // 6) 产物就绪后才落密钥（每媒资一份：事务内整行替换）
+    // 6) 产物就绪后才落密钥（每媒资一份：事务内整行替换）；已有密钥则复用，不落库
     let replacedKey: boolean | null = null;
-    if (key) {
+    if (key && !key.reused) {
       replacedKey = (await persistMediaKey(deps.keyStore, media.id, key)).replaced;
       log(`任务 ${job.id}：密钥已落库（kid=${key.kid.slice(0, 8)}…，${replacedKey ? "替换旧密钥" : "首次生成"}）`);
+    } else if (key) {
+      log(`任务 ${job.id}：复用该媒资已有密钥（kid=${key.kid.slice(0, 8)}…，多模板产物共用一份 CEK）`);
     }
 
     // 7) 收尾：媒资就绪 + 任务完成
@@ -301,6 +318,8 @@ export async function executeClaimedJob(
       skipped,
       encrypted: Boolean(key),
       replacedKey,
+      keyReused: Boolean(key?.reused),
+      outputPrefix: prefix,
       uploadedObjects: count,
       deletedStaleObjects: deletedStale,
     };

@@ -38,21 +38,29 @@ root 下按资产类别分四个分区，互不嵌套：
 - 一个媒资的完整资产集合即同 ID 在四个分区下的所有对象：
 
 ```
-{root}/original/{id}.{ext}                          # 原始上传（唯一确定媒资存在的对象）
-{root}/proceed/{id}/master.m3u8                     # HLS 主清单模板（改写发生在分发端）
-{root}/proceed/{id}/{variant}/index.m3u8            # 子清单
-{root}/proceed/{id}/{variant}/seg-{n}.ts            # 分片（AES-128 加密）
-{root}/proceed/{id}/subtitles/{trackId}.vtt         # 字幕
-{root}/cover/{id}/poster.jpg                        # 海报 / 封面图
-{root}/metadata/{id}/probe.json                     # ffprobe 系统元数据
-{root}/metadata/{id}/custom.json                    # 业务扩展元数据
+{root}/original/{id}.{ext}                                  # 原始上传（唯一确定媒资存在的对象）
+{root}/proceed/{id}/{templateId}/master.m3u8                # HLS 主清单（按模板分组；改写发生在分发端）
+{root}/proceed/{id}/{templateId}/{variant}/index.m3u8       # 子清单
+{root}/proceed/{id}/{templateId}/{variant}/seg-{n}.ts       # 分片（AES-128 加密）
+{root}/proceed/{id}/subtitles/{trackId}.vtt                 # 字幕（保留段，不属于任何模板产物）
+{root}/cover/{id}/poster.jpg                                # 海报 / 封面图
+{root}/metadata/{id}/probe.json                             # ffprobe 系统元数据
+{root}/metadata/{id}/custom.json                            # 业务扩展元数据
 ```
+
+`proceed/` 的**两级分组**（2026-09-18 定，M2 落地）：
+
+- 第一级是媒资 ID，第二级是**模板 ID**（即 `transcode_templates.id`，cuid）：目录名就是模板 ID，所以「这份产物是哪个模板转出来的」可以直接从存储键读出；
+- 同一媒资**允许多套模板产物并存**（如「原画加密」与「1080p 加密」各一套），互不覆盖；重转某个模板只替换 / 清理**该模板子树**（§5.2）；
+- `proceed/{id}/subtitles/` 是**保留段**：字幕不属于模板产物，不参与模板分组。模板 ID 为 cuid 形状（`TEMPLATE_ID_PATTERN = /^c[a-z0-9]{20,}$/`），与保留段不会冲突；
+- **旧布局兼容**：M2 之前的产物落在 `proceed/{id}/{variant}/…`（无模板段），列举时归入空模板 ID 并展示为「未分组（旧布局）」；对该媒资重转码一次即可迁到新布局。
 
 ### 1.4 媒资列举规则（管理端「媒资列表」）
 
 - **媒资集合以 `original/` 分区为准**：每个 `original/{id}.{ext}` 对象即一个媒资，`id` = 文件名去扩展名；
 - `id` 必须为纯数字（`MEDIA_ID_PATTERN`）；非数字文件名或更深层级的对象不属于媒资，列举时忽略；
 - 其余三个分区**只按 id 归组补充资产状态**（各分区下该 id 的对象数量），不反向定义媒资；
+- `proceed/` 额外按「媒资 → 模板」归组为 `products[]`（M2 实现）：每项给出 `template_id`、`template_name`（查 `transcode_templates`，模板已删为 `null`）、`objects`（对象数）、`bytes`（体积）、`variants[]`（变体目录名，如 `1080p` / `720p`）——列表与详情都用它回答「这份产物是哪个模板转的」；`proceed/{id}/subtitles/` 等保留段不参与分组；
 - 管理端 `GET /api/admin/media` 一次列举四个分区并按 id 内存聚合返回；v1 全量列举即可，分页 / 前缀裁剪留待媒资规模需要时再加；
 - 列表同时合并 `media` 表（M1 实现，见 §2.1）：展示名（`title`）与生命周期状态由数据库补充，DB 查询失败时降级为纯存储视角（字段置 null）；数据库行**不参与**媒资集合定义（仍以 `original/` 分区为准）。
 
@@ -73,9 +81,9 @@ root 下按资产类别分四个分区，互不嵌套：
 
 | 端点 | 方法 | 说明 |
 |---|---|---|
-| `/api/admin/media` | GET | 媒资列表（§1.4 存储视角 + DB 展示名/状态合并） |
+| `/api/admin/media` | GET | 媒资列表（§1.4 存储视角 + DB 展示名/状态合并）；每条含 `products[]`——按模板分组的转码产物（模板名 / 对象数 / 体积 / 变体），旧布局产物归入 `template_id=""` |
 | `/api/admin/media/upload` | POST | 原视频上传（§1.3）：生成数字 ID（主键冲突即重取）→ 流式写 `original/{id}.{ext}` → `media` 行落库；存储失败回滚 DB 行 |
-| `/api/admin/media/{id}` | GET | 详情：存储资产计数 + DB 元数据合并（`probe` 未实现前为 null） |
+| `/api/admin/media/{id}` | GET | 详情：存储资产计数 + DB 元数据合并 + `products[]`（每套模板产物的模板名 / 变体 / 对象数 / 体积，模板 ID 可追溯到 `proceed/{id}/{模板id}/`） |
 | `/api/admin/media/{id}` | PATCH | 重命名：仅修改 `media.title`，绝不改动 original 文件名与媒资 ID |
 | `/api/admin/media/{id}` | DELETE | 删除：original 对象 + proceed/cover/metadata 三分区该 id 全部对象 + DB 行（级联 subtitles / transcode_jobs / hls_keys / playback_sessions）；幂等可重试。**级联范围说明**：open-questions #13 决议（软删 + 保留期 GC）之前的 v1 临时策略为**硬删除全级联** |
 | `/api/admin/media/{id}/original` | GET | 原视频预览：local 模式 Range 字节区间流式代理（206）；s3 模式预签名 GET 302 重定向（字节不经管理端）；no-store |
@@ -128,7 +136,7 @@ root 下按资产类别分四个分区，互不嵌套：
 
 ### 3.1 已实现页面
 
-- `/media`（媒资管理，M1 已实现）：媒资列表表格——媒资 ID、展示名、生命周期状态、原始文件（格式 / 大小 / 上传时间）、转码产物 / 封面 / 元数据的资产数量概览；
+- `/media`（媒资管理，M1/M2 已实现）：媒资列表表格——媒资 ID、展示名、生命周期状态、原始文件（格式 / 大小 / 上传时间）、**转码产物（按模板分组：`N 组产物 · M 个对象`，悬停列出每套产物的模板名与档位）**、封面图片；详情弹窗额外逐套列出「模板名 / 变体 / 对象数 / 体积 / 模板 ID」（模板已删时显示「模板已删除（id 前缀）」），旧布局产物显示「未分组（旧布局）」；
 - `/templates`（转码模板，ADR-0014 已实现）：模板列表表格——模板名（默认标记）、描述、模式（转码 / 保持原视频）、加密（AES-128）、格式（M3U8）、参数摘要（编码器 / 码率或 CRF / 分辨率档位 / 帧率 / preset）、更新时间；操作：新建 / 编辑（弹窗表单，含分辨率档位多行编辑：固定宽×高或自适应上限约束）、删除（确认弹窗注明已发起任务不受影响）；API 见 §2（`/api/admin/templates`）。
 - `/keys`（密钥管理，已实现）：密钥列表表格——媒资 ID、展示名、媒资状态、kid（截断 + Tooltip 全量）、算法、MK 版本（非当前版本标「待轮换」）、加密产物对象数、生成时间；顶部条展示当前封装版本与各版本密钥用量；操作：详情（弹窗：kid / IV / mk_ver / 生成时间 / 使用中会话数，并明确标注「明文密钥不展示」）、删除（确认弹窗警告需重转码才能恢复可播）、「轮换 MK」（确认后重封装旧版本，无需重转码）；API 见 §2.1 与 §4.3。**页面不提供任何明文密钥的展示 / 导出入口**。
 - `/jobs`（转码任务，M2 已实现）：任务列表表格——任务 ID、媒资（ID + 展示名）、状态（排队 / 探测中 / 转码中 / 封装上传中 / 完成 / 失败）、模板名（取任务快照）、尝试次数、耗时、失败原因、创建时间；支持刷新与「自动刷新（5s）」；API 见 §2.1（`/api/admin/jobs`），执行规则见 §5。
@@ -155,17 +163,16 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 **实现位置（密钥部分已落地，2026-09-18）**：
 
 - 生成 / 解封 / 重封装纯函数在 `packages/crypto`（`createMediaKey` / `openMediaKey` / `resealMediaKey` / `pickWrappingMasterKey`，13 项单测覆盖生成、往返解封、错误 MK、篡改、轮换幂等）；
-- Worker 编排在 `apps/worker/src`：`media-keys.ts`（`loadMasterKeys` / `describeMasterKeys` / `generateMediaKey` / `persistMediaKey`）、`media-key-store.ts`（Prisma 事务整行替换的 `MediaKeyStore`）、`key-files.ts`（`keyUriPlaceholder` / `writeKeyFiles` / `cleanupJobDir`）；
-- 管理端 MK 轮换复用同一组 crypto 函数（§4.3）；Worker 启动时做 MASTER_KEYS 自检（不可用只告警：未加密模板不依赖它）；
-- **尚未实现**：任务认领 / 探测 / 逐档 ffmpeg / 产物上传（M2 其余部分）——接入点已在 `apps/worker/src/index.ts` 的 `tick()` 中按下列顺序逐条标注。
+- Worker 编排在 `apps/worker/src`：`media-keys.ts`（`loadMasterKeys` / `describeMasterKeys` / `generateMediaKey` / **`resolveMediaKey`** / `persistMediaKey`）、`media-key-store.ts`（Prisma 事务整行替换的 `MediaKeyStore`）、`key-files.ts`（`keyUriPlaceholder` / `writeKeyFiles` / `cleanupJobDir`）、`executor.ts`（整条转码链）；
+- 管理端 MK 轮换复用同一组 crypto 函数（§4.3）；Worker 启动时做 MASTER_KEYS 自检（不可用只告警：未加密模板不依赖它）。
 
 **执行顺序（顺序即安全边界）**：
 
-1. `generateMediaKey(mks)`：生成 CEK(16B) + IV(16B) + kid，以 active MK（`MASTER_KEYS` 最大版本）封装——**此时不落库**；
+1. `resolveMediaKey(store, mks, mediaId)`：该媒资**已有密钥行 → 解封复用**（多模板产物共用一份 CEK），否则 `generateMediaKey(mks)` 生成新的——**两种情况都此时不落库**；
 2. `writeKeyFiles` 写 `{jobDir}/key_info` 与 `{jobDir}/ceks/{kid}.key`（CEK 为 **16 字节裸字节**）；key_info 三行 = 占位密钥 URI / CEK 文件路径 / **纯 hex IV**：
    - 第三行**不能带 `0x`**——ffmpeg 会自行加前缀，带上即产出 `EXT-X-KEY:...IV=0x0x…` 并报 `Error setting option encryption_iv`，加密失败且分片不产出（实测 ffmpeg 6.1）；`buildKeyInfoFile` 已归一化并有单测守卫（`packages/transcode`）；
-3. ffmpeg 输出 AES-128 加密的 TS 分片 → 上传至 `proceed/{id}/{variant}/`（§1.3）；
-4. **产物上传全部成功后**才 `persistMediaKey(store, mediaId, key)` → 写 `hls_keys`（每媒资一份，见下）；
+3. ffmpeg 输出 AES-128 加密的 TS 分片 → 上传至 `proceed/{id}/{templateId}/{variant}/`（§1.3）；
+4. **产物上传全部成功后**，仅当步骤 1 是**新生成**时才 `persistMediaKey(store, mediaId, key)` → 写 `hls_keys`（每媒资一份，见下）；复用时无需写库；
 5. 任务结束（成功 / 失败 / 取消）**必须** `cleanupJobDir(jobDir)`：key_info 与明文 CEK 随目录删除，不得残留。
 
 **每媒资一份的落库语义（v1）**：`hls_keys.media_id` 唯一约束使「先插新行再删旧行」不可行，故存储层在**单个事务内先删旧行、再写新行**：
@@ -173,7 +180,8 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 - 成功：旧 kid 立即失效，媒资恒只有一行密钥；
 - 任一步失败：事务整体回滚，**旧密钥行原样保留**（不会出现「既无新也无旧」的空洞）——已有测试覆盖（kid 撞车场景）；
 - 因此**绝不能提前落库**：若在转码前落库，一次失败的转码就会换掉该媒资密钥，使既有加密产物永久无法解密；
-- 旧产物被整体覆盖，故不保留历史密钥行（不做同媒资多版本并存 / 双 kid 宽限）。
+- **多模板产物共用一份 CEK**（§1.3：`proceed/{id}/{templateId}/` 可并存多套）：加密任务先 `resolveMediaKey` 解封复用已有密钥，只有该媒资**从未加密过**时才生成新密钥 → 用模板 B 转码不会让模板 A 的密文失效；
+- 因此 **CEK 轮换（重加密）= 重转码该媒资的全部模板产物**，单模板重转码不换密钥；也不做同媒资多版本密钥并存 / 双 kid 宽限。
 
 ### 4.3 管理端密钥接口（只读 + 生命周期操作）
 
@@ -197,7 +205,7 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 | 对象 | 方式 | 影响 |
 |---|---|---|
 | MK | 在 `MASTER_KEYS` 新增版本号（旧版本保留）+ 管理端「轮换 MK」（`POST /api/admin/keys/rotate-mk`）重封装 | 无需重转码；轮换期间播放不受影响（先解封再重封装，字节未变） |
-| CEK | 重转码（新 kid 替换，§4.2） | 该媒资短时维护窗口 |
+| CEK | 重转码该媒资的**全部**模板产物（单模板重转码会复用现有 CEK，不换密钥，§4.2） | 该媒资短时维护窗口 |
 | 播放会话 | 置 `revoked_at` | 新清单 / 密钥请求立即拒绝（≤60s 收敛）；已下载分片在 token exp 内仍可播（接受，ADR-0006 §6） |
 
 ### 4.5 相关环境变量
@@ -222,9 +230,9 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 
 ### 5.2 执行顺序（顺序即正确性）
 
-1. 产物先落本地 `{os.tmpdir()}/openvod-jobs/{jobId}/out/`（`{variant}/index.m3u8` + `{variant}/seg-%05d.ts`，主清单 `master.m3u8`），**全部成功后再整体上传**；
-2. 上传完成后**才**落 `hls_keys`（§4.2）——提前落库会让一次失败的转码换掉旧密钥，使既有密文无法解密；
-3. 上传成功后清理该媒资 `proceed/{id}/` 下**本次未产出**的对象（旧档位 / 旧分片），避免新旧混播；清理发生在上传之后，因此失败不会先毁掉旧产物；
+1. 产物先落本地 `{os.tmpdir()}/openvod-jobs/{jobId}/out/`（`{variant}/index.m3u8` + `{variant}/seg-%05d.ts`，主清单 `master.m3u8`），**全部成功后再整体上传到 `proceed/{id}/{templateId}/`**；
+2. 上传完成后**才**落 `hls_keys`——且仅在密钥是**新生成**时（复用已有 CEK 不写库，§4.2）；提前落库会让一次失败的转码换掉旧密钥，使既有密文无法解密；
+3. 上传成功后清理**本模板子树** `proceed/{id}/{templateId}/` 下**本次未产出**的对象（旧档位 / 旧分片），避免新旧混播；清理发生在上传之后，因此失败不会先毁掉旧产物，也**不会碰到同一媒资其它模板的产物**；
 4. 任意路径（成功 / 失败 / 取消）都要删除任务临时目录——其中含明文 CEK 与 `key_info`。
 
 ### 5.3 失败时的媒资状态
@@ -235,7 +243,7 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 
 ### 5.4 产物布局与清单
 
-- 上传后的键与 §1.3 布局一一对应：`proceed/{id}/master.m3u8`、`proceed/{id}/{variant}/index.m3u8`、`proceed/{id}/{variant}/seg-*.ts`；Content-Type：`.m3u8` = `application/vnd.apple.mpegurl`，`.ts` = `video/mp2t`；
+- 上传后的键与 §1.3 布局一一对应：`proceed/{id}/{templateId}/master.m3u8`、`.../{variant}/index.m3u8`、`.../{variant}/seg-*.ts`（`templateId` 取任务快照的 `template_id`，缺失时回退任务记录的 `template_id`，都没有则任务直接失败）；Content-Type：`.m3u8` = `application/vnd.apple.mpegurl`，`.ts` = `video/mp2t`；
 - 变体目录名按**实际输出高度**命名（如 `1080p` / `150p`，同名追加序号）；`keep_original`（只加密流程）单档同规则；
 - 主清单 `BANDWIDTH`：模板声明了目标码率则用之；CRF 模式与只加密流程按高度粗估（仅影响播放器起播选档提示，不影响编码）；
 - 加密档位的子清单里 `EXT-X-KEY` 的 URI 是转码期**占位**，分发端改写清单时整体替换为带签名 token 的密钥 URL（ADR-0006 §3）。

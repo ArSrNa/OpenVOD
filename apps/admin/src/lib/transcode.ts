@@ -114,6 +114,25 @@ export async function listTranscodeJobs(limit = 200): Promise<{
   return { total: rows.length, items: rows.map((row) => toDto(row, titleOf.get(row.mediaId) ?? null)) };
 }
 
+// ---- 总览统计（intent.md「控制台总览」）：按状态聚合未终结任务（spec.md §5.1 状态机） ----
+
+export interface ActiveJobStats {
+  /** 未终结任务总数（QUEUED + PROBING + ENCODING + PACKAGING） */
+  active: number;
+  queued: number;
+  probing: number;
+  encoding: number;
+  packaging: number;
+}
+
+/** 四个状态各一次 COUNT（DB 侧聚合，不拉取任务行） */
+export async function getActiveJobStats(): Promise<ActiveJobStats> {
+  const [queued, probing, encoding, packaging] = await Promise.all(
+    ACTIVE_JOB_STATUSES.map((status) => db.transcodeJob.count({ where: { status } })),
+  );
+  return { active: queued + probing + encoding + packaging, queued, probing, encoding, packaging };
+}
+
 // ---- 停止 / 重启（任务页操作；语义见 spec.md §5.1） ----
 
 /** 手动停止写入的失败原因（「重启」对失败任务一视同仁） */

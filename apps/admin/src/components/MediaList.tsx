@@ -8,6 +8,7 @@
 // 「更多 → 字幕管理」仍为 TODO（M4，接口 501 占位）。
 import {
   CloudUploadOutlined,
+  CopyOutlined,
   DeleteOutlined,
   EditOutlined,
   FontSizeOutlined,
@@ -66,7 +67,6 @@ interface MediaListItem {
   title: string | null;
   status: string | null;
   posterKey: string | null;
-  ext: string;
   key: string;
   size: number;
   lastModified?: string;
@@ -193,7 +193,7 @@ function uploadTo(url: string, file: File, onProgress?: (pct: number) => void): 
 
 // 表格不随条目数无限增高：表体限高后内部纵向滚动、表头固定（列宽合计见下方 columns）。
 // 滚动实现抽至 tableScroll.ts（管理端所有表格共用约定，spec.md §3）。
-const TABLE_MIN_WIDTH = 1260; // 固定列 1080（含首列封面缩略图） + 展示名最小可读宽度
+const TABLE_MIN_WIDTH = 1260; // 固定列 970（含首列封面缩略图） + 展示名最小可读宽度
 
 /** 码率（bps）→ 可读字符串 */
 function formatBitrate(bps: number | null | undefined): string {
@@ -751,40 +751,72 @@ export function MediaList() {
     }
   };
 
+  // 复制媒资 ID（列表展示名列与详情弹窗共用；stopPropagation 防止触发行点击）
+  const copyId = async (e: MouseEvent, id: string) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(id);
+      message.success(`媒资 ID 已复制：${id}`);
+    } catch {
+      message.error("复制失败（浏览器未授权剪贴板），请手动选择复制");
+    }
+  };
+
   const columns: ColumnsType<MediaListItem> = [
     {
-      title: "媒资 ID",
-      dataIndex: "id",
+      // 封面（首列缩略图，spec.md §3.1）：经 GET /api/admin/media/{id}/cover 读取，antd Image 点击预览大图
+      title: "封面",
+      dataIndex: "posterKey",
       width: 110,
-      render: (id: string) => <CopyableId id={id} />,
+      render: (posterKey: string | null, record) =>
+        posterKey ? (
+          <Image
+            src={`/api/admin/media/${record.id}/cover`}
+            alt={`封面：${record.title ?? record.id}`}
+            width={84}
+            height={48}
+            style={{ objectFit: "cover", borderRadius: 4, background: "#f5f5f5" }}
+          />
+        ) : (
+          <Tag color="default">未设置</Tag>
+        ),
     },
     {
+      // 展示名（第二行放媒资 ID，右侧复制按钮；ID 与 original 文件名永不改变，intent.md）
       title: "展示名",
       dataIndex: "title",
       ellipsis: true,
-      render: (title: string | null, record) =>
-        title ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
-            <Typography.Text style={{ flex: 1, minWidth: 0 }} ellipsis={{ tooltip: title }}>
-              {title}
+      render: (title: string | null, record) => (
+        <div style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
+          <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
+            <Typography.Text style={{ fontSize: 13 }} ellipsis={{ tooltip: title ?? "数据库无该媒资记录（存储孤儿对象）" }}>
+              {title ?? "—"}
             </Typography.Text>
-            <Tooltip title="重命名">
-              <Button
-                type="text"
-                size="small"
-                icon={<EditOutlined />}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  openRename(record);
-                }}
-              />
-            </Tooltip>
+            <Typography.Text type="secondary" code style={{ fontSize: 11, lineHeight: "14px" }}>
+              {record.id}
+            </Typography.Text>
           </div>
-        ) : (
-          <Tooltip title="数据库无该媒资记录（存储孤儿对象）">
-            <Typography.Text type="secondary">—</Typography.Text>
+          <Tooltip title="复制媒资 ID">
+            <Button
+              type="text"
+              size="small"
+              icon={<CopyOutlined />}
+              onClick={(e) => void copyId(e, record.id)}
+            />
           </Tooltip>
-        ),
+          <Tooltip title="重命名">
+            <Button
+              type="text"
+              size="small"
+              icon={<EditOutlined />}
+              onClick={(e) => {
+                e.stopPropagation();
+                openRename(record);
+              }}
+            />
+          </Tooltip>
+        </div>
+      ),
     },
     {
       title: "状态",
@@ -797,16 +829,7 @@ export function MediaList() {
           <Tag color="default">未入库</Tag>
         ),
     },
-    {
-      title: "原始文件",
-      dataIndex: "ext",
-      width: 110,
-      render: (ext: string, record) => (
-        <Tooltip title={record.key}>
-          <Tag>{ext.toUpperCase()}</Tag>
-        </Tooltip>
-      ),
-    },
+
     {
       title: "大小",
       dataIndex: "size",

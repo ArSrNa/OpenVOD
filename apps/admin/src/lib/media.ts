@@ -241,6 +241,36 @@ export async function listMedia(): Promise<{ total: number; items: MediaRow[] }>
   return { total: items.length, items };
 }
 
+// ---- 总览统计（intent.md「控制台总览」；spec.md §1.4 媒资集合定义） ----
+
+export interface MediaStats {
+  /** 媒资总数：以 original/ 分区为准（不依赖 DB 行是否存在） */
+  total: number;
+  /** 已入库且状态为 READY 的媒资数 */
+  ready: number;
+  /** 有 original 对象但无数据库行（历史 / 降级数据），列表展示为「未入库」 */
+  not_ingested: number;
+}
+
+/**
+ * 只列举 original/ 一个分区 + 两次 DB 计数（比 listMedia 轻量：不触碰 proceed/cover/metadata）。
+ * 计数以 original 的媒资集合为准，DB 行只补充状态，与媒资列表口径一致。
+ */
+export async function getMediaStats(): Promise<MediaStats> {
+  const storage = getStorage();
+  const originals = await storage.listObjects(`${STORAGE_PARTITIONS.original}/`);
+  const ids: string[] = [];
+  for (const o of originals) {
+    const m = ORIGINAL_RE.exec(o.key);
+    if (m) ids.push(m[1]); // 非数字文件名 / 异常层级不属于媒资（spec.md §1.4）
+  }
+  const [ingested, ready] = await Promise.all([
+    db.media.count({ where: { id: { in: ids } } }),
+    db.media.count({ where: { id: { in: ids }, status: "READY" } }),
+  ]);
+  return { total: ids.length, ready, not_ingested: ids.length - ingested };
+}
+
 // ---- 详情（弹窗展示媒资元数据；probe 等转码侧字段当前为 null，ADR-0008 TODO） ----
 
 export interface MediaDetail {

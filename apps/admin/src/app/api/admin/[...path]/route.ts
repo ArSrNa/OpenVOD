@@ -9,6 +9,7 @@
 //   已实现（转码 M2，ADR-0008）：/api/admin/media/[id]/transcode（POST 发起入队）、/api/admin/jobs（GET 任务列表）、
 //                         /api/admin/jobs/stream（SSE 实时推送，spec.md §2.1）、
 //                         /api/admin/jobs/[id]/stop、/api/admin/jobs/[id]/restart（停止 / 重启，spec.md §5.1）
+//   已实现（总览统计）：/api/admin/stats（媒资总数 / 就绪 / 未入库 + 进行中任务按状态计数）
 //   TODO 501 占位（随里程碑落地，intent.md 标注）：
 //     - /media/[id]/subtitles      字幕上传/管理（M4，ADR-0009；VTT → proceed/{id}/subtitles/）
 //     - /users 等（ADR-0004 功能清单）

@@ -103,6 +103,7 @@ root 下按资产类别分四个分区，互不嵌套：
 | `/api/admin/media/{id}/products/{templateId}` | DELETE | 删除一套转码产物：`templateId` 为模板 cuid（删 `proceed/{id}/{templateId}/` 子树）或 `legacy`（旧布局：删 `proceed/{id}/` 顶层非保留段对象）。**只删存储对象**：`hls_keys`（可能被其它模板产物共用）与 `transcode_jobs` 历史保留；同模板存在未终结任务 → 409；不存在 → 404；落 `audit_logs`（`media.product_delete`，detail 含 template_id / objects / bytes） |
 | `/api/admin/jobs/{id}/stop` | POST | 停止（取消）任务：置 FAILED（`last_error=已手动停止（管理端）`）+ 清租约。仅对 **QUEUED**（撤下队列，不再被认领）或**租约已过期**的执行中任务（worker 失联，安全终止）开放；租约有效（worker 正在执行）→ 409。写入用 CAS（状态未变才生效）。落 `audit_logs`（`transcode.stop`） |
 | `/api/admin/jobs/{id}/restart` | POST | 重启（重新入队）：仅 **FAILED**（失败或手动停止）——`attempts` 清零（否则认领逻辑会立即判「超过重试上限」）+ 清错误 / 租约 / 时间戳 → QUEUED，由 worker 重新认领。落 `audit_logs`（`transcode.restart`） |
+| `/api/admin/stats` | GET | 控制台总览统计（intent.md「控制台总览」）：`media`（`total` 以 `original/` 分区为准、`ready` 为 `status=READY` 且已入库、`not_ingested` 为有 original 对象但无 `media` 行）与 `jobs`（未终结任务按 QUEUED / PROBING / ENCODING / PACKAGING 计数 + `active` 合计）。只读聚合：媒资只列举 `original/` 一个分区 + 两次 DB COUNT，任务为四次 DB COUNT，不拉取任务行 |
 
 ### 2.2 未实现（501 占位，随里程碑落地）
 
@@ -143,7 +144,7 @@ root 下按资产类别分四个分区，互不嵌套：
 
 ### 3.1 已实现页面
 
-- `/media`（媒资管理，M1/M2 已实现，M3 增产物操作）：媒资列表表格——**封面缩略图（首列，antd Image，经 GET `/cover` 读取，点击预览大图；未设置显示「未设置」）**、媒资 ID、展示名、生命周期状态、原始文件（格式 / 大小 / 上传时间）、**转码产物（按模板分组：`N 组产物 · M 个对象`，悬停列出每套产物的模板名与档位，点击打开产物列表）**；详情弹窗显示产物组数并提供「产物列表（播放 / 删除）」入口（不再逐套平铺）；
+- `/media`（媒资管理，M1/M2 已实现，M3 增产物操作）：媒资列表表格——**封面缩略图（首列，antd Image，经 GET `/cover` 读取，点击预览大图；未设置显示「未设置」）**、**展示名（第一行为展示名，第二行为媒资 ID 代码样式；右侧复制按钮一键复制 ID + 重命名按钮）**、生命周期状态、原始文件（格式 / 大小 / 上传时间）、**转码产物（按模板分组：`N 组产物 · M 个对象`，悬停列出每套产物的模板名与档位，点击打开产物列表）**；详情弹窗显示产物组数并提供「产物列表（播放 / 删除）」入口（不再逐套平铺）；
   - **产物列表（抽屉，按模板一行）**：模板名（已删显示「模板已删除（id 前缀）」；旧布局显示「未分组（旧布局）」）、存储前缀 `proceed/{id}/{模板id}/`、变体（`1080p / 720p`）、对象数、体积；操作：
     - **播放** = 解密播放预览（`POST /media/{id}/preview-play` → 分发端签名主清单 URL → hls.js / Safari 原生播放，浏览器本地解密；管理端不出密钥，§4.3），播放弹窗标注「AES-128 加密（浏览器本地解密）」或「未加密」与模板 ID；
     - **删除** = 按模板删除该套产物（`DELETE /media/{id}/products/{templateId}`；确认弹窗给出前缀 / 对象数 / 体积与不可恢复警告；同模板有进行中任务时 409，需等待其结束）；

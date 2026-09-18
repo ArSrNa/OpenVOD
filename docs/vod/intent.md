@@ -71,7 +71,8 @@
 **实现状态（2026-09-18，M1 媒资管理竖切；端点明细见 spec.md §2.1/§2.2）**
 
 - ✅ 已完成：**上传**（原始字节流直传 `original/{id}.{ext}`，数字 ID 生成 + `media.id` 落库 + 冲突重取）；**媒资列表**（存储四分区聚合 + DB 展示名/状态合并）；**预览**（弹窗播放 original：local Range 流式代理 / s3 预签名 302）；**重命名**（仅改 `media.title`）；**详情**（弹窗展示元数据，probe 摘要结构化展示）；**上传封面**（`cover/{id}/poster.{ext}` + 回写 posterKey）；**删除**（存储四分区级联 + DB 行级联，#13 决议前的临时硬删策略，见 spec.md §2.1）；**生成元数据**（2026-09-18：`/media/{id}/metadata`，ffprobe 探测 → `metadata/{id}/probe.json` + `media.probe` 摘要 / `duration_ms`，spec.md §2.1）；媒资敏感操作审计（`audit_logs`）。
-- ⏳ 未完成（TODO，接口 501 占位）：**字幕管理**（M4，`/media/{id}/subtitles`）；**封面截帧取图**（浏览器侧取帧，复用 cover 端点，spec.md §2.3）；大文件 S3 分片直传（presignPut multipart）演进；媒资列表分页（v1 全量列举）。
+- ⏳ 未完成（TODO，接口 501 占位）：**字幕管理**（M4，`/media/{id}/subtitles`）；大文件 S3 分片直传（presignPut multipart）演进；媒资列表分页（v1 全量列举）。
+- ✅ 已完成（2026-09-18，**封面截帧取图**）：「更多 → 设置封面」弹窗双模式——手动上传（原有）+ **视频截帧**：弹窗内播放 original，拖拽进度条选时间点，浏览器侧 `<video>` 当前帧 → canvas → JPEG（质量 0.9、最长边 >1280px 等比缩小）以 `poster.jpg` 走同一 cover 端点（spec.md §2.3 模式 B）；s3 形态对象桶未放 CORS 时导出抛 SecurityError，提示回退手动上传。
 
 **实现状态（2026-09-18，M2 转码到加密竖切；端点明细见 spec.md §2.1、执行规则见 §5）**
 

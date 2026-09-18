@@ -1,7 +1,7 @@
 "use client";
 
 // 媒资管理页（/media，intent.md 媒资管理操作）：
-// 上传原视频 / 预览（弹窗播放 original）/ 详情 / 重命名 / 删除 / 上传封面 / 生成元数据（ffprobe）；
+// 上传原视频 / 预览（弹窗播放 original）/ 详情 / 重命名 / 删除 / 设置封面（双模式：手动上传 / 视频截帧，spec.md §2.3） / 生成元数据（ffprobe）；
 // 「更多 → 转码」已实现（M2：选转码模板入队 transcode_jobs，Worker 认领执行，进度见「转码任务」页）；
 // 转码产物：按模板的产物列表（抽屉）→ **解密播放**（走分发端签名链路，管理端不出密钥，spec.md §6）
 // 与**按模板删除**（只删该模板子树，spec.md §5.5）；
@@ -28,12 +28,14 @@ import {
   Dropdown,
   Empty,
   Form,
+  Image,
   Input,
   Modal,
   Popconfirm,
   Select,
   Space,
   Table,
+  Tabs,
   Tag,
   Tooltip,
   Typography,
@@ -42,6 +44,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { useRouter } from "next/navigation";
 import { PRODUCT_LEGACY_ID } from "@/lib/media-products";
+import { CoverFrameCapture } from "./CoverFrameCapture";
 import { HlsPreviewPlayer } from "./HlsPreviewPlayer";
 import { useTableBodyHeight } from "./tableScroll";
 import { VideoPreviewPlayer } from "./VideoPreviewPlayer";
@@ -62,6 +65,7 @@ interface MediaListItem {
   id: string;
   title: string | null;
   status: string | null;
+  posterKey: string | null;
   ext: string;
   key: string;
   size: number;
@@ -134,12 +138,6 @@ interface TemplateOption {
   is_default: boolean;
 }
 
-// 存储布局分区（spec.md §1；列展示与 API 响应字段一一对应）
-// 转码产物单独成列（按模板分组展示，见下方 products 列）；这里只放简单计数的分区
-const ASSET_COLUMNS: { key: keyof MediaListItem["assets"]; label: string }[] = [
-  { key: "cover", label: "封面图片" },
-];
-
 const STATUS_META: Record<string, { color: string; label: string }> = {
   UPLOADED: { color: "default", label: "已上传" },
   PROBING: { color: "processing", label: "探测中" },
@@ -195,7 +193,7 @@ function uploadTo(url: string, file: File, onProgress?: (pct: number) => void): 
 
 // 表格不随条目数无限增高：表体限高后内部纵向滚动、表头固定（列宽合计见下方 columns）。
 // 滚动实现抽至 tableScroll.ts（管理端所有表格共用约定，spec.md §3）。
-const TABLE_MIN_WIDTH = 1260; // 固定列 1070 + 展示名最小可读宽度
+const TABLE_MIN_WIDTH = 1260; // 固定列 1080（含首列封面缩略图） + 展示名最小可读宽度
 
 /** 码率（bps）→ 可读字符串 */
 function formatBitrate(bps: number | null | undefined): string {
@@ -720,7 +718,7 @@ export function MediaList() {
         disabled: metadataBusyId !== null,
       },
       { type: "divider" as const },
-      { key: "cover", icon: <PictureOutlined />, label: "上传封面" },
+      { key: "cover", icon: <PictureOutlined />, label: "设置封面" },
     ],
     onClick: ({ key, domEvent }: { key: string; domEvent: { stopPropagation: () => void } }) => {
       domEvent.stopPropagation();
@@ -731,6 +729,8 @@ export function MediaList() {
     },
   });
 
+  // 封面上传（双模式共用，spec.md §2.3）：手动上传的 File 与截帧导出的 JPEG Blob（包装成 File）
+  // 都走同一端点 POST /api/admin/media/{id}/cover?filename=…，服务端逻辑无差别
   const handleCoverUpload = async (file: File) => {
     if (!coverTarget) return;
     setCoverUploading(true);
@@ -739,12 +739,12 @@ export function MediaList() {
         `/api/admin/media/${coverTarget.id}/cover?filename=${encodeURIComponent(file.name)}`,
         file,
       );
-      message.success("封面上传成功");
+      message.success("封面设置成功");
       setCoverTarget(null);
       void load();
     } catch (e) {
       if ((e as Error).message !== "未登录") {
-        message.error(e instanceof Error ? e.message : "封面上传失败");
+        message.error(e instanceof Error ? e.message : "封面设置失败");
       }
     } finally {
       setCoverUploading(false);
@@ -848,13 +848,6 @@ export function MediaList() {
           <Tag color="default">无</Tag>
         ),
     },
-    ...ASSET_COLUMNS.map(({ key, label }) => ({
-      title: label,
-      dataIndex: ["assets", key],
-      width: 100,
-      render: (n: number) =>
-        n > 0 ? <Tag color="green">{n} 个对象</Tag> : <Tag color="default">无</Tag>,
-    })),
     {
       title: "操作",
       key: "actions",
@@ -1131,35 +1124,63 @@ export function MediaList() {
         </Space>
       </Modal>
 
-      {/* 上传封面：落 cover/{id}/poster.{ext}（intent.md「更多」菜单） */}
+      {/* 设置封面（双模式，spec.md §2.3 / intent.md「更多」菜单）：
+          模式 A 手动上传（拖拽图片）；模式 B 视频截帧（浏览器侧 video → canvas → JPEG，
+          以 poster.jpg 走同一端点，服务端落键 cover/{id}/poster.{ext} 并回写 posterKey） */}
       <Modal
         open={coverTarget !== null}
-        title={`上传封面：${coverTarget?.title ?? coverTarget?.id ?? ""}`}
+        title={`设置封面：${coverTarget?.title ?? coverTarget?.id ?? ""}`}
         footer={null}
         onCancel={() => setCoverTarget(null)}
         destroyOnHidden
       >
         {coverTarget && (
-          <Upload.Dragger
-            accept="image/jpeg,image/png,image/webp,image/gif,image/avif"
-            multiple={false}
-            showUploadList={false}
-            disabled={coverUploading}
-            beforeUpload={(file) => {
-              void handleCoverUpload(file as File);
-              return false;
-            }}
-          >
-            <p className="ant-upload-drag-icon">
-              <PictureOutlined />
-            </p>
-            <p className="ant-upload-text">
-              {coverUploading ? "上传中…" : "点击或拖拽图片到此区域上传"}
-            </p>
-            <p className="ant-upload-hint">
-              支持 jpg / png / webp / gif / avif，将覆盖为该媒资的 poster（cover/{coverTarget.id}/）
-            </p>
-          </Upload.Dragger>
+          <Tabs
+            defaultActiveKey="upload"
+            items={[
+              {
+                key: "upload",
+                label: "手动上传",
+                children: (
+                  <Upload.Dragger
+                    accept="image/jpeg,image/png,image/webp,image/gif,image/avif"
+                    multiple={false}
+                    showUploadList={false}
+                    disabled={coverUploading}
+                    beforeUpload={(file) => {
+                      void handleCoverUpload(file as File);
+                      return false;
+                    }}
+                  >
+                    <p className="ant-upload-drag-icon">
+                      <PictureOutlined />
+                    </p>
+                    <p className="ant-upload-text">
+                      {coverUploading ? "上传中…" : "点击或拖拽图片到此区域上传"}
+                    </p>
+                    <p className="ant-upload-hint">
+                      支持 jpg / png / webp / gif / avif，将覆盖为该媒资的 poster（cover/{coverTarget.id}/）
+                    </p>
+                  </Upload.Dragger>
+                ),
+              },
+              {
+                key: "capture",
+                label: "视频截帧",
+                children: (
+                  <CoverFrameCapture
+                    src={`/api/admin/media/${coverTarget.id}/original`}
+                    uploading={coverUploading}
+                    onCapture={(blob) =>
+                      void handleCoverUpload(
+                        new File([blob], "poster.jpg", { type: "image/jpeg" }),
+                      )
+                    }
+                  />
+                ),
+              },
+            ]}
+          />
         )}
       </Modal>
 

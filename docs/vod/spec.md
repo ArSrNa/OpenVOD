@@ -89,6 +89,7 @@ root 下按资产类别分四个分区，互不嵌套：
 | `/api/admin/media/{id}` | DELETE | 删除：original 对象 + proceed/cover/metadata 三分区该 id 全部对象 + DB 行（级联 subtitles / transcode_jobs / hls_keys / playback_sessions）；幂等可重试。**级联范围说明**：open-questions #13 决议（软删 + 保留期 GC）之前的 v1 临时策略为**硬删除全级联** |
 | `/api/admin/media/{id}/original` | GET | 原视频预览：local 模式 Range 字节区间流式代理（206）；s3 模式预签名 GET 302 重定向（字节不经管理端）；no-store |
 | `/api/admin/media/{id}/cover` | POST | 上传封面：`cover/{id}/poster.{ext}`（jpg/png/webp/gif/avif）+ 回写 `media.poster_key`；手动上传 / 视频截帧双模式共用此端点（§2.3） |
+| `/api/admin/media/{id}/cover` | GET | 封面图片读取（列表首列缩略图 / 详情展示，§3.1）：local 整对象流式输出；s3 预签名 GET 302（字节不经管理端）；no-store |
 | `/api/admin/media/{id}/metadata` | POST | 生成元数据：ffprobe 探测 original（local 直读文件路径 / s3 预签名 GET URL 供流）→ 原始输出落 `metadata/{id}/probe.json`，归一化摘要（宽高 / 帧率 / 色彩空间 / 编码 / 码率 / 音轨等，`@openvod/transcode summarizeProbe`）回写 `media.probe` + `media.duration_ms`；幂等覆盖式更新；落 `audit_logs`（`media.metadata_generate`）。要求运行环境安装 ffprobe |
 | `/api/admin/keys` | GET | 密钥列表（§4.3）：`hls_keys` + 媒资展示名/状态 + proceed 对象数（存储不可用时为 null）；**响应中不存在任何密钥材料字段**（契约层就不定义） |
 | `/api/admin/keys/{mediaId}` | GET | 密钥详情：kid / method / iv / mk_ver / 生成时间 / 使用中会话数；明文 CEK 永不返回 |
@@ -124,12 +125,12 @@ root 下按资产类别分四个分区，互不嵌套：
 
 - 弹窗拖拽 / 选择本地图片（jpg / png / webp / gif / avif），原始字节直传端点。
 
-**模式 B：视频截帧（规范新增，待实现）**
+**模式 B：视频截帧（已实现，2026-09-18）**
 
-- 弹窗内播放 original 原视频（复用预览播放器），**拖拽进度条选择目标时间点**，取当前帧画面作为封面；
+- 弹窗内播放 original 原视频（「手动上传 / 视频截帧」双 Tab 中的截帧 Tab，`<video>` 原生控件），**拖拽进度条选择目标时间点**（antd Slider，拖拽期间挂起播放进度回写），取当前帧画面作为封面；
 - 截帧在**浏览器侧**完成（`<video>` 当前帧 → canvas → JPEG），不依赖 ffmpeg / Worker，服务端零新增负载；产物以 `poster.jpg` 字节走同一端点，服务端逻辑与模式 A 完全一致；
 - 导出约束：JPEG 质量 0.9；帧分辨率超过 1280px 最长边时等比缩小（控制封面体积）；
-- 跨域前置：local 模式预览为同源 Range 代理，可直接截取；s3 模式预览为预签名 302 跳转，**要求对象桶 CORS 允许管理端源站**（否则 canvas 被污染、帧无法导出）；截帧失败（SecurityError）时提示改用手动上传，不阻塞端点。
+- 跨域前置：local 模式预览为同源 Range 代理，可直接截取；s3 模式预览为预签名 302 跳转，`<video>` 必须显式 `crossOrigin="anonymous"` 以 CORS 模式拉流（媒体元素默认 no-cors，即使桶已放行 CORS 画布仍会被污染、导出抛 SecurityError）；**要求对象桶 CORS 允许管理端源站**（AllowedOrigin 与页面源站含协议端口精确匹配、Method 含 GET 与 OPTIONS——Range 头触发预检、AllowedHeader 含 Range 或 `*`）；CORS 未放行时视频直接加载失败（onError 提示排查项并回退手动上传），不阻塞端点。
 
 ## 3. 管理端页面
 
@@ -142,7 +143,7 @@ root 下按资产类别分四个分区，互不嵌套：
 
 ### 3.1 已实现页面
 
-- `/media`（媒资管理，M1/M2 已实现，M3 增产物操作）：媒资列表表格——媒资 ID、展示名、生命周期状态、原始文件（格式 / 大小 / 上传时间）、**转码产物（按模板分组：`N 组产物 · M 个对象`，悬停列出每套产物的模板名与档位，点击打开产物列表）**、封面图片；详情弹窗显示产物组数并提供「产物列表（播放 / 删除）」入口（不再逐套平铺）；
+- `/media`（媒资管理，M1/M2 已实现，M3 增产物操作）：媒资列表表格——**封面缩略图（首列，antd Image，经 GET `/cover` 读取，点击预览大图；未设置显示「未设置」）**、媒资 ID、展示名、生命周期状态、原始文件（格式 / 大小 / 上传时间）、**转码产物（按模板分组：`N 组产物 · M 个对象`，悬停列出每套产物的模板名与档位，点击打开产物列表）**；详情弹窗显示产物组数并提供「产物列表（播放 / 删除）」入口（不再逐套平铺）；
   - **产物列表（抽屉，按模板一行）**：模板名（已删显示「模板已删除（id 前缀）」；旧布局显示「未分组（旧布局）」）、存储前缀 `proceed/{id}/{模板id}/`、变体（`1080p / 720p`）、对象数、体积；操作：
     - **播放** = 解密播放预览（`POST /media/{id}/preview-play` → 分发端签名主清单 URL → hls.js / Safari 原生播放，浏览器本地解密；管理端不出密钥，§4.3），播放弹窗标注「AES-128 加密（浏览器本地解密）」或「未加密」与模板 ID；
     - **删除** = 按模板删除该套产物（`DELETE /media/{id}/products/{templateId}`；确认弹窗给出前缀 / 对象数 / 体积与不可恢复警告；同模板有进行中任务时 409，需等待其结束）；

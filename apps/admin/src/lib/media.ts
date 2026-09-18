@@ -173,6 +173,8 @@ export interface MediaRow {
   title: string | null;
   /** 生命周期状态（数据库；无 DB 行为 null） */
   status: string | null;
+  /** 封面对象键（数据库 posterKey；列表首列缩略图展示用） */
+  posterKey: string | null;
   ext: string;
   key: string;
   size: number;
@@ -184,10 +186,10 @@ export interface MediaRow {
 
 export async function listMedia(): Promise<{ total: number; items: MediaRow[] }> {
   const storage = getStorage();
-  type MediaDbRow = { id: string; title: string; status: string };
+  type MediaDbRow = { id: string; title: string; status: string; posterKey: string | null };
   // DB 查询失败时降级为纯存储视角（title/status 置 null），保证列表可用
   const rowsTask: Promise<MediaDbRow[]> = db.media
-    .findMany({ select: { id: true, title: true, status: true } })
+    .findMany({ select: { id: true, title: true, status: true, posterKey: true } })
     .catch(() => [] as MediaDbRow[]);
   const [originals, proceeds, covers, metadatas, rows] = await Promise.all([
     storage.listObjects(`${STORAGE_PARTITIONS.original}/`),
@@ -222,6 +224,7 @@ export async function listMedia(): Promise<{ total: number; items: MediaRow[] }>
       id: m[1],
       title: row?.title ?? null,
       status: row?.status ?? null,
+      posterKey: row?.posterKey ?? null,
       ext: m[2].toLowerCase(),
       key: o.key,
       size: o.size,
@@ -446,6 +449,19 @@ export async function resolveOriginalKey(id: string): Promise<string | null> {
     .catch(() => null);
   if (row?.sourceKey) return row.sourceKey;
   return findOriginalKey(id);
+}
+
+// ---- 封面定位（列表 / 详情展示用；GET /api/admin/media/{id}/cover） ----
+
+/** 解析媒资 poster 对象键：优先 DB posterKey，兜底存储 cover/{id}/ 下 poster.* 过滤 */
+export async function resolvePosterKey(id: string): Promise<string | null> {
+  assertMediaId(id);
+  const row = await db.media
+    .findUnique({ where: { id }, select: { posterKey: true } })
+    .catch(() => null);
+  if (row?.posterKey) return row.posterKey;
+  const covers = await getStorage().listObjects(`${STORAGE_PARTITIONS.cover}/${id}/`);
+  return covers.find((o) => /\/poster\.[a-z0-9]+$/i.test(o.key))?.key ?? null;
 }
 
 /** 业务错误 → 统一错误信封响应 */

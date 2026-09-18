@@ -196,5 +196,90 @@ export const CreateTranscodeTemplateRequest = TranscodeTemplateInput.extend({
 /** PATCH 语义：字段缺省 = 不修改（不带默认值，避免误改） */
 export const UpdateTranscodeTemplateRequest = TranscodeTemplateInput.partial();
 
+// ---- 转码任务（M2，ADR-0008/0014；仅管理端与 Worker 消费，Go 分发端不消费 → 不进 gen-json 清单） ----
+
+/** transcode_jobs.status 取值（与 Prisma `JobStatus` 枚举逐字一致） */
+export const JOB_STATUSES = ["QUEUED", "PROBING", "ENCODING", "PACKAGING", "DONE", "FAILED"] as const;
+
+/** 发起任务时写入 `transcode_jobs.template_snapshot` 的模板快照（防漂移：模板后续改删不影响已入队任务） */
+export const TranscodeTemplateSnapshot = z.object({
+  template_id: z.string(),
+  name: z.string(),
+  keep_original: z.boolean(),
+  encrypt: z.boolean(),
+  format: z.enum(TEMPLATE_FORMATS),
+  params: TranscodeTemplateParams.nullable(),
+});
+
+export const TranscodeSubmitRequest = z.object({
+  template_id: z.string().min(1, "请选择转码模板"),
+});
+
+export const TranscodeSubmitResponse = z.object({
+  job_id: z.string(),
+  status: z.enum(JOB_STATUSES),
+});
+
+/** 转码任务列表项（管理端「转码任务」页） */
+export const TranscodeJobDTO = z.object({
+  id: z.string(),
+  media_id: z.string(),
+  media_title: z.string().nullable(),
+  status: z.enum(JOB_STATUSES),
+  template_id: z.string().nullable(),
+  /** 取快照里的模板名（模板被删也能追溯） */
+  template_name: z.string().nullable(),
+  attempts: z.number().int(),
+  last_error: z.string().nullable(),
+  created_at: z.string(),
+  started_at: z.string().nullable(),
+  finished_at: z.string().nullable(),
+});
+
+// ---- 密钥管理（spec.md §4.3；ADR-0006） ----
+// 仅管理端消费：分发端 /key 返回裸字节（octet-stream）、Go 侧不消费任何 DTO，
+// 故本节**不进 gen-json.ts 清单、不生成 Go struct**（同转码模板，ADR-0014）。
+// P0 红线：本节所有 schema 都不含「明文 CEK / 封装 CEK」字段，从类型层杜绝密钥外泄。
+
+/** 密钥列表项（含媒资展示信息；绝不含任何密钥材料） */
+export const MediaKeyListItem = z.object({
+  media_id: z.string(),
+  title: z.string().nullable(),
+  media_status: z.string().nullable(),
+  kid: z.string(),
+  method: z.string(),
+  mk_ver: z.number().int(),
+  created_at: z.string(),
+  /** 该媒资 proceed 分区对象数（存储不可用时为 null，便于判断密钥是否真在被使用） */
+  proceed_objects: z.number().int().nullable(),
+});
+
+/** 密钥详情（iv 是公开值：本就写在清单 EXT-X-KEY 中） */
+export const MediaKeyDetail = MediaKeyListItem.extend({
+  iv: z.string(),
+  /** 未吊销且未过期的播放会话数（>0 = 密钥正在被使用，删除会被拒） */
+  active_sessions: z.number().int(),
+});
+
+/** MK 版本状态：只暴露版本号与用量计数，不暴露任何密钥材料 */
+export const MasterKeyStatus = z.object({
+  active_ver: z.number().int(),
+  versions: z.array(z.object({ ver: z.number().int(), keys: z.number().int() })),
+  total_keys: z.number().int(),
+});
+
+export const RotateMasterKeysRequest = z.object({
+  /** 只轮换来自该版本的行（省略 = 全部非 active 版本） */
+  from_ver: z.number().int().positive().optional(),
+});
+
+export const RotateMasterKeysResponse = z.object({
+  rotated: z.number().int(),
+  failed: z.number().int(),
+  to_ver: z.number().int(),
+  /** 失败明细（仅 kid / media_id 与原因，不含密钥材料；最多返回 20 条） */
+  errors: z.array(z.object({ media_id: z.string(), kid: z.string(), message: z.string() })).max(20),
+});
+
 // 管理端 / Worker 直接复用同一份 zod 实例做请求校验（避免各包重复声明 zod 依赖）
 export { z } from "zod";

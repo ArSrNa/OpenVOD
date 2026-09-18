@@ -189,7 +189,8 @@ model Media {
   updatedAt   DateTime    @updatedAt @map("updated_at")
 
   subtitles MediaSubtitle[]
-  hlsKeys   HlsKey[]
+  /// 每媒资一份 HLS 密钥（spec.md §4.1）；一对一，重转码整行替换
+  hlsKey    HlsKey?
   jobs      TranscodeJob[]
   sessions  PlaybackSession[]
 
@@ -264,10 +265,11 @@ model TranscodeTemplate {
   @@map("transcode_templates")
 }
 
-/// 每媒资 HLS 内容密钥（明文 CEK 不入库，ADR-0006）
+/// 每媒资 HLS 内容密钥（明文 CEK 不入库，ADR-0006）；media_id 唯一 = 「每媒资一份密钥」的
+/// DB 级保证（spec.md §4.1）：重转码时在事务内整行替换（新 kid → 删旧 kid），不做同媒资多版本并存
 model HlsKey {
   id         String   @id @default(cuid())
-  mediaId    String   @map("media_id")
+  mediaId    String   @unique @map("media_id")
   kid        String   @unique
   method     String   @default("AES-128")
   /// 显式随机 IV（hex，ADR-0006）

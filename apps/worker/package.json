@@ -2,12 +2,14 @@
   "name": "@openvod/worker",
   "version": "0.0.1",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts"
   },
   "dependencies": {
+    "@openvod/contracts": "workspace:*",
     "@openvod/crypto": "workspace:*",
     "@openvod/db": "workspace:*",
     "@openvod/shared": "workspace:*",

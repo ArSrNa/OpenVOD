@@ -25,8 +25,9 @@
 ### 功能目标
 
 - **媒资管理**：上传、探测（ffprobe）、生命周期状态（就绪 / 转码中 / 失败 / 下架 / 删除）
-- **转码**：自定义 ffmpeg 参数模板，输出 HLS（默认 TS + AES-128 加密），多码率 ABR
-- **加密分发**：HLS AES-128；密钥分级（CEK/MK）；播放密钥受控下发；URL 全链路签名
+- **转码**：自定义 ffmpeg 参数模板，输出 HLS（TS 容器；**是否 AES-128 加密由模板开关决定**，见「转码模板管理」与 spec.md §4），多码率 ABR
+- **加密分发**：HLS AES-128；密钥分级（MK → **每媒资独立随机 CEK**，**不存在跨媒资共用的固定密钥**）；播放密钥受控下发（仅经鉴权后的密钥接口、响应 no-store，绝不入存储 / CDN / 日志）；URL 全链路签名
+- **密钥管理**（管理端，只读 + 生命周期操作）：查看媒资加密状态（kid / method / mk_ver / 生成时间）、MK 版本与轮换、配合会话吊销；**任何页面 / 接口 / 日志都不提供明文密钥的查看或导出**（规范见 spec.md §4）
 - **元数据**：系统元数据（时长 / 分辨率 / 编码等）+ 业务自定义数据（标题、id、任意 JSON 扩展）
 - **字幕**：WebVTT 上传 / 编辑 / 管理；分发端按语言轨道下发
 - **用户体系**：播放端用户（管理端维护，双端共享库）；分发端登录签发短期 JWT；播放会话可吊销
@@ -71,6 +72,12 @@
 - ✅ 已完成：**上传**（原始字节流直传 `original/{id}.{ext}`，数字 ID 生成 + `media.id` 落库 + 冲突重取）；**媒资列表**（存储四分区聚合 + DB 展示名/状态合并）；**预览**（弹窗播放 original：local Range 流式代理 / s3 预签名 302）；**重命名**（仅改 `media.title`）；**详情**（弹窗展示元数据，probe 摘要结构化展示）；**上传封面**（`cover/{id}/poster.{ext}` + 回写 posterKey）；**删除**（存储四分区级联 + DB 行级联，#13 决议前的临时硬删策略，见 spec.md §2.1）；**生成元数据**（2026-09-18：`/media/{id}/metadata`，ffprobe 探测 → `metadata/{id}/probe.json` + `media.probe` 摘要 / `duration_ms`，spec.md §2.1）；媒资敏感操作审计（`audit_logs`）。
 - ⏳ 未完成（TODO，接口 501 占位）：**转码发起**（M2，`/media/{id}/transcode`，Worker `tick()` 仍为空实现）；**字幕管理**（M4，`/media/{id}/subtitles`）；**封面截帧取图**（浏览器侧取帧，复用 cover 端点，spec.md §2.3）；大文件 S3 分片直传（presignPut multipart）演进；媒资列表分页（v1 全量列举）。
 
+**实现状态（2026-09-18，密钥管理竖切；端点明细见 spec.md §2.1、规范见 §4）**
+
+- ✅ 已完成：**每媒资一份密钥的 DB 保证**（`hls_keys.media_id` 唯一约束 + 一对一关系，迁移 `20260918220000_hls_keys_media_unique`）；**密钥材料纯函数**（`@openvod/crypto`：`createMediaKey` / `openMediaKey` / `resealMediaKey` / `pickWrappingMasterKey`，13 项单测含往返解封、错误 MK、篡改、轮换幂等）；**密钥管理 API**（`/api/admin/keys` 列表、`/{mediaId}` 详情与删除、`/mk` 版本状态、`/rotate-mk` 轮换，全部不返回密钥材料）；**密钥管理页面**（`/keys`：列表 + 顶栏 MK 版本用量 + 详情 / 删除 / 轮换）；密钥操作审计（`key.delete` / `key.rotate_mk`）。
+- ✅ 已完成（2026-09-18，Worker 密钥落地）：`apps/worker/src` 的 `media-keys.ts`（`generateMediaKey` 只生成不落库 / `persistMediaKey` 产物上传成功后才落库）、`media-key-store.ts`（Prisma **事务内先删旧行再写新行**——唯一约束使「先插后删」不可行；失败整体回滚、旧密钥行原样保留）、`key-files.ts`（key_info + 16B 裸字节 CEK 临时文件 + 幂等清理）；Worker 启动 MASTER_KEYS 自检；**7 项测试**含 DB 事务回滚安全性与 ffmpeg 端到端（产物用生成的 CEK 可解出 TS 同步字节）；顺带修复 `buildKeyInfoFile` 第三行 `0x` 前缀导致 ffmpeg 加密失败的真 bug（清单出现 `IV=0x0x…`）。
+- ⏳ 未完成：**Worker 的认领 / 探测 / 逐档 ffmpeg / 产物上传**（M2 其余部分，接入点已在 `tick()` 按序标注：生成 → key_info → 转码上传 → 落库 → 清理）；**分发端 `/v1/media/{id}/key`**（token(k) 鉴权下发明文 CEK，M3）；CEK 轮换 = 重转码（ADR-0006 §6）。
+
 ### 封面设置（媒资管理，2026-09-18 用户定）
 
 媒资封面（poster）支持两种设置方式，落位与回写逻辑完全一致（权威规则见 spec.md §2.3）：
@@ -96,7 +103,7 @@
 
 - 视频参数：编码器（从 ffmpeg 支持的编码器列表选择，v1 主用 **x264 / x265**，即 libx264 / libx265）、分辨率、码率（或 CRF）、帧率、preset 等；
 - **保持原视频配置**：模板可声明不重编码，仅做 HLS 封装（+ 可选加密），用于**只加密流程**（省转码成本，源参数原样输出）；
-- **是否加密**：开关项。开启后关联 ADR-0006 密钥管理流程：生成媒资 CEK → MK 封装落 `hls_keys` → HLS AES-128（key_info）加密分片；
+- **是否加密**：**开关项，不承载密钥选择**——开启后由 Worker 在执行任务时为该媒资随机生成 CEK → MK 封装落 `hls_keys` → HLS AES-128（key_info）加密分片；管理端**不可指定、复用或替换密钥**（理由：共享密钥会把泄露爆炸半径放大到全部媒资，规范见 spec.md §4）；
 - 输出格式：v1 统一为 **M3U8（HLS）**；其他格式（MP4 直出等）后续以新增 intent 扩展。硬约束：**选择了加密，输出必须为 HLS**（模板校验层面直接拒绝非法组合，不进入任务队列）。
 
 **模板 → ffmpeg 命令（必经流程）**：模板本身不可执行，submit 转码任务后必须编译为 ffmpeg 命令——含「保持原视频配置」（`-c copy` 重封装 + 切片 + 可选加密）。submit 时仅做校验与快照（源参数未知，不产 argv）；实际 argv 由 Worker 探测后以「实测源参数 + 模板快照」为输入编译，详见 ADR-0014。
@@ -123,6 +130,8 @@
 ## 非目标（v1 明确不做）
 
 - DRM（Widevine / FairPlay / PlayReady）与 license server —— 演进路径见 ADR-0006
+- **固定密钥 / 跨媒资共享密钥 / 管理端自定义密钥**：模板的加密开关不承载密钥选择，密钥永远按媒资随机生成（spec.md §4.1）——避免单点泄露放大到全部媒资且无法轮换收敛
+- **明文密钥的查看 / 导出**：管理端无此入口；密钥唯一出口是分发端鉴权后的密钥接口（token 绑定 mid + sid，no-store）
 - 直播 / 低延迟直播 / 实时转码
 - 视频剪辑与时间线编辑
 - 每用户独立的分片加密（ADR-0006 权衡）

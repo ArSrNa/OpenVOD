@@ -41,6 +41,7 @@
       "name": "@openvod/worker",
       "version": "0.0.1",
       "dependencies": {
+        "@openvod/contracts": "workspace:*",
         "@openvod/crypto": "workspace:*",
         "@openvod/db": "workspace:*",
         "@openvod/shared": "workspace:*",
@@ -59,6 +60,9 @@
     "packages/crypto": {
       "name": "@openvod/crypto",
       "version": "0.0.1",
+      "dependencies": {
+        "@openvod/shared": "workspace:*",
+      },
     },
     "packages/db": {
       "name": "@openvod/db",

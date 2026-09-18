@@ -1,6 +1,13 @@
 // 转码 Worker 常驻容器入口（ADR-0008：禁止上函数，P0）
-// 骨架：工具链自检 + 轮询框架；认领/执行/lease 续期逻辑随 specification 实现。
+// 职责：轮询认领 transcode_jobs → 探测 → 逐档转码（可选 AES-128）→ 上传 → 密钥落库 → 状态联动。
+import type { MasterKey } from "@openvod/crypto";
+import { createStorageFromEnv } from "@openvod/storage";
 import { DEFAULT_LADDER } from "@openvod/transcode";
+import { executeClaimedJob } from "./executor";
+import { createPrismaTranscodeJobStore } from "./job-store";
+import { createPrismaMediaKeyStore } from "./media-key-store";
+import { createPrismaMediaStore } from "./media-store";
+import { describeMasterKeys, loadMasterKeys } from "./media-keys";
 
 interface ToolCheck {
   name: string;
@@ -31,24 +38,64 @@ if (missing.length) {
 
 console.log(`[worker] ladder = ${DEFAULT_LADDER.map((e) => e.name).join(" / ")}`);
 
+// 密钥前置自检（spec.md §4.2）：加密任务必需 MASTER_KEYS，未加密任务不依赖它 → 告警而非退出
+let masterKeys: MasterKey[] | undefined;
+try {
+  masterKeys = loadMasterKeys();
+  console.log(`[worker] MASTER_KEYS ${describeMasterKeys(masterKeys)}`);
+} catch (e) {
+  console.warn(`[worker] ${(e as Error).message} —— 加密转码任务将失败（未加密模板不受影响）`);
+}
+
 const intervalMs = Number(process.env.WORKER_POLL_INTERVAL_MS ?? 2000);
+const leaseMs = Number(process.env.WORKER_LEASE_MS ?? 60_000);
+const maxAttempts = Number(process.env.WORKER_MAX_ATTEMPTS ?? 3);
+
+const jobStore = createPrismaTranscodeJobStore();
+const mediaStore = createPrismaMediaStore();
+const keyStore = createPrismaMediaKeyStore();
+const storage = createStorageFromEnv();
+
 let running = true;
 process.on("SIGTERM", () => (running = false));
 process.on("SIGINT", () => (running = false));
 
+/** 单轮：认领一个任务并执行（无可认领任务立即返回） */
 async function tick(): Promise<void> {
-  // TODO(specification, ADR-0008)：
-  // 1) 认领：MySQL `FOR UPDATE SKIP LOCKED` / SQLite CAS，写 leaseUntil
-  // 2) 预取源片 → ffprobe → 回写 media.probe
-  // 3) 生成 CEK/IV/kid → key_info（@openvod/transcode buildKeyInfoFile）
-  // 4) 逐档 ffmpeg（planHlsArgs）→ 产物上传（@openvod/storage）
-  // 5) wrap CEK 写 hls_keys；media 状态联动；清理临时目录
-  await Bun.sleep(0);
+  const job = await jobStore.claim({ leaseMs, maxAttempts });
+  if (!job) return;
+
+  console.log(`[worker] 认领任务 ${job.id}（媒资 ${job.mediaId}，第 ${job.attempts} 次尝试）`);
+  try {
+    const result = await executeClaimedJob(job, {
+      jobStore,
+      mediaStore,
+      keyStore,
+      storage,
+      masterKeys,
+      leaseMs,
+      log: (msg) => console.log(`[worker] ${msg}`),
+    });
+    const variants = result.variants.map((v) => `${v.name}(${v.files} 文件)`).join(" / ");
+    console.log(
+      `[worker] 任务 ${job.id} 完成：${variants}${result.encrypted ? "｜AES-128 加密" : ""}` +
+        `｜上传 ${result.uploadedObjects} 个对象` +
+        `${result.deletedStaleObjects ? `｜清理旧产物 ${result.deletedStaleObjects} 个` : ""}`,
+    );
+  } catch (e) {
+    const message = (e as Error).message;
+    console.error(`[worker] 任务 ${job.id} 失败：${message}`);
+    await jobStore
+      .setStatus(job.id, "FAILED", { lastError: message, finishedAt: new Date(), leaseUntil: null })
+      .catch((err) => console.error("[worker] 标记失败状态出错:", err));
+  }
 }
 
-console.log(`[worker] polling every ${intervalMs}ms (scaffold: tick 为空实现)`);
+console.log(
+  `[worker] polling every ${intervalMs}ms（lease ${leaseMs}ms，最大尝试 ${maxAttempts} 次）`,
+);
 while (running) {
-  await tick().catch((e) => console.error("[worker] tick error:", e));
+  await tick().catch((e) => console.error("[worker] tick error:", (e as Error).message));
   await Bun.sleep(intervalMs);
 }
 console.log("[worker] bye");

@@ -54,3 +54,4 @@ export function createStorage(cfg: StorageConfig): StorageAdapter {
 export { LocalAdapter, type LocalConfig } from "./local";
 export { withRootPrefix, relativeTo } from "./prefix";
 export { S3Adapter, type S3Config } from "./s3";
+export { createStorageFromEnv, resolveStorageDriver, type StorageDriver } from "./from-env";

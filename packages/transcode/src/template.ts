@@ -6,10 +6,14 @@
 //   - 自适应档：源已在约束内 → 不缩放，视为持平跳过（open-questions #18）；
 //   - 模板目标帧率高于源 → 帧率升格跳过；低于源 → 降帧率执行；缺省/源未知 → 保持源帧率。
 // argv 只做数组插值，永不经 shell 拼接（ADR-0008 安全边界）；密钥路径仅 Worker 注入。
-import {
-  TranscodeTemplateParams,
-  type TranscodeTemplateParams as TemplateParams,
-} from "@openvod/contracts";
+import { TranscodeTemplateParams, z } from "@openvod/contracts";
+
+/**
+ * 模板结构化参数的 TS 类型（zod schema 的 infer 结果）。
+ * 注意：`TranscodeTemplateParams` 是 **zod schema 值**，在类型位置必须经 `z.infer`；
+ * 直接 `import type { TranscodeTemplateParams as TemplateParams }` 会把值当类型用（TS2749）。
+ */
+type TemplateParams = z.infer<typeof TranscodeTemplateParams>;
 
 /** ffprobe 实测源视频参数（编译的唯一事实来源，来自 media.probe 摘要） */
 export interface SourceInfo {

@@ -1,5 +1,6 @@
 // 模板 → ffmpeg argv 编译器单测（intent.md「转码模板管理」规则 1/2；ADR-0014）
 import { describe, expect, test } from "bun:test";
+import { buildKeyInfoFile } from "../src/index";
 import { compileKeepOriginal, compileTemplate, TemplateCompileError } from "../src/template";
 
 const OPTS = { input: "/tmp/in.mp4", outRoot: "/tmp/out" };
@@ -228,5 +229,28 @@ describe("非法参数防护", () => {
         OPTS,
       ),
     ).toThrow(TemplateCompileError);
+  });
+});
+
+// key_info 第三行必须**不带 0x**：ffmpeg 会自行加前缀，带上就产出 `IV=0x0x…` 并报
+// `Error setting option encryption_iv`（加密失败、分片不产出）——实测 ffmpeg 6.1 踩坑回归守卫。
+describe("key_info（ADR-0006 §2）", () => {
+  const iv = "b1c09b64066a9ab1233f65f5d2efddc8";
+
+  test("三行：占位 URI / CEK 路径 / 纯 hex IV", () => {
+    expect(
+      buildKeyInfoFile({
+        keyUriPlaceholder: "https://delivery.example/v1/media/00000042/key",
+        cekFilePath: "/tmp/jobs/j1/ceks/k.key",
+        ivHex: iv,
+      }),
+    ).toBe(`https://delivery.example/v1/media/00000042/key\n/tmp/jobs/j1/ceks/k.key\n${iv}\n`);
+  });
+
+  test("调用方误传 0x / 大写也归一化为纯 hex", () => {
+    const plain = "a".repeat(32);
+    expect(buildKeyInfoFile({ keyUriPlaceholder: "u", cekFilePath: "p", ivHex: `0X${plain.toUpperCase()}` })).toBe(
+      `u\np\n${plain}\n`,
+    );
   });
 });

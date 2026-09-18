@@ -234,7 +234,11 @@ export const DEFAULT_LADDER: LadderEntry[] = [
  * HLS AES-128 key_info 文件内容（三行，ADR-0006 §2）：
  *   1) 密钥 URI（转码期占位，分发时由 m3u8 改写替换）
  *   2) 本地 16B CEK 文件路径（任务结束即清理）
- *   3) 显式 IV（hex，0x 前缀）
+ *   3) 显式 IV（**纯 hex，不带 0x 前缀**）
+ *
+ * 第三行不能带 `0x`：ffmpeg 会原样取用该字符串并在清单里自行加前缀，
+ * 带上就会产出 `EXT-X-KEY:...IV=0x0x…` 并报
+ * `Error setting option encryption_iv`（加密失败，分片不产出）——实测于 ffmpeg 6.1。
  */
 export function buildKeyInfoFile(opts: {
   keyUriPlaceholder: string;
@@ -242,7 +246,7 @@ export function buildKeyInfoFile(opts: {
   ivHex: string;
 }): string {
   const iv = opts.ivHex.toLowerCase().replace(/^0x/, "");
-  return `${opts.keyUriPlaceholder}\n${opts.cekFilePath}\n0x${iv}\n`;
+  return `${opts.keyUriPlaceholder}\n${opts.cekFilePath}\n${iv}\n`;
 }
 
 /** 单档转码 ffmpeg argv（TS + AES-128，ADR-0006/0008；完整 preset/override 机制 specification 落地） */
@@ -284,3 +288,7 @@ export function buildMasterPlaylist(entries: LadderEntry[], opts: { mediaId: str
   }
   return lines.join("\n") + "\n";
 }
+
+// 模板 → argv 编译器（ADR-0014；compileTemplate / compileKeepOriginal / validateTemplateParams）。
+// 必须在此 re-export：包的 exports 只暴露 "."，不 re-export 则消费者（Worker / 管理端）无法引用。
+export * from "./template";

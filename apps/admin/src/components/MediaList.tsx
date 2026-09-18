@@ -1,8 +1,9 @@
 "use client";
 
-// 媒资管理页（/media，intent.md 媒资管理操作 M1 竖切）：
+// 媒资管理页（/media，intent.md 媒资管理操作）：
 // 上传原视频 / 预览（弹窗播放 original）/ 详情 / 重命名 / 删除 / 上传封面 / 生成元数据（ffprobe）；
-// 「更多」菜单中的转码 / 字幕管理为 TODO（随 M2 / M4 里程碑实现，接口 501 占位）。
+// 「更多 → 转码」已实现（M2：选转码模板入队 transcode_jobs，Worker 认领执行，进度见「转码任务」页）；
+// 「更多 → 字幕管理」仍为 TODO（M4，接口 501 占位）。
 import {
   CloudUploadOutlined,
   DeleteOutlined,
@@ -27,6 +28,7 @@ import {
   Input,
   Modal,
   Popconfirm,
+  Select,
   Space,
   Table,
   Tag,
@@ -101,6 +103,16 @@ interface ProbeSummary {
     bitrate: number | null;
   }>;
   subtitleCount: number;
+}
+
+/** 转码模板选项（/api/admin/templates DTO 的子集，转码弹窗用） */
+interface TemplateOption {
+  id: string;
+  name: string;
+  keep_original: boolean;
+  encrypt: boolean;
+  format: string;
+  is_default: boolean;
 }
 
 // 存储布局分区（spec.md §1；列展示与 API 响应字段一一对应）
@@ -303,6 +315,13 @@ export function MediaList() {
 
   const [metadataBusyId, setMetadataBusyId] = useState<string | null>(null);
 
+  // 转码（M2）：选模板发起 → transcode_jobs 入队，Worker 认领执行
+  const [transcodeTarget, setTranscodeTarget] = useState<MediaListItem | null>(null);
+  const [transcodeTemplates, setTranscodeTemplates] = useState<TemplateOption[]>([]);
+  const [transcodeTemplatesLoading, setTranscodeTemplatesLoading] = useState(false);
+  const [transcodeTemplateId, setTranscodeTemplateId] = useState<string | undefined>(undefined);
+  const [transcodeSubmitting, setTranscodeSubmitting] = useState(false);
+
   const fetchJson = useCallback(
     async (url: string, init?: RequestInit) => {
       const res = await fetch(url, { cache: "no-store", ...init });
@@ -452,6 +471,47 @@ export function MediaList() {
     }
   };
 
+  // ---- 转码（M2）：选模板发起 → transcode_jobs 入队（Worker 认领执行） ----
+  const openTranscode = async (record: MediaListItem) => {
+    setTranscodeTarget(record);
+    setTranscodeTemplateId(undefined);
+    setTranscodeTemplatesLoading(true);
+    try {
+      const data = (await fetchJson("/api/admin/templates")) as { items: TemplateOption[] };
+      const list = data.items ?? [];
+      setTranscodeTemplates(list);
+      const preferred = list.find((t) => t.is_default) ?? list[0];
+      if (preferred) setTranscodeTemplateId(preferred.id);
+    } catch (e) {
+      if ((e as Error).message === "未登录") return;
+      message.error(e instanceof Error ? e.message : "加载转码模板失败");
+    } finally {
+      setTranscodeTemplatesLoading(false);
+    }
+  };
+
+  const handleTranscodeSubmit = async () => {
+    if (!transcodeTarget || !transcodeTemplateId) return;
+    setTranscodeSubmitting(true);
+    try {
+      const res = (await fetchJson(`/api/admin/media/${transcodeTarget.id}/transcode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ template_id: transcodeTemplateId }),
+      })) as { job_id: string };
+      message.success(`转码任务已入队（${res.job_id}），可在「转码任务」页查看进度`);
+      setTranscodeTarget(null);
+      void load();
+    } catch (e) {
+      if ((e as Error).message === "未登录") return;
+      message.error(e instanceof Error ? e.message : "发起转码失败");
+    } finally {
+      setTranscodeSubmitting(false);
+    }
+  };
+
+  const selectedTemplate = transcodeTemplates.find((t) => t.id === transcodeTemplateId);
+
   const moreMenu = (record: MediaListItem) => ({
     items: [
       { key: "transcode", icon: <ThunderboltOutlined />, label: "转码" },
@@ -468,7 +528,7 @@ export function MediaList() {
     onClick: ({ key, domEvent }: { key: string; domEvent: { stopPropagation: () => void } }) => {
       domEvent.stopPropagation();
       if (key === "cover") setCoverTarget(record);
-      else if (key === "transcode") todoHint("转码", "M2 转码")();
+      else if (key === "transcode") void openTranscode(record);
       else if (key === "subtitle") todoHint("字幕管理", "M4 字幕与元数据")();
       else if (key === "metadata") void handleGenerateMetadata(record);
     },
@@ -774,6 +834,53 @@ export function MediaList() {
             <Input placeholder="媒资展示名" onPressEnter={() => void handleRename()} />
           </Form.Item>
         </Form>
+      </Modal>
+
+      {/* 转码：选模板发起（M2，ADR-0008/0014）；源片规格不足的档位由 Worker 在探测后自动跳过 */}
+      <Modal
+        open={transcodeTarget !== null}
+        title={`发起转码：${transcodeTarget?.title ?? transcodeTarget?.id ?? ""}`}
+        okText="发起转码"
+        cancelText="取消"
+        confirmLoading={transcodeSubmitting}
+        okButtonProps={{ disabled: !transcodeTemplateId }}
+        onOk={() => void handleTranscodeSubmit()}
+        onCancel={() => setTranscodeTarget(null)}
+        destroyOnHidden
+      >
+        <Space direction="vertical" size={12} style={{ display: "flex", marginTop: 8 }}>
+          <div>
+            <Typography.Text type="secondary">转码模板</Typography.Text>
+            <Select
+              style={{ width: "100%", marginTop: 4 }}
+              placeholder={transcodeTemplatesLoading ? "加载模板…" : "请选择模板"}
+              loading={transcodeTemplatesLoading}
+              value={transcodeTemplateId}
+              onChange={(v: string) => setTranscodeTemplateId(v)}
+              notFoundContent={<Empty description="暂无模板，请先到「转码模板」页创建" />}
+              options={transcodeTemplates.map((t) => ({
+                value: t.id,
+                label: `${t.name}${t.is_default ? "（默认）" : ""}`,
+              }))}
+            />
+          </div>
+          {selectedTemplate && (
+            <Space size={6} wrap>
+              <Tag color={selectedTemplate.keep_original ? "purple" : "geekblue"}>
+                {selectedTemplate.keep_original ? "保持原视频（仅封装 + 可选加密）" : "转码"}
+              </Tag>
+              <Tag color={selectedTemplate.encrypt ? "red" : "default"}>
+                {selectedTemplate.encrypt ? "AES-128 加密" : "不加密"}
+              </Tag>
+              <Tag>{selectedTemplate.format}</Tag>
+            </Space>
+          )}
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            发起后由 Worker 认领执行：ffprobe 探测 → 按模板逐档转码（升格 / 与源持平的档位自动跳过）
+            {selectedTemplate?.encrypt ? " → 为该媒资生成独立 CEK 并加密分片" : ""} → 上传 proceed/
+            {transcodeTarget?.id ?? "{id}"}/。进度与失败原因见「转码任务」页。
+          </Typography.Text>
+        </Space>
       </Modal>
 
       {/* 上传封面：落 cover/{id}/poster.{ext}（intent.md「更多」菜单） */}

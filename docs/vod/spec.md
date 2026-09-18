@@ -69,7 +69,7 @@ root 下按资产类别分四个分区，互不嵌套：
 - 上传协议（M1）：原视频 / 封面上传以**原始文件字节流**为请求体（`Content-Type: application/octet-stream`），文件名 / 展示名走查询参数——流式直传不经过 multipart 缓冲，服务端内存占用与文件大小无关；
 - 管理端 API 响应一律 `Cache-Control: no-store`；敏感操作（上传 / 重命名 / 删除 / 封面）落 `audit_logs`（open-questions #14）。
 
-### 2.1 已实现（M1 媒资管理，2026-09-18）
+### 2.1 已实现（M1 媒资管理 + 密钥管理，2026-09-18）
 
 | 端点 | 方法 | 说明 |
 |---|---|---|
@@ -81,6 +81,11 @@ root 下按资产类别分四个分区，互不嵌套：
 | `/api/admin/media/{id}/original` | GET | 原视频预览：local 模式 Range 字节区间流式代理（206）；s3 模式预签名 GET 302 重定向（字节不经管理端）；no-store |
 | `/api/admin/media/{id}/cover` | POST | 上传封面：`cover/{id}/poster.{ext}`（jpg/png/webp/gif/avif）+ 回写 `media.poster_key`；手动上传 / 视频截帧双模式共用此端点（§2.3） |
 | `/api/admin/media/{id}/metadata` | POST | 生成元数据：ffprobe 探测 original（local 直读文件路径 / s3 预签名 GET URL 供流）→ 原始输出落 `metadata/{id}/probe.json`，归一化摘要（宽高 / 帧率 / 色彩空间 / 编码 / 码率 / 音轨等，`@openvod/transcode summarizeProbe`）回写 `media.probe` + `media.duration_ms`；幂等覆盖式更新；落 `audit_logs`（`media.metadata_generate`）。要求运行环境安装 ffprobe |
+| `/api/admin/keys` | GET | 密钥列表（§4.3）：`hls_keys` + 媒资展示名/状态 + proceed 对象数（存储不可用时为 null）；**响应中不存在任何密钥材料字段**（契约层就不定义） |
+| `/api/admin/keys/{mediaId}` | GET | 密钥详情：kid / method / iv / mk_ver / 生成时间 / 使用中会话数；明文 CEK 永不返回 |
+| `/api/admin/keys/{mediaId}` | DELETE | 删除该媒资密钥行；存在未过期播放会话时 **409 拒绝**；落 `audit_logs`（`key.delete`） |
+| `/api/admin/keys/mk` | GET | MK 版本状态：当前封装版本 + 各版本密钥用量（只暴露版本号与计数，无密钥材料） |
+| `/api/admin/keys/rotate-mk` | POST | MK 轮换：把旧版本封装的 CEK 重封装到当前版本（`MASTER_KEYS` 最大版本），**无需重转码**；落 `audit_logs`（`key.rotate_mk`）。v1 同步执行，超大数据量演进为任务化分批 |
 
 ### 2.2 未实现（501 占位，随里程碑落地）
 
@@ -88,7 +93,7 @@ root 下按资产类别分四个分区，互不嵌套：
 |---|---|---|
 | `/api/admin/media/{id}/transcode` | M2（ADR-0008） | 转码发起：弹窗选 ladder / 模板 → `transcode_jobs` 入队；Worker `tick()` 同为空实现 |
 | `/api/admin/media/{id}/subtitles` | M4（ADR-0009） | 字幕上传 / 管理：VTT → `proceed/{id}/subtitles/` 并绑定媒资 ID |
-| 其余 `/api/admin/*` | 随 specification | `/users`、`/keys`、`/jobs` 等 |
+| 其余 `/api/admin/*` | 随 specification | `/users`、`/jobs` 等 |
 
 - 未实现端点统一由 `/api/admin/[...path]` 返回 501 `not_implemented`（会话守卫仍然生效）；管理端 UI 对应项为 TODO 提示（点击提示所属里程碑）。
 
@@ -124,4 +129,79 @@ root 下按资产类别分四个分区，互不嵌套：
 
 - `/media`（媒资管理，M1 已实现）：媒资列表表格——媒资 ID、展示名、生命周期状态、原始文件（格式 / 大小 / 上传时间）、转码产物 / 封面 / 元数据的资产数量概览；
 - `/templates`（转码模板，ADR-0014 已实现）：模板列表表格——模板名（默认标记）、描述、模式（转码 / 保持原视频）、加密（AES-128）、格式（M3U8）、参数摘要（编码器 / 码率或 CRF / 分辨率档位 / 帧率 / preset）、更新时间；操作：新建 / 编辑（弹窗表单，含分辨率档位多行编辑：固定宽×高或自适应上限约束）、删除（确认弹窗注明已发起任务不受影响）；API 见 §2（`/api/admin/templates`）。
+- `/keys`（密钥管理，已实现）：密钥列表表格——媒资 ID、展示名、媒资状态、kid（截断 + Tooltip 全量）、算法、MK 版本（非当前版本标「待轮换」）、加密产物对象数、生成时间；顶部条展示当前封装版本与各版本密钥用量；操作：详情（弹窗：kid / IV / mk_ver / 生成时间 / 使用中会话数，并明确标注「明文密钥不展示」）、删除（确认弹窗警告需重转码才能恢复可播）、「轮换 MK」（确认后重封装旧版本，无需重转码）；API 见 §2.1 与 §4.3。**页面不提供任何明文密钥的展示 / 导出入口**。
 - 操作（对应 §2.1）：上传视频（原始字节流直传，带进度）、预览（弹窗 `<video>` 播放 original，local 支持 Range 拖动）、详情（弹窗展示元数据：probe 摘要结构化展示——容器 / 分辨率 / 帧率 / 编码 / 像素格式 / 色彩空间 / 码率 / 音轨等 + 摘要 JSON 折叠块）、重命名（仅展示名）、删除（确认后硬删除全级联）、设置封面（弹窗双模式：手动上传 / 视频截帧，§2.3）、「更多 → 生成元数据」（ffprobe 探测，§2.1）；「更多」菜单中转码 / 字幕管理为 TODO（§2.2）。
+
+## 4. 密钥管理与视频加密（以 ADR-0006 为决策源）
+
+> 本节把 intent.md「加密分发」「密钥管理」与「转码模板管理 → 是否加密」落实为可实现规范；与 ADR-0006 冲突时以本节为准并回写 ADR。
+
+### 4.1 密钥模型（v1 硬约束）
+
+```
+MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 §1）
+ └─ AES-256-GCM 封装 → CEK（16B，**每媒资一份**，用于加密该媒资全部分片）
+```
+
+- **每媒资一份 CEK**：`hls_keys` 与 `media` 一对一（`media_id` **DB 唯一约束**，见 `packages/db/prisma` 与迁移 `20260918220000_hls_keys_media_unique`）；同一媒资的多码率档位 / 同一任务的多档产物**共用同一 CEK 与 kid**（清单 `EXT-X-KEY` 一致）；
+- **不存在固定密钥 / 共享密钥，也不存在「选择密钥」这一步**：模板的 `encrypt`（intent.md「转码模板管理」）仅决定「是否加密」，密钥由 Worker 在执行任务时随机生成；管理端不提供指定、复用、导入或替换密钥的能力。动机是**限制泄露爆炸半径**：单媒资 CEK 泄露只损失该媒资且可经会话吊销 / 重转码收敛；固定密钥一旦泄露则全部媒资同时失效且无法收敛；
+- **明文 CEK 只存在于两个瞬间**：转码期写入 ffmpeg `key_info` 临时文件的瞬间、密钥接口响应（`GET /v1/media/{id}/key`）的瞬间；落库仅 `wrapped_cek`（MK 封装）+ `iv` + `kid` + `mk_ver`，对象存储与日志中永不出现明文密钥；
+- v1 **每个媒资只有一份有效密钥行**（不做按媒资的密钥版本并存 / 双 kid 宽限；该能力属 CENC 演进，ADR-0006 备选记录）。
+
+### 4.2 生成与落库（Worker）
+
+**实现位置（密钥部分已落地，2026-09-18）**：
+
+- 生成 / 解封 / 重封装纯函数在 `packages/crypto`（`createMediaKey` / `openMediaKey` / `resealMediaKey` / `pickWrappingMasterKey`，13 项单测覆盖生成、往返解封、错误 MK、篡改、轮换幂等）；
+- Worker 编排在 `apps/worker/src`：`media-keys.ts`（`loadMasterKeys` / `describeMasterKeys` / `generateMediaKey` / `persistMediaKey`）、`media-key-store.ts`（Prisma 事务整行替换的 `MediaKeyStore`）、`key-files.ts`（`keyUriPlaceholder` / `writeKeyFiles` / `cleanupJobDir`）；
+- 管理端 MK 轮换复用同一组 crypto 函数（§4.3）；Worker 启动时做 MASTER_KEYS 自检（不可用只告警：未加密模板不依赖它）；
+- **尚未实现**：任务认领 / 探测 / 逐档 ffmpeg / 产物上传（M2 其余部分）——接入点已在 `apps/worker/src/index.ts` 的 `tick()` 中按下列顺序逐条标注。
+
+**执行顺序（顺序即安全边界）**：
+
+1. `generateMediaKey(mks)`：生成 CEK(16B) + IV(16B) + kid，以 active MK（`MASTER_KEYS` 最大版本）封装——**此时不落库**；
+2. `writeKeyFiles` 写 `{jobDir}/key_info` 与 `{jobDir}/ceks/{kid}.key`（CEK 为 **16 字节裸字节**）；key_info 三行 = 占位密钥 URI / CEK 文件路径 / **纯 hex IV**：
+   - 第三行**不能带 `0x`**——ffmpeg 会自行加前缀，带上即产出 `EXT-X-KEY:...IV=0x0x…` 并报 `Error setting option encryption_iv`，加密失败且分片不产出（实测 ffmpeg 6.1）；`buildKeyInfoFile` 已归一化并有单测守卫（`packages/transcode`）；
+3. ffmpeg 输出 AES-128 加密的 TS 分片 → 上传至 `proceed/{id}/{variant}/`（§1.3）；
+4. **产物上传全部成功后**才 `persistMediaKey(store, mediaId, key)` → 写 `hls_keys`（每媒资一份，见下）；
+5. 任务结束（成功 / 失败 / 取消）**必须** `cleanupJobDir(jobDir)`：key_info 与明文 CEK 随目录删除，不得残留。
+
+**每媒资一份的落库语义（v1）**：`hls_keys.media_id` 唯一约束使「先插新行再删旧行」不可行，故存储层在**单个事务内先删旧行、再写新行**：
+
+- 成功：旧 kid 立即失效，媒资恒只有一行密钥；
+- 任一步失败：事务整体回滚，**旧密钥行原样保留**（不会出现「既无新也无旧」的空洞）——已有测试覆盖（kid 撞车场景）；
+- 因此**绝不能提前落库**：若在转码前落库，一次失败的转码就会换掉该媒资密钥，使既有加密产物永久无法解密；
+- 旧产物被整体覆盖，故不保留历史密钥行（不做同媒资多版本并存 / 双 kid 宽限）。
+
+### 4.3 管理端密钥接口（只读 + 生命周期操作）
+
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/api/admin/keys` | GET | 密钥列表：`media_id`、展示名、媒资状态、`kid`、`method`、`mk_ver`、生成时间、加密产物对象数（存储不可用为 null） |
+| `/api/admin/keys/{mediaId}` | GET | 单媒资密钥详情：`kid` / `method` / `iv` / `mk_ver` / 生成时间 / 未过期的播放会话数 |
+| `/api/admin/keys/{mediaId}` | DELETE | 删除该媒资密钥行；**存在未过期播放会话时 409 拒绝**（避免打断在播会话），先吊销会话再删 |
+| `/api/admin/keys/mk` | GET | MK 版本状态：当前封装版本（`MASTER_KEYS` 最大版本）+ 各版本密钥用量 + 密钥总数 |
+| `/api/admin/keys/rotate-mk` | POST | MK 轮换：按行自身 `mk_ver` 解封、以当前版本重新封装（可传 `from_ver` 限定来源版本）；**无需重转码**。v1 同步逐行执行，超大数据量演进为任务化分批 |
+
+**P0 红线（评审与测试用例）**：
+
+- 任何管理端接口 / 页面 / 日志 / 错误信息**不得返回明文 CEK**（`packages/contracts` 的密钥 DTO 里根本不定义该字段，从类型层杜绝）；明文 CEK 的唯一出口是分发端 `GET /v1/media/{id}/key?t=`（token(k)、no-store，ADR-0006 §3）；
+- 管理端无「显示 / 导出密钥」入口；
+- 密钥表操作（DELETE / `rotate-mk`）落 `audit_logs`（open-questions #14，动作 `key.delete` / `key.rotate_mk`）；
+- 管理端页面 `/keys`（已实现）：密钥列表表格（遵循 §3.0 表格滚动约定）+ 顶栏 MK 版本与用量 + 详情 / 删除 / 轮换，**不展示任何明文密钥**；页面明细见 §3.1。
+
+### 4.4 轮换与吊销
+
+| 对象 | 方式 | 影响 |
+|---|---|---|
+| MK | 在 `MASTER_KEYS` 新增版本号（旧版本保留）+ 管理端「轮换 MK」（`POST /api/admin/keys/rotate-mk`）重封装 | 无需重转码；轮换期间播放不受影响（先解封再重封装，字节未变） |
+| CEK | 重转码（新 kid 替换，§4.2） | 该媒资短时维护窗口 |
+| 播放会话 | 置 `revoked_at` | 新清单 / 密钥请求立即拒绝（≤60s 收敛）；已下载分片在 token exp 内仍可播（接受，ADR-0006 §6） |
+
+### 4.5 相关环境变量
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `MASTER_KEYS` | 无（必填） | `"版本:64位hex"`，逗号分隔多版本。**轮换必须保留旧版本**（否则旧行无法解封，轮换会逐行失败并跳过）；未配置 / 非法时密钥接口报 500、页面顶栏提示（ADR-0006 §1） |
+| `URL_SIGN_KEY_HEX` | 无（必填） | 分发端 URL 签名 HMAC 密钥；**仅用于鉴权签名，与 CEK 封装无关**，全站一套、不按媒资区分 |
+| `EO_TYPEA_KEY` | 无 | EdgeOne URL 鉴权 TypeA 密钥（与 EO 控制台一致，ADR-0005） |

@@ -2,6 +2,7 @@
   "name": "@openvod/admin",
   "version": "0.0.1",
   "private": true,
+  "license": "Apache-2.0",
   "scripts": {
     "dev": "next dev -p ${ADMIN_PORT:-8787}",
     "build": "next build",

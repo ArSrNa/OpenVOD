@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  DashboardOutlined,
   FontSizeOutlined,
   InfoCircleOutlined,
   KeyOutlined,
@@ -20,6 +21,7 @@ import { authClient } from "@/lib/auth-client";
 
 // 模块骨架（ADR-0004 功能清单；模块路由随 specification 落地）
 const MODULES = [
+  { key: "/", label: "总览", icon: <DashboardOutlined /> },
   { key: "/media", label: "媒资管理", icon: <VideoCameraOutlined /> },
   { key: "/subtitles", label: "字幕管理", icon: <FontSizeOutlined /> },
   { key: "/users", label: "用户管理", icon: <TeamOutlined /> },
@@ -30,7 +32,7 @@ const MODULES = [
 ];
 
 // 已实现的真实路由页：菜单点击直接跳转（其余模块仍是内容区占位）
-const ROUTE_PAGES = new Set(["/media", "/about"]);
+const ROUTE_PAGES = new Set(["/", "/media", "/about"]);
 
 // ProLayout 的菜单与面包屑由 route + location 推导（图标必须挂在 route 上，MODULES 仅用于内容区）
 const ROUTE = {
@@ -63,9 +65,9 @@ export function ConsoleShell({
 }: {
   userName: string;
   version: string;
-  /** 真实路由页（/about）传入：用于初始菜单选中与点击回跳控制 */
+  /** 真实路由页（/、/media、/about）传入：用于初始菜单选中 */
   initialPath?: string;
-  /** 页面内容；缺省渲染 scaffold 占位 */
+  /** 页面内容；未实现模块渲染 scaffold 占位 */
   children?: ReactNode;
 }) {
   const router = useRouter();
@@ -78,7 +80,8 @@ export function ConsoleShell({
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
   const active = MODULES.find((m) => m.key === current) ?? MODULES[0];
-  const isRoutePage = initialPath !== undefined;
+  // 当前内容区是否为未实现模块的占位页（真实路由页的 children 总是渲染）
+  const showPlaceholder = !ROUTE_PAGES.has(current);
 
   const logout = async () => {
     await authClient.signOut();
@@ -86,16 +89,12 @@ export function ConsoleShell({
     router.refresh();
   };
 
-  // 菜单点击：真实路由页（/media、/about）直接跳转；真实路由页上点未实现的模块项
-  // 回控制台首页；其余模块路由尚未实现，仅切换内容区（ProLayout 自身不做跳转）
+  // 菜单点击：已实现的真实路由页（/ 总览、/media、/about）直接跳转；
+  // 未实现的模块仅切换内容区为占位（不走路由，ProLayout 高亮由 location 推导）
   const handleMenuClick = (path?: string) => {
     if (!path) return;
     if (ROUTE_PAGES.has(path)) {
       if (path !== current) router.push(path);
-      return;
-    }
-    if (isRoutePage) {
-      router.push("/");
       return;
     }
     setCurrent(path);
@@ -153,17 +152,28 @@ export function ConsoleShell({
         props?.collapsed ? undefined : (
           <Typography.Text type="secondary" style={{ display: "block", fontSize: 12, paddingInline: 8 }}>
             OpenVOD v{version}
+            <br />
+            Powered by Ar-Sr-Na
           </Typography.Text>
         )
       }
     >
+
       <PageContainer
         title={active.label}
-        subTitle={children ? undefined : "scaffold：功能页随 specification 实现"}
+        subTitle={showPlaceholder ? "scaffold：功能页随 specification 实现" : undefined}
+        token={{
+          paddingInlinePageContainerContent: 16,
+          paddingBlockPageContainerContent: 16,
+        }}
       >
-        <ProCard bordered={false} style={{ minHeight: 320 }}>
-          {children ?? <Empty description={`${active.label} — 暂未实现（ADR-0004 功能清单）`} />}
-        </ProCard>
+        {showPlaceholder ? (
+          <ProCard bordered={false} style={{ minHeight: 320 }}>
+            <Empty description={`${active.label} — 暂未实现（ADR-0004 功能清单）`} />
+          </ProCard>
+        ) : (
+          children
+        )}
       </PageContainer>
     </ProLayout>
   );

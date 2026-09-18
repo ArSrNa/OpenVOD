@@ -121,9 +121,9 @@ function uploadTo(url: string, file: File, onProgress?: (pct: number) => void): 
 }
 
 // 表格不随条目数无限增高：表体限高后内部纵向滚动、表头固定（列宽合计见下方 columns）。
-const TABLE_MIN_WIDTH = 1300; // 固定列 1110 + 展示名最小可读宽度
+const TABLE_MIN_WIDTH = 1260; // 固定列 1070 + 展示名最小可读宽度
 const TABLE_MIN_BODY_HEIGHT = 280; // 极窄视口下的兜底高度
-const TABLE_BOTTOM_RESERVE = 104; // 分页条约 56 + 卡片内边距约 24 + 视口留白约 24
+const TABLE_BOTTOM_RESERVE = 88; // 分页条约 56 + 卡片内边距 16 + PageContainer 底部 16（padding 已收敛为 16）
 
 /** 按「容器距文档顶部 + 视口高度」推算表体可用高度，随窗口尺寸变化重算 */
 function useTableBodyHeight(ref: { current: HTMLElement | null }): number {
@@ -349,7 +349,22 @@ export function MediaList() {
       ellipsis: true,
       render: (title: string | null, record) =>
         title ? (
-          <Typography.Text ellipsis={{ tooltip: title }}>{title}</Typography.Text>
+          <div style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
+            <Typography.Text style={{ flex: 1, minWidth: 0 }} ellipsis={{ tooltip: title }}>
+              {title}
+            </Typography.Text>
+            <Tooltip title="重命名">
+              <Button
+                type="text"
+                size="small"
+                icon={<EditOutlined />}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openRename(record);
+                }}
+              />
+            </Tooltip>
+          </div>
         ) : (
           <Tooltip title="数据库无该媒资记录（存储孤儿对象）">
             <Typography.Text type="secondary">—</Typography.Text>
@@ -401,7 +416,7 @@ export function MediaList() {
     {
       title: "操作",
       key: "actions",
-      width: 220,
+      width: 180,
       render: (_, record) => (
         <Space size={0}>
           <Tooltip title="预览">
@@ -418,14 +433,6 @@ export function MediaList() {
               size="small"
               icon={<InfoCircleOutlined />}
               onClick={() => void openDetail(record)}
-            />
-          </Tooltip>
-          <Tooltip title="重命名">
-            <Button
-              type="text"
-              size="small"
-              icon={<EditOutlined />}
-              onClick={() => openRename(record)}
             />
           </Tooltip>
           <Tooltip title="删除">
@@ -447,14 +454,8 @@ export function MediaList() {
 
   return (
     <ProCard
-      title={
-        <span>
-          存储媒资列表{" "}
-          <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
-            （original/ 分区为准，spec.md §1.4；展示名 / 状态来自数据库）
-          </Typography.Text>
-        </span>
-      }
+      title="存储媒资列表"
+      subTitle={`共 ${items.length} 个视频`}
       bordered={false}
       extra={
         <Space>

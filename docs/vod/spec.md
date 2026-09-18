@@ -79,7 +79,7 @@ root 下按资产类别分四个分区，互不嵌套：
 | `/api/admin/media/{id}` | PATCH | 重命名：仅修改 `media.title`，绝不改动 original 文件名与媒资 ID |
 | `/api/admin/media/{id}` | DELETE | 删除：original 对象 + proceed/cover/metadata 三分区该 id 全部对象 + DB 行（级联 subtitles / transcode_jobs / hls_keys / playback_sessions）；幂等可重试。**级联范围说明**：open-questions #13 决议（软删 + 保留期 GC）之前的 v1 临时策略为**硬删除全级联** |
 | `/api/admin/media/{id}/original` | GET | 原视频预览：local 模式 Range 字节区间流式代理（206）；s3 模式预签名 GET 302 重定向（字节不经管理端）；no-store |
-| `/api/admin/media/{id}/cover` | POST | 上传封面：`cover/{id}/poster.{ext}`（jpg/png/webp/gif/avif）+ 回写 `media.poster_key` |
+| `/api/admin/media/{id}/cover` | POST | 上传封面：`cover/{id}/poster.{ext}`（jpg/png/webp/gif/avif）+ 回写 `media.poster_key`；手动上传 / 视频截帧双模式共用此端点（§2.3） |
 
 ### 2.2 未实现（501 占位，随里程碑落地）
 
@@ -92,7 +92,26 @@ root 下按资产类别分四个分区，互不嵌套：
 
 - 未实现端点统一由 `/api/admin/[...path]` 返回 501 `not_implemented`（会话守卫仍然生效）；管理端 UI 对应项为 TODO 提示（点击提示所属里程碑）。
 
+### 2.3 封面设置（poster，双模式）
+
+媒资封面落位与回写对所有模式一致（open-questions #11：v1 每媒资仅一张 poster）：
+
+- 落键 `cover/{id}/poster.{ext}`（spec.md §1.3），**覆盖式写入**（重复设置直接替换旧 poster）；
+- 成功后回写 `media.poster_key`；落 `audit_logs`（动作 `media.cover_upload`）；
+- 端点统一为 `POST /api/admin/media/{id}/cover`（原始图片字节流，octet-stream，§2 上传协议），不同模式仅是字节来源不同，服务端无差别。
+
+**模式 A：手动上传（已实现）**
+
+- 弹窗拖拽 / 选择本地图片（jpg / png / webp / gif / avif），原始字节直传端点。
+
+**模式 B：视频截帧（规范新增，待实现）**
+
+- 弹窗内播放 original 原视频（复用预览播放器），**拖拽进度条选择目标时间点**，取当前帧画面作为封面；
+- 截帧在**浏览器侧**完成（`<video>` 当前帧 → canvas → JPEG），不依赖 ffmpeg / Worker，服务端零新增负载；产物以 `poster.jpg` 字节走同一端点，服务端逻辑与模式 A 完全一致；
+- 导出约束：JPEG 质量 0.9；帧分辨率超过 1280px 最长边时等比缩小（控制封面体积）；
+- 跨域前置：local 模式预览为同源 Range 代理，可直接截取；s3 模式预览为预签名 302 跳转，**要求对象桶 CORS 允许管理端源站**（否则 canvas 被污染、帧无法导出）；截帧失败（SecurityError）时提示改用手动上传，不阻塞端点。
+
 ## 3. 管理端页面
 
 - `/media`（媒资管理，M1 已实现）：媒资列表表格——媒资 ID、展示名、生命周期状态、原始文件（格式 / 大小 / 上传时间）、转码产物 / 封面 / 元数据的资产数量概览；
-- 操作（对应 §2.1）：上传视频（原始字节流直传，带进度）、预览（弹窗 `<video>` 播放 original，local 支持 Range 拖动）、详情（弹窗展示元数据）、重命名（仅展示名）、删除（确认后硬删除全级联）、上传封面；「更多」菜单中转码 / 字幕管理 / 生成元数据为 TODO（§2.2）。
+- 操作（对应 §2.1）：上传视频（原始字节流直传，带进度）、预览（弹窗 `<video>` 播放 original，local 支持 Range 拖动）、详情（弹窗展示元数据）、重命名（仅展示名）、删除（确认后硬删除全级联）、设置封面（弹窗双模式：手动上传 / 视频截帧，§2.3）；「更多」菜单中转码 / 字幕管理 / 生成元数据为 TODO（§2.2）。

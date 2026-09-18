@@ -7,6 +7,7 @@ import {
   KeyOutlined,
   LogoutOutlined,
   SettingOutlined,
+  SlidersOutlined,
   TeamOutlined,
   ThunderboltOutlined,
   UserOutlined,
@@ -23,6 +24,7 @@ import { authClient } from "@/lib/auth-client";
 const MODULES = [
   { key: "/", label: "总览", icon: <DashboardOutlined /> },
   { key: "/media", label: "媒资管理", icon: <VideoCameraOutlined /> },
+  { key: "/templates", label: "转码模板", icon: <SlidersOutlined /> },
   { key: "/subtitles", label: "字幕管理", icon: <FontSizeOutlined /> },
   { key: "/users", label: "用户管理", icon: <TeamOutlined /> },
   { key: "/keys", label: "密钥管理", icon: <KeyOutlined /> },
@@ -32,7 +34,7 @@ const MODULES = [
 ];
 
 // 已实现的真实路由页：菜单点击直接跳转（其余模块仍是内容区占位）
-const ROUTE_PAGES = new Set(["/", "/media", "/about"]);
+const ROUTE_PAGES = new Set(["/", "/media", "/templates", "/about"]);
 
 // ProLayout 的菜单与面包屑由 route + location 推导（图标必须挂在 route 上，MODULES 仅用于内容区）
 const ROUTE = {

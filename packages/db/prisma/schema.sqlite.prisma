@@ -40,6 +40,11 @@ enum SubtitleStatus {
   FAILED
 }
 
+/// 转码输出格式（v1 仅 HLS，ADR-0014；选加密必须 HLS，应用层校验）
+enum TemplateFormat {
+  HLS
+}
+
 enum SigningKeyKind {
   JWT
   URL_SIGN
@@ -220,6 +225,10 @@ model TranscodeJob {
   /// ladder preset 名；override 为每媒资 ffmpeg argv 模板参数（ADR-0008）
   preset     String?
   override   Json?
+  /// 发起时选择的模板 ID（溯源；ADR-0014）
+  templateId String?   @map("template_id")
+  /// 发起时模板快照（ADR-0014 防漂移：模板后续修改/删除不影响已入队任务）
+  templateSnapshot Json? @map("template_snapshot")
   attempts   Int       @default(0)
   /// Worker 心跳续期；崩溃后过期重派
   leaseUntil DateTime? @map("lease_until")
@@ -233,6 +242,26 @@ model TranscodeJob {
 
   @@index([status, leaseUntil])
   @@map("transcode_jobs")
+}
+
+/// 转码模板（ADR-0014：管理端 CRUD，Worker 编译为 ffmpeg argv；submit 时快照进 transcode_jobs）
+model TranscodeTemplate {
+  id          String         @id @default(cuid())
+  name        String         @unique
+  description String?
+  /// 保持原视频配置（不重编码，仅 HLS 封装 + 可选加密，用于只加密流程）
+  keepOriginal Boolean        @default(false) @map("keep_original")
+  /// 加密开关：true 走 ADR-0006 密钥管理（CEK → MK 封装 → hls_keys）
+  encrypt     Boolean        @default(false)
+  format      TemplateFormat @default(HLS)
+  /// 结构化参数 JSON（codec / 码率或 CRF / 帧率 / preset / 分辨率固定或自适应约束，ADR-0014）；
+  /// keep_original=true 时为 NULL（只加密流程无重编码参数）
+  params      Json?
+  isDefault   Boolean        @default(false) @map("is_default")
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+
+  @@map("transcode_templates")
 }
 
 /// 每媒资 HLS 内容密钥（明文 CEK 不入库，ADR-0006）

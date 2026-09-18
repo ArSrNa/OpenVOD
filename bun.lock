@@ -86,6 +86,9 @@
     "packages/transcode": {
       "name": "@openvod/transcode",
       "version": "0.0.1",
+      "dependencies": {
+        "@openvod/contracts": "workspace:*",
+      },
     },
   },
   "packages": {

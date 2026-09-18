@@ -2,6 +2,7 @@
 // 已实现的具体路由优先于本 catch-all；未列出的路径统一会话守卫 + 501 占位。
 //   已实现（M1 媒资管理）：/api/admin/media、/media/upload、/media/[id]（GET/PATCH/DELETE）、
 //                         /media/[id]/original、/media/[id]/cover、/media/[id]/metadata（生成元数据）
+//   已实现（模板管理，ADR-0014）：/api/admin/templates（GET/POST）、/templates/[id]（GET/PATCH/DELETE）
 //   TODO 501 占位（随里程碑落地，intent.md 标注）：
 //     - /media/[id]/transcode      转码发起（M2，ADR-0008；弹窗选 ladder/模板 → transcode_jobs 入队）
 //     - /media/[id]/subtitles      字幕上传/管理（M4，ADR-0009；VTT → proceed/{id}/subtitles/）

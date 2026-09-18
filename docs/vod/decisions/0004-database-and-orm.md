@@ -25,7 +25,8 @@
 | signing_keys | 管理端 | 分发端 | 密钥材料（kind 区分）：JWT ES256 密钥对、URL 签名 HMAC 密钥、EO TypeA 鉴权密钥；私密部分以 MK 封装；kid 版本化 |
 | media | 管理端 | 分发端 | 媒资：标题、状态、系统 probe 元数据(JSON)、自定义数据(JSON)、存储引用 |
 | media_subtitles | 管理端 | 分发端 | WebVTT 轨道（lang / label / default / 存储引用） |
-| transcode_jobs | 管理端 / Worker | 管理端 | 转码任务队列（状态机 + lease） |
+| transcode_templates | 管理端 | Worker | 转码模板（参数 JSON + 加密开关 + 保持原配置，ADR-0014） |
+| transcode_jobs | 管理端 / Worker | 管理端 | 转码任务队列（状态机 + lease；发起时快照模板进 template_snapshot，ADR-0014） |
 | hls_keys | Worker 写 | 分发端 | 每媒资 CEK：wrapped_cek、mk_ver、iv、kid |
 | playback_sessions | 分发端 | 分发端 / 管理端 | 播放会话：uid / media / exp / revoked（可吊销） |
 | audit_logs | 管理端 | 管理端 | 控制台敏感操作审计（范围待定，open-questions） |

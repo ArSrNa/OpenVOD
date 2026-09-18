@@ -2,7 +2,7 @@
 
 - 状态：提议（待复核）
 - 日期：2026-09-17
-- 关联：ADR-0004、ADR-0005、ADR-0006
+- 关联：ADR-0004、ADR-0005、ADR-0006、ADR-0014（模板存储）
 
 ## 背景
 
@@ -31,7 +31,7 @@ media 状态与 job 状态联动（ready / transcoding / failed / archived…）
 
 ### 自定义 ffmpeg 的安全边界
 
-- 模板 = **argv 数组模板**（变量插值 `{input} {outdir} {height} {bitrate} ...`），**永不经 shell 拼接**（防注入）；
+- 模板 = **结构化 params JSON**（存储见 ADR-0014），由 Worker 的白名单 argv builder 编译为 **argv 数组命令**（变量插值 `{input} {outdir} {height} {bitrate} ...`），**永不经 shell 拼接**（防注入）；
 - 全局 presets（管理端 CRUD）+ 每媒资 override（JSON）；
 - 执行超时、输出大小上限、禁网络输入源；密钥文件路径仅 Worker 注入。
 

@@ -36,7 +36,7 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 
 interface MediaListItem {
   id: string;
@@ -194,6 +194,27 @@ function fmt(v: string | number | null | undefined, suffix = ""): string {
 }
 
 const CELL: CSSProperties = { fontSize: 13, wordBreak: "break-all" };
+
+/** 媒资 ID 点击复制（列表列与详情弹窗共用；stopPropagation 防止触发行内其他交互） */
+function CopyableId({ id }: { id: string }) {
+  const { message } = App.useApp();
+  const copy = async (e: MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(id);
+      message.success(`媒资 ID 已复制：${id}`);
+    } catch {
+      message.error("复制失败（浏览器未授权剪贴板），请手动选择复制");
+    }
+  };
+  return (
+    <Tooltip title="点击复制媒资 ID">
+      <Typography.Text code onClick={(e) => void copy(e)} style={{ cursor: "pointer" }}>
+        {id}
+      </Typography.Text>
+    </Tooltip>
+  );
+}
 
 /** ffprobe 摘要结构化展示（宽高 / 帧率 / 色彩空间 / 编码等），附原始 JSON 折叠块 */
 function ProbeSummaryView({ probe }: { probe: ProbeSummary }) {
@@ -499,7 +520,7 @@ export function MediaList() {
       title: "媒资 ID",
       dataIndex: "id",
       width: 110,
-      render: (id: string) => <Typography.Text code>{id}</Typography.Text>,
+      render: (id: string) => <CopyableId id={id} />,
     },
     {
       title: "展示名",
@@ -697,7 +718,7 @@ export function MediaList() {
         {detail && (
           <Descriptions bordered column={2} size="small">
             <Descriptions.Item label="媒资 ID" span={1}>
-              <Typography.Text code>{detail.id}</Typography.Text>
+              <CopyableId id={detail.id} />
             </Descriptions.Item>
             <Descriptions.Item label="展示名" span={1}>
               {detail.title ?? "—"}

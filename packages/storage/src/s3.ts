@@ -8,6 +8,7 @@ import {
   S3Client,
   HeadObjectCommand,
 } from "@aws-sdk/client-s3";
+import { Upload } from "@aws-sdk/lib-storage";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { Readable } from "node:stream";
 import type { StorageAdapter, StorageObject, StatResult } from "./index";
@@ -57,16 +58,21 @@ export class S3Adapter implements StorageAdapter {
     );
   }
 
-  /** 流式上传：Web ReadableStream → S3 PUT（SDK 以 chunked body 发送，避免整体进内存） */
+  /** 流式上传：Web ReadableStream → S3 multipart（lib-storage Upload）。
+   *  不能用 PutObjectCommand 直发未知长度流：SDK 为流式 body 计算 chunked 签名需要
+   *  x-amz-decoded-content-length，取不到会在发送前抛
+   *  `Invalid value "undefined" for header "x-amz-decoded-content-length"`（COS 实测复现）。
+   *  Upload 按分片 multipart 上传，无需预知长度，天然契合大文件直传（ADR-0005）。 */
   async putStream(key: string, body: ReadableStream, contentType?: string): Promise<void> {
-    await this.client.send(
-      new PutObjectCommand({
+    await new Upload({
+      client: this.client,
+      params: {
         Bucket: this.cfg.bucket,
         Key: this.fullKey(key),
         Body: Readable.fromWeb(body as unknown as import("node:stream/web").ReadableStream),
         ContentType: contentType,
-      }),
-    );
+      },
+    }).done();
   }
 
   async get(key: string): Promise<Uint8Array> {

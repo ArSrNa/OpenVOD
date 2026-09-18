@@ -12,10 +12,10 @@ import {
   VideoCameraOutlined,
 } from "@ant-design/icons";
 import { PageContainer, ProCard, ProLayout } from "@ant-design/pro-components";
-import { Dropdown, Empty, Typography } from "antd";
+import { Dropdown, Empty, Spin, Typography } from "antd";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { authClient } from "@/lib/auth-client";
 
 // 模块骨架（ADR-0004 功能清单；模块路由随 specification 落地）
@@ -70,6 +70,13 @@ export function ConsoleShell({
 }) {
   const router = useRouter();
   const [current, setCurrent] = useState<string>(initialPath ?? MODULES[0].key);
+  // ProLayout 内部的 useBreakpoint 在客户端首帧渲染期同步读取 window.matchMedia
+  // （SSR 恒为 false）：视口 < 992px 时侧边栏初始即折叠（64px、logo 无 <h1>、根节点多
+  // screen-* class），与服务端展开态形成结构性差异，必然触发 hydration mismatch。
+  // 挂载完成后再渲染 ProLayout，保证水合首帧两端完全一致；内容区本就走客户端数据获取，
+  // 仅壳层首帧短暂显示占位，无额外代价。
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   const active = MODULES.find((m) => m.key === current) ?? MODULES[0];
   const isRoutePage = initialPath !== undefined;
 
@@ -94,6 +101,21 @@ export function ConsoleShell({
     setCurrent(path);
   };
 
+  if (!mounted) {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <Spin />
+      </div>
+    );
+  }
+
   return (
     <ProLayout
       title="OpenVOD 管理端"
@@ -101,6 +123,10 @@ export function ConsoleShell({
       layout="side"
       navTheme="light"
       siderWidth={208}
+      // 挂载后渲染已无水合比对，这里再显式固定初始展开、禁用 Sider 自身的 lg 媒体查询，
+      // 折叠只由底部 trigger 手动触发，首帧渲染不再依赖视口宽度
+      breakpoint={false}
+      defaultCollapsed={false}
       fixSiderbar
       fixedHeader
       route={ROUTE}

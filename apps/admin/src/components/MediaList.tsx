@@ -36,7 +36,7 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 interface MediaListItem {
   id: string;
@@ -120,9 +120,37 @@ function uploadTo(url: string, file: File, onProgress?: (pct: number) => void): 
   });
 }
 
+// 表格不随条目数无限增高：表体限高后内部纵向滚动、表头固定（列宽合计见下方 columns）。
+const TABLE_MIN_WIDTH = 1300; // 固定列 1110 + 展示名最小可读宽度
+const TABLE_MIN_BODY_HEIGHT = 280; // 极窄视口下的兜底高度
+const TABLE_BOTTOM_RESERVE = 104; // 分页条约 56 + 卡片内边距约 24 + 视口留白约 24
+
+/** 按「容器距文档顶部 + 视口高度」推算表体可用高度，随窗口尺寸变化重算 */
+function useTableBodyHeight(ref: { current: HTMLElement | null }): number {
+  const [height, setHeight] = useState(TABLE_MIN_BODY_HEIGHT);
+
+  useEffect(() => {
+    const measure = () => {
+      const el = ref.current;
+      if (!el) return;
+      // 取文档坐标而非视口坐标：表体限高后页面本身不再滚动，按「页面回到顶部」的可用高度计算更稳定
+      const top = el.getBoundingClientRect().top + window.scrollY;
+      const available = window.innerHeight - top - TABLE_BOTTOM_RESERVE;
+      setHeight(Math.max(TABLE_MIN_BODY_HEIGHT, Math.round(available)));
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [ref]);
+
+  return height;
+}
+
 export function MediaList() {
   const router = useRouter();
   const { message, modal } = App.useApp();
+  const tableRef = useRef<HTMLDivElement>(null);
+  const bodyHeight = useTableBodyHeight(tableRef);
 
   const [items, setItems] = useState<MediaListItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -463,15 +491,18 @@ export function MediaList() {
           </Button>
         </div>
       )}
-      <Table<MediaListItem>
-        rowKey="id"
-        columns={columns}
-        dataSource={items}
-        loading={loading}
-        pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 个媒资` }}
-        size="middle"
-        locale={{ emptyText: "存储中暂无媒资（original/ 分区为空，点击右上角「上传视频」开始）" }}
-      />
+      <div ref={tableRef}>
+        <Table<MediaListItem>
+          rowKey="id"
+          columns={columns}
+          dataSource={items}
+          loading={loading}
+          pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 个媒资` }}
+          size="middle"
+          scroll={{ x: TABLE_MIN_WIDTH, y: bodyHeight }}
+          locale={{ emptyText: "存储中暂无媒资（original/ 分区为空，点击右上角「上传视频」开始）" }}
+        />
+      </div>
 
       {/* 预览：弹窗直接播放 original 原视频（intent.md；同源 video 自动带会话 Cookie） */}
       {preview && (
@@ -481,7 +512,7 @@ export function MediaList() {
           width={880}
           footer={null}
           onCancel={() => setPreview(null)}
-          destroyOnClose
+          destroyOnHidden
         >
           <video
             src={`/api/admin/media/${preview.id}/original`}
@@ -567,7 +598,7 @@ export function MediaList() {
         confirmLoading={renaming}
         onOk={() => void handleRename()}
         onCancel={() => setRenameTarget(null)}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={renameForm} layout="vertical" style={{ marginTop: 8 }}>
           <Form.Item
@@ -594,7 +625,7 @@ export function MediaList() {
         title={`上传封面：${coverTarget?.title ?? coverTarget?.id ?? ""}`}
         footer={null}
         onCancel={() => setCoverTarget(null)}
-        destroyOnClose
+        destroyOnHidden
       >
         {coverTarget && (
           <Upload.Dragger

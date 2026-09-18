@@ -65,6 +65,11 @@
 | 生成元数据 | 为该媒资生成元数据到 `metadata/` 分区 |
 | 上传封面 | 选择文件上传到该媒资的 `cover/{id}/` 目录 |
 
+**实现状态（2026-09-18，M1 媒资管理竖切；端点明细见 spec.md §2.1/§2.2）**
+
+- ✅ 已完成：**上传**（原始字节流直传 `original/{id}.{ext}`，数字 ID 生成 + `media.id` 落库 + 冲突重取）；**媒资列表**（存储四分区聚合 + DB 展示名/状态合并）；**预览**（弹窗播放 original：local Range 流式代理 / s3 预签名 302）；**重命名**（仅改 `media.title`）；**详情**（弹窗展示元数据）；**上传封面**（`cover/{id}/poster.{ext}` + 回写 posterKey）；**删除**（存储四分区级联 + DB 行级联，#13 决议前的临时硬删策略，见 spec.md §2.1）；媒资敏感操作审计（`audit_logs`）。
+- ⏳ 未完成（TODO，接口 501 占位）：**转码发起**（M2，`/media/{id}/transcode`，Worker `tick()` 仍为空实现）；**字幕管理**（M4，`/media/{id}/subtitles`）；**生成元数据 / 探测**（依赖 ffprobe，随 Worker 链路 M2–M4，`/media/{id}/metadata`）；大文件 S3 分片直传（presignPut multipart）演进；媒资列表分页（v1 全量列举）。
+
 ### 非功能目标
 
 - 一次开发、多目标部署：EdgeOne Pages Cloud Functions（Go）、SCF Web 函数（容器）、自托管 Compose
@@ -85,7 +90,7 @@
 
 | 里程碑 | 验收内容 |
 |---|---|
-| M1 | 上传 → 探测 → 媒资列表（管理端闭环） |
+| M1 | 上传 → 探测 → 媒资列表（管理端闭环）——**部分达成（2026-09-18）**：上传 / 列表 / 预览 / 详情 / 重命名 / 删除 / 封面已闭环；探测（ffprobe）依赖 Worker，随 M2 |
 | M2 | 转码 → HLS 输出 → 存储落位（ladder 与 ffmpeg 模板可配） |
 | M3 | 加密 → 签名 → 播放闭环：hls.js 与 Safari 原生均可播；无签名请求 403；密钥响应 no-store |
 | M4 | 字幕与元数据链路可用；播放会话可吊销（吊销后新请求被拒） |

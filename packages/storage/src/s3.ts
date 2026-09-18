@@ -9,6 +9,7 @@ import {
   HeadObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { Readable } from "node:stream";
 import type { StorageAdapter, StorageObject, StatResult } from "./index";
 import { withRootPrefix } from "./prefix";
 
@@ -51,6 +52,18 @@ export class S3Adapter implements StorageAdapter {
         Bucket: this.cfg.bucket,
         Key: this.fullKey(key),
         Body: typeof data === "string" ? Buffer.from(data, "utf8") : Buffer.from(data),
+        ContentType: contentType,
+      }),
+    );
+  }
+
+  /** 流式上传：Web ReadableStream → S3 PUT（SDK 以 chunked body 发送，避免整体进内存） */
+  async putStream(key: string, body: ReadableStream, contentType?: string): Promise<void> {
+    await this.client.send(
+      new PutObjectCommand({
+        Bucket: this.cfg.bucket,
+        Key: this.fullKey(key),
+        Body: Readable.fromWeb(body as unknown as import("node:stream/web").ReadableStream),
         ContentType: contentType,
       }),
     );

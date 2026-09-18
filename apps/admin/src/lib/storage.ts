@@ -3,10 +3,16 @@
 // 业务代码（键常量 / 调用方）只写不含 root 的相对键。
 import { createStorage, type StorageAdapter, type StorageConfig } from "@openvod/storage";
 
+export type StorageDriver = "local" | "s3";
+
+export function getStorageDriver(): StorageDriver {
+  return (process.env.STORAGE_DRIVER ?? "local") === "s3" ? "s3" : "local";
+}
+
 export function getStorage(): StorageAdapter {
   const rootPrefix = process.env.STORAGE_ROOT_PREFIX ?? "";
   const cfg: StorageConfig =
-    (process.env.STORAGE_DRIVER ?? "local") === "s3"
+    getStorageDriver() === "s3"
       ? {
           driver: "s3",
           endpoint: process.env.S3_ENDPOINT ?? "",

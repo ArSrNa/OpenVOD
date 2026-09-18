@@ -1,6 +1,8 @@
 // 本地文件系统实现（自托管 Compose / 开发，ADR-0005）
-import { createReadStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { join, resolve } from "node:path";
 import type { StorageAdapter, StorageObject, StatResult } from "./index";
 import { withRootPrefix } from "./prefix";
@@ -33,9 +35,25 @@ export class LocalAdapter implements StorageAdapter {
     await writeFile(p, data);
   }
 
+  /** 流式上传：Web ReadableStream → 文件（原视频直传路径，避免整体进内存） */
+  async putStream(key: string, body: ReadableStream): Promise<void> {
+    const p = this.path(this.fullKey(key));
+    await mkdir(dirname2(p), { recursive: true });
+    await pipeline(
+      Readable.fromWeb(body as unknown as import("node:stream/web").ReadableStream),
+      createWriteStream(p),
+    );
+  }
+
   async get(key: string): Promise<Uint8Array> {
     const { readFile } = await import("node:fs/promises");
     return readFile(this.path(this.fullKey(key)));
+  }
+
+  /** 按闭区间 [start, end] 流式读取（管理端原视频预览的 Range 请求用） */
+  streamRange(key: string, start: number, end: number): ReadableStream {
+    const s = createReadStream(this.path(this.fullKey(key)), { start, end });
+    return Readable.toWeb(s) as unknown as ReadableStream;
   }
 
   /** 流式读取（local 模式下分发端供片用，ADR-0005 local 分支） */

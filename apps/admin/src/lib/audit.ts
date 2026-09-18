@@ -30,6 +30,31 @@ export async function recordLoginAudit(entry: LoginAuditEntry): Promise<void> {
   }
 }
 
+/** 通用控制台审计（媒资 / 用户 / 密钥等敏感操作，范围 open-questions #14）；失败不阻断业务 */
+export async function recordAudit(entry: {
+  actorType: string;
+  actorId: string;
+  action: string;
+  target?: string | null;
+  detail?: Record<string, unknown>;
+  ip?: string | null;
+}): Promise<void> {
+  try {
+    await db.auditLog.create({
+      data: {
+        actorType: entry.actorType,
+        actorId: entry.actorId,
+        action: entry.action,
+        target: entry.target ?? null,
+        detail: entry.detail ?? {},
+        ip: entry.ip ?? null,
+      },
+    });
+  } catch (e) {
+    console.error("[audit] 审计写入失败:", (e as Error).message);
+  }
+}
+
 /** 取真实客户端 IP（信任反代注入的 x-forwarded-for 首段） */
 export function clientIp(headers: Headers | null | undefined): string | null {
   const xff = headers?.get("x-forwarded-for");

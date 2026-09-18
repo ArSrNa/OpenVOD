@@ -18,7 +18,11 @@ export interface StorageObject {
 
 export interface StorageAdapter {
   put(key: string, data: Uint8Array | string, contentType?: string): Promise<void>;
+  /** 流式上传（原视频直传等大文件路径，M1 管理端上传用；避免文件整体进内存） */
+  putStream(key: string, body: ReadableStream, contentType?: string): Promise<void>;
   get(key: string): Promise<Uint8Array>;
+  /** 按闭区间 [start, end] 字节流式读取（管理端原视频预览 / Range 拖动用；不支持range的实现可不提供，如 s3 走预签名 302） */
+  streamRange?(key: string, start: number, end: number): ReadableStream;
   stat(key: string): Promise<StatResult | null>;
   delete(key: string): Promise<void>;
   list(prefix: string): Promise<string[]>;

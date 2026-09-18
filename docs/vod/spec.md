@@ -34,6 +34,7 @@ root 下按资产类别分四个分区，互不嵌套：
 - 原视频上传成功后，系统为其生成**唯一数字 ID**；该 ID 是获取**原视频、转码产物、封面图片、元数据**等全部资产的**唯一索引**；
 - ID 为**纯数字字符串**，**默认 8 位，长度可配置**（`MEDIA_ID_LENGTH`，范围 4–16）；不足位数**保留前导零**（如 `00000042`）；
 - 生成规则：在 `[10^(n-1), 10^n)` 的 n 位数字空间内服务端随机取值，落库/落存储前校验唯一性，冲突重取；以字符串形式传输与存储（避免数值类型丢失前导零），排序与展示按数值语义；
+- ID 落库（M1 实现，2026-09-18）：ID 即 `media.id` 主键（`VARCHAR(191)`，应用层生成，不用 cuid），与 `original/{id}.{ext}` 唯一一一对应；`media.title` 为展示名（重命名目标，可改），`media.source_key` 冗余记录 original 键。生成器在 `@openvod/shared`（`generateMediaId` / `resolveMediaIdLength`，逐位独立取 `[0,9]` 保留前导零）；
 - 一个媒资的完整资产集合即同 ID 在四个分区下的所有对象：
 
 ```
@@ -52,7 +53,8 @@ root 下按资产类别分四个分区，互不嵌套：
 - **媒资集合以 `original/` 分区为准**：每个 `original/{id}.{ext}` 对象即一个媒资，`id` = 文件名去扩展名；
 - `id` 必须为纯数字（`MEDIA_ID_PATTERN`）；非数字文件名或更深层级的对象不属于媒资，列举时忽略；
 - 其余三个分区**只按 id 归组补充资产状态**（各分区下该 id 的对象数量），不反向定义媒资；
-- 管理端 `GET /api/admin/media` 一次列举四个分区并按 id 内存聚合返回；v1 全量列举即可，分页 / 前缀裁剪留待媒资规模需要时再加。
+- 管理端 `GET /api/admin/media` 一次列举四个分区并按 id 内存聚合返回；v1 全量列举即可，分页 / 前缀裁剪留待媒资规模需要时再加；
+- 列表同时合并 `media` 表（M1 实现，见 §2.1）：展示名（`title`）与生命周期状态由数据库补充，DB 查询失败时降级为纯存储视角（字段置 null）；数据库行**不参与**媒资集合定义（仍以 `original/` 分区为准）。
 
 ### 1.5 相关环境变量
 
@@ -63,11 +65,34 @@ root 下按资产类别分四个分区，互不嵌套：
 
 ## 2. 管理端 API（控制面，`/api/admin/*`）
 
-- 复用 better-auth 会话守卫（Cookie），未登录 401；错误响应统一 `{ error: { code, message } }`，错误码沿用 `@openvod/shared ERROR_CODES`；
-- 本期实现：
-  - `GET /api/admin/media` — 媒资列表（存储视角，见 §1.4）。
-- 其余端点保持 501 占位（`/api/admin/[...path]`），随功能逐个落地。
+- 复用 better-auth 会话守卫（Cookie），未登录 401；错误响应统一 `{ error: { code, message } }`，错误码沿用 `@openvod/shared ERROR_CODES`（含 `bad_request`，2026-09-18 扩充）；
+- 上传协议（M1）：原视频 / 封面上传以**原始文件字节流**为请求体（`Content-Type: application/octet-stream`），文件名 / 展示名走查询参数——流式直传不经过 multipart 缓冲，服务端内存占用与文件大小无关；
+- 管理端 API 响应一律 `Cache-Control: no-store`；敏感操作（上传 / 重命名 / 删除 / 封面）落 `audit_logs`（open-questions #14）。
+
+### 2.1 已实现（M1 媒资管理，2026-09-18）
+
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/api/admin/media` | GET | 媒资列表（§1.4 存储视角 + DB 展示名/状态合并） |
+| `/api/admin/media/upload` | POST | 原视频上传（§1.3）：生成数字 ID（主键冲突即重取）→ 流式写 `original/{id}.{ext}` → `media` 行落库；存储失败回滚 DB 行 |
+| `/api/admin/media/{id}` | GET | 详情：存储资产计数 + DB 元数据合并（`probe` 未实现前为 null） |
+| `/api/admin/media/{id}` | PATCH | 重命名：仅修改 `media.title`，绝不改动 original 文件名与媒资 ID |
+| `/api/admin/media/{id}` | DELETE | 删除：original 对象 + proceed/cover/metadata 三分区该 id 全部对象 + DB 行（级联 subtitles / transcode_jobs / hls_keys / playback_sessions）；幂等可重试。**级联范围说明**：open-questions #13 决议（软删 + 保留期 GC）之前的 v1 临时策略为**硬删除全级联** |
+| `/api/admin/media/{id}/original` | GET | 原视频预览：local 模式 Range 字节区间流式代理（206）；s3 模式预签名 GET 302 重定向（字节不经管理端）；no-store |
+| `/api/admin/media/{id}/cover` | POST | 上传封面：`cover/{id}/poster.{ext}`（jpg/png/webp/gif/avif）+ 回写 `media.poster_key` |
+
+### 2.2 未实现（501 占位，随里程碑落地）
+
+| 端点 | 归属 | 说明 |
+|---|---|---|
+| `/api/admin/media/{id}/transcode` | M2（ADR-0008） | 转码发起：弹窗选 ladder / 模板 → `transcode_jobs` 入队；Worker `tick()` 同为空实现 |
+| `/api/admin/media/{id}/subtitles` | M4（ADR-0009） | 字幕上传 / 管理：VTT → `proceed/{id}/subtitles/` 并绑定媒资 ID |
+| `/api/admin/media/{id}/metadata` | M2–M4 | 生成元数据：ffprobe → `metadata/{id}/probe.json` + `media.probe` / `duration_ms` |
+| 其余 `/api/admin/*` | 随 specification | `/users`、`/keys`、`/jobs` 等 |
+
+- 未实现端点统一由 `/api/admin/[...path]` 返回 501 `not_implemented`（会话守卫仍然生效）；管理端 UI 对应项为 TODO 提示（点击提示所属里程碑）。
 
 ## 3. 管理端页面
 
-- `/media`（媒资管理）：媒资列表表格——媒资 ID、原始文件（格式 / 大小 / 上传时间）、转码产物 / 封面 / 元数据的资产数量概览；为只读列表，上传与详情页随后续里程碑实现。
+- `/media`（媒资管理，M1 已实现）：媒资列表表格——媒资 ID、展示名、生命周期状态、原始文件（格式 / 大小 / 上传时间）、转码产物 / 封面 / 元数据的资产数量概览；
+- 操作（对应 §2.1）：上传视频（原始字节流直传，带进度）、预览（弹窗 `<video>` 播放 original，local 支持 Range 拖动）、详情（弹窗展示元数据）、重命名（仅展示名）、删除（确认后硬删除全级联）、上传封面；「更多」菜单中转码 / 字幕管理 / 生成元数据为 TODO（§2.2）。

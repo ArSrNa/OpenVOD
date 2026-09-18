@@ -1,14 +1,47 @@
 "use client";
 
-import { ReloadOutlined } from "@ant-design/icons";
+// 媒资管理页（/media，intent.md 媒资管理操作 M1 竖切）：
+// 上传原视频 / 预览（弹窗播放 original）/ 详情 / 重命名 / 删除 / 上传封面；
+// 「更多」菜单中的转码 / 字幕管理 / 生成元数据为 TODO（随 M2 / M4 里程碑实现，接口 501 占位）。
+import {
+  CloudUploadOutlined,
+  DeleteOutlined,
+  EditOutlined,
+  FontSizeOutlined,
+  FileTextOutlined,
+  InfoCircleOutlined,
+  MoreOutlined,
+  PictureOutlined,
+  PlayCircleOutlined,
+  ReloadOutlined,
+  ThunderboltOutlined,
+} from "@ant-design/icons";
 import { ProCard } from "@ant-design/pro-components";
-import { Alert, Button, Table, Tag, Tooltip, Typography } from "antd";
+import {
+  App,
+  Button,
+  Descriptions,
+  Dropdown,
+  Empty,
+  Form,
+  Input,
+  Modal,
+  Popconfirm,
+  Space,
+  Table,
+  Tag,
+  Tooltip,
+  Typography,
+  Upload,
+} from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 interface MediaListItem {
   id: string;
+  title: string | null;
+  status: string | null;
   ext: string;
   key: string;
   size: number;
@@ -16,9 +49,21 @@ interface MediaListItem {
   assets: { proceed: number; cover: number; metadata: number };
 }
 
-interface MediaListResponse {
-  total: number;
-  items: MediaListItem[];
+interface MediaDetail {
+  id: string;
+  title: string | null;
+  status: string | null;
+  ext: string | null;
+  size: number | null;
+  lastModified: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  probe: unknown;
+  customData: unknown;
+  durationMs: number | null;
+  posterKey: string | null;
+  sourceKey: string | null;
+  assets: { proceed: number; cover: number; metadata: number };
 }
 
 // 存储布局分区（spec.md §1；列展示与 API 响应字段一一对应）
@@ -28,7 +73,17 @@ const ASSET_COLUMNS: { key: keyof MediaListItem["assets"]; label: string }[] = [
   { key: "metadata", label: "元数据" },
 ];
 
-function formatSize(bytes: number): string {
+const STATUS_META: Record<string, { color: string; label: string }> = {
+  UPLOADED: { color: "default", label: "已上传" },
+  PROBING: { color: "processing", label: "探测中" },
+  TRANSCODING: { color: "processing", label: "转码中" },
+  READY: { color: "success", label: "就绪" },
+  FAILED: { color: "error", label: "失败" },
+  ARCHIVED: { color: "warning", label: "已下架" },
+};
+
+function formatSize(bytes: number | null | undefined): string {
+  if (bytes == null) return "—";
   if (bytes < 1024) return `${bytes} B`;
   const units = ["KB", "MB", "GB", "TB"];
   let v = bytes;
@@ -40,88 +95,327 @@ function formatSize(bytes: number): string {
   return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
 }
 
-function formatTime(iso?: string): string {
+function formatTime(iso?: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString("zh-CN", { hour12: false });
 }
 
-const COLUMNS: ColumnsType<MediaListItem> = [
-  {
-    title: "媒资 ID",
-    dataIndex: "id",
-    width: 120,
-    render: (id: string) => <Typography.Text code>{id}</Typography.Text>,
-  },
-  {
-    title: "原始文件",
-    dataIndex: "ext",
-    render: (ext: string, record) => (
-      <Tooltip title={record.key}>
-        <Tag>{ext.toUpperCase()}</Tag>
-      </Tooltip>
-    ),
-  },
-  {
-    title: "大小",
-    dataIndex: "size",
-    width: 110,
-    render: (size: number) => formatSize(size),
-  },
-  {
-    title: "上传时间",
-    dataIndex: "lastModified",
-    width: 180,
-    render: (iso?: string) => (
-      <Typography.Text type="secondary">{formatTime(iso)}</Typography.Text>
-    ),
-  },
-  ...ASSET_COLUMNS.map(({ key, label }) => ({
-    title: label,
-    dataIndex: ["assets", key],
-    width: 110,
-    render: (n: number) =>
-      n > 0 ? (
-        <Tag color="green">{n} 个对象</Tag>
-      ) : (
-        <Tag color="default">无</Tag>
-      ),
-  })),
-];
+/** XHR 流式上传（File 直接作请求体，服务端按 octet-stream 流式接收；带进度回调） */
+function uploadTo(url: string, file: File, onProgress?: (pct: number) => void): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.responseType = "json";
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress?.(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload = () => {
+      const body = xhr.response as { error?: { message?: string } } | null;
+      if (xhr.status >= 200 && xhr.status < 300) resolve(body);
+      else reject(new Error(body?.error?.message ?? `上传失败（HTTP ${xhr.status}）`));
+    };
+    xhr.onerror = () => reject(new Error("网络错误"));
+    xhr.send(file);
+  });
+}
 
 export function MediaList() {
   const router = useRouter();
+  const { message, modal } = App.useApp();
+
   const [items, setItems] = useState<MediaListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const [uploadingName, setUploadingName] = useState<string | null>(null);
+  const [uploadPct, setUploadPct] = useState(0);
+
+  const [preview, setPreview] = useState<MediaListItem | null>(null);
+  const [detail, setDetail] = useState<MediaDetail | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  const [renameTarget, setRenameTarget] = useState<MediaListItem | null>(null);
+  const [renameForm] = Form.useForm();
+  const [renaming, setRenaming] = useState(false);
+
+  const [coverTarget, setCoverTarget] = useState<MediaListItem | null>(null);
+  const [coverUploading, setCoverUploading] = useState(false);
+
+  const fetchJson = useCallback(
+    async (url: string, init?: RequestInit) => {
+      const res = await fetch(url, { cache: "no-store", ...init });
+      if (res.status === 401) {
+        router.push("/login");
+        throw new Error("未登录");
+      }
+      const body = (await res.json().catch(() => null)) as
+        | { error?: { message?: string } }
+        | null;
+      if (!res.ok) throw new Error(body?.error?.message ?? `请求失败（HTTP ${res.status}）`);
+      return body;
+    },
+    [router],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/admin/media", { cache: "no-store" });
-      if (res.status === 401) {
-        router.push("/login");
-        return;
-      }
-      if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as
-          | { error?: { message?: string } }
-          | null;
-        throw new Error(body?.error?.message ?? `请求失败（HTTP ${res.status}）`);
-      }
-      const data = (await res.json()) as MediaListResponse;
+      const data = (await fetchJson("/api/admin/media")) as { total: number; items: MediaListItem[] };
       setItems(data.items ?? []);
     } catch (e) {
       setError(e instanceof Error ? e.message : "请求失败");
     } finally {
       setLoading(false);
     }
-  }, [router]);
+  }, [fetchJson]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // ---- 上传原视频 ----
+  const handleUpload = async (file: File) => {
+    setUploadingName(file.name);
+    setUploadPct(0);
+    try {
+      const result = (await uploadTo(
+        `/api/admin/media/upload?filename=${encodeURIComponent(file.name)}`,
+        file,
+        setUploadPct,
+      )) as { id?: string };
+      message.success(`媒资「${file.name}」上传成功（ID ${result?.id ?? "—"}）`);
+      void load();
+    } catch (e) {
+      if ((e as Error).message === "未登录") return;
+      message.error(e instanceof Error ? e.message : "上传失败");
+    } finally {
+      setUploadingName(null);
+    }
+  };
+
+  // ---- 详情 ----
+  const openDetail = async (record: MediaListItem) => {
+    setDetailOpen(true);
+    setDetailLoading(true);
+    setDetail(null);
+    try {
+      const data = (await fetchJson(`/api/admin/media/${record.id}`)) as MediaDetail;
+      setDetail(data);
+    } catch (e) {
+      setDetailOpen(false);
+      if ((e as Error).message !== "未登录") {
+        message.error(e instanceof Error ? e.message : "详情获取失败");
+      }
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  // ---- 重命名 ----
+  const openRename = (record: MediaListItem) => {
+    setRenameTarget(record);
+    renameForm.setFieldsValue({ title: record.title ?? "" });
+  };
+  const handleRename = async () => {
+    if (!renameTarget) return;
+    setRenaming(true);
+    try {
+      const { title } = (await renameForm.validateFields()) as { title: string };
+      await fetchJson(`/api/admin/media/${renameTarget.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      });
+      message.success("重命名成功");
+      setRenameTarget(null);
+      void load();
+    } catch (e) {
+      if ((e as Error).message !== "未登录") {
+        message.error(e instanceof Error ? e.message : "重命名失败");
+      }
+    } finally {
+      setRenaming(false);
+    }
+  };
+
+  // ---- 删除 ----
+  const handleDelete = (record: MediaListItem) => {
+    modal.confirm({
+      title: `确认删除媒资 ${record.id}？`,
+      content: (
+        <Typography.Text type="danger">
+          将删除存储中的原视频与全部关联资产（转码产物 / 封面 / 元数据）及数据库记录，不可恢复。
+        </Typography.Text>
+      ),
+      okText: "删除",
+      okButtonProps: { danger: true },
+      cancelText: "取消",
+      onOk: async () => {
+        try {
+          await fetchJson(`/api/admin/media/${record.id}`, { method: "DELETE" });
+          message.success(`媒资 ${record.id} 已删除`);
+          void load();
+        } catch (e) {
+          if ((e as Error).message !== "未登录") {
+            message.error(e instanceof Error ? e.message : "删除失败");
+          }
+        }
+      },
+    });
+  };
+
+  // ---- 「更多」菜单：TODO 项点击提示里程碑归属 ----
+  const todoHint = (label: string, milestone: string) => () =>
+    message.info(`${label}功能尚未实现（随${milestone}里程碑落地），接口已预留 501 占位`);
+
+  const moreMenu = (record: MediaListItem) => ({
+    items: [
+      { key: "transcode", icon: <ThunderboltOutlined />, label: "转码" },
+      { key: "subtitle", icon: <FontSizeOutlined />, label: "字幕管理" },
+      { key: "metadata", icon: <FileTextOutlined />, label: "生成元数据" },
+      { type: "divider" as const },
+      { key: "cover", icon: <PictureOutlined />, label: "上传封面" },
+    ],
+    onClick: ({ key, domEvent }: { key: string; domEvent: { stopPropagation: () => void } }) => {
+      domEvent.stopPropagation();
+      if (key === "cover") setCoverTarget(record);
+      else if (key === "transcode") todoHint("转码", "M2 转码")();
+      else if (key === "subtitle") todoHint("字幕管理", "M4 字幕与元数据")();
+      else if (key === "metadata") todoHint("生成元数据", "M4 字幕与元数据")();
+    },
+  });
+
+  const handleCoverUpload = async (file: File) => {
+    if (!coverTarget) return;
+    setCoverUploading(true);
+    try {
+      await uploadTo(
+        `/api/admin/media/${coverTarget.id}/cover?filename=${encodeURIComponent(file.name)}`,
+        file,
+      );
+      message.success("封面上传成功");
+      setCoverTarget(null);
+      void load();
+    } catch (e) {
+      if ((e as Error).message !== "未登录") {
+        message.error(e instanceof Error ? e.message : "封面上传失败");
+      }
+    } finally {
+      setCoverUploading(false);
+    }
+  };
+
+  const columns: ColumnsType<MediaListItem> = [
+    {
+      title: "媒资 ID",
+      dataIndex: "id",
+      width: 110,
+      render: (id: string) => <Typography.Text code>{id}</Typography.Text>,
+    },
+    {
+      title: "展示名",
+      dataIndex: "title",
+      ellipsis: true,
+      render: (title: string | null, record) =>
+        title ? (
+          <Typography.Text ellipsis={{ tooltip: title }}>{title}</Typography.Text>
+        ) : (
+          <Tooltip title="数据库无该媒资记录（存储孤儿对象）">
+            <Typography.Text type="secondary">—</Typography.Text>
+          </Tooltip>
+        ),
+    },
+    {
+      title: "状态",
+      dataIndex: "status",
+      width: 100,
+      render: (status: string | null) =>
+        status ? (
+          <Tag color={STATUS_META[status]?.color ?? "default"}>{STATUS_META[status]?.label ?? status}</Tag>
+        ) : (
+          <Tag color="default">未入库</Tag>
+        ),
+    },
+    {
+      title: "原始文件",
+      dataIndex: "ext",
+      width: 110,
+      render: (ext: string, record) => (
+        <Tooltip title={record.key}>
+          <Tag>{ext.toUpperCase()}</Tag>
+        </Tooltip>
+      ),
+    },
+    {
+      title: "大小",
+      dataIndex: "size",
+      width: 100,
+      render: (size: number) => formatSize(size),
+    },
+    {
+      title: "上传时间",
+      dataIndex: "lastModified",
+      width: 170,
+      render: (iso?: string) => (
+        <Typography.Text type="secondary">{formatTime(iso)}</Typography.Text>
+      ),
+    },
+    ...ASSET_COLUMNS.map(({ key, label }) => ({
+      title: label,
+      dataIndex: ["assets", key],
+      width: 100,
+      render: (n: number) =>
+        n > 0 ? <Tag color="green">{n} 个对象</Tag> : <Tag color="default">无</Tag>,
+    })),
+    {
+      title: "操作",
+      key: "actions",
+      width: 220,
+      render: (_, record) => (
+        <Space size={0}>
+          <Tooltip title="预览">
+            <Button
+              type="text"
+              size="small"
+              icon={<PlayCircleOutlined />}
+              onClick={() => setPreview(record)}
+            />
+          </Tooltip>
+          <Tooltip title="详情">
+            <Button
+              type="text"
+              size="small"
+              icon={<InfoCircleOutlined />}
+              onClick={() => void openDetail(record)}
+            />
+          </Tooltip>
+          <Tooltip title="重命名">
+            <Button
+              type="text"
+              size="small"
+              icon={<EditOutlined />}
+              onClick={() => openRename(record)}
+            />
+          </Tooltip>
+          <Tooltip title="删除">
+            <Button
+              type="text"
+              size="small"
+              danger
+              icon={<DeleteOutlined />}
+              onClick={() => handleDelete(record)}
+            />
+          </Tooltip>
+          <Dropdown menu={moreMenu(record)} trigger={["click"]}>
+            <Button type="text" size="small" icon={<MoreOutlined />} />
+          </Dropdown>
+        </Space>
+      ),
+    },
+  ];
 
   return (
     <ProCard
@@ -129,40 +423,202 @@ export function MediaList() {
         <span>
           存储媒资列表{" "}
           <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
-            （original/ 分区为准，spec.md §1.4）
+            （original/ 分区为准，spec.md §1.4；展示名 / 状态来自数据库）
           </Typography.Text>
         </span>
       }
       bordered={false}
       extra={
-        <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>
-          刷新
-        </Button>
+        <Space>
+          <Upload
+            accept="video/*"
+            showUploadList={false}
+            disabled={uploadingName !== null}
+            beforeUpload={(file) => {
+              void handleUpload(file as File);
+              return false; // 关闭 antd 默认 POST，走自定义流式上传
+            }}
+          >
+            <Button
+              type="primary"
+              icon={<CloudUploadOutlined />}
+              loading={uploadingName !== null}
+            >
+              {uploadingName
+                ? `上传中 ${uploadPct}%${uploadPct >= 100 ? "（处理中）" : ""}`
+                : "上传视频"}
+            </Button>
+          </Upload>
+          <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>
+            刷新
+          </Button>
+        </Space>
       }
     >
       {error && (
-        <Alert
-          type="error"
-          showIcon
-          message="媒资列表获取失败"
-          description={error}
-          style={{ marginBottom: 16 }}
-          action={
-            <Button size="small" danger onClick={() => void load()}>
-              重试
-            </Button>
-          }
-        />
+        <div style={{ marginBottom: 16 }}>
+          <Typography.Text type="danger">媒资列表获取失败：{error}</Typography.Text>{" "}
+          <Button size="small" danger onClick={() => void load()}>
+            重试
+          </Button>
+        </div>
       )}
       <Table<MediaListItem>
         rowKey="id"
-        columns={COLUMNS}
+        columns={columns}
         dataSource={items}
         loading={loading}
         pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 个媒资` }}
         size="middle"
-        locale={{ emptyText: "存储中暂无媒资（original/ 分区为空）" }}
+        locale={{ emptyText: "存储中暂无媒资（original/ 分区为空，点击右上角「上传视频」开始）" }}
       />
+
+      {/* 预览：弹窗直接播放 original 原视频（intent.md；同源 video 自动带会话 Cookie） */}
+      {preview && (
+        <Modal
+          open
+          title={`预览：${preview.title ?? preview.id}`}
+          width={880}
+          footer={null}
+          onCancel={() => setPreview(null)}
+          destroyOnClose
+        >
+          <video
+            src={`/api/admin/media/${preview.id}/original`}
+            controls
+            autoPlay
+            style={{ width: "100%", maxHeight: "70vh", background: "#000" }}
+          />
+          <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
+            {preview.key} · {formatSize(preview.size)}
+          </Typography.Paragraph>
+        </Modal>
+      )}
+
+      {/* 详情：弹窗展示媒资元数据（intent.md；probe 随转码流水线 M2 落地） */}
+      <Modal
+        open={detailOpen}
+        title={`媒资详情：${detail?.title ?? ""}`}
+        width={720}
+        footer={null}
+        onCancel={() => setDetailOpen(false)}
+        loading={detailLoading}
+      >
+        {detail && (
+          <Descriptions bordered column={2} size="small">
+            <Descriptions.Item label="媒资 ID" span={1}>
+              <Typography.Text code>{detail.id}</Typography.Text>
+            </Descriptions.Item>
+            <Descriptions.Item label="展示名" span={1}>
+              {detail.title ?? "—"}
+            </Descriptions.Item>
+            <Descriptions.Item label="状态" span={1}>
+              {detail.status
+                ? (STATUS_META[detail.status]?.label ?? detail.status)
+                : "未入库"}
+            </Descriptions.Item>
+            <Descriptions.Item label="格式" span={1}>
+              {detail.ext ? detail.ext.toUpperCase() : "—"}
+            </Descriptions.Item>
+            <Descriptions.Item label="大小" span={1}>
+              {formatSize(detail.size)}
+            </Descriptions.Item>
+            <Descriptions.Item label="时长" span={1}>
+              {detail.durationMs != null ? `${(detail.durationMs / 1000).toFixed(1)} s` : "—"}
+            </Descriptions.Item>
+            <Descriptions.Item label="上传时间" span={1}>
+              {formatTime(detail.lastModified ?? detail.createdAt)}
+            </Descriptions.Item>
+            <Descriptions.Item label="original 键" span={2}>
+              <Typography.Text code style={{ fontSize: 12 }}>
+                {detail.sourceKey ?? "—"}
+              </Typography.Text>
+            </Descriptions.Item>
+            <Descriptions.Item label="转码产物" span={1}>
+              {detail.assets.proceed} 个对象
+            </Descriptions.Item>
+            <Descriptions.Item label="封面" span={1}>
+              {detail.assets.cover} 个对象{detail.posterKey ? "（已设 poster）" : ""}
+            </Descriptions.Item>
+            <Descriptions.Item label="系统元数据（probe）" span={2}>
+              {detail.probe != null ? (
+                <pre style={{ margin: 0, fontSize: 12, maxHeight: 200, overflow: "auto" }}>
+                  {JSON.stringify(detail.probe, null, 2)}
+                </pre>
+              ) : (
+                <Typography.Text type="secondary">
+                  未探测（探测 / 生成元数据随转码流水线 M2-M4 实现）
+                </Typography.Text>
+              )}
+            </Descriptions.Item>
+            <Descriptions.Item label="业务自定义数据" span={2}>
+              {detail.customData != null ? JSON.stringify(detail.customData) : "—"}
+            </Descriptions.Item>
+          </Descriptions>
+        )}
+      </Modal>
+
+      {/* 重命名：仅修改数据库展示名，original 文件名与媒资 ID 永不改变（intent.md） */}
+      <Modal
+        open={renameTarget !== null}
+        title={`重命名：${renameTarget?.id ?? ""}`}
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={renaming}
+        onOk={() => void handleRename()}
+        onCancel={() => setRenameTarget(null)}
+        destroyOnClose
+      >
+        <Form form={renameForm} layout="vertical" style={{ marginTop: 8 }}>
+          <Form.Item
+            name="title"
+            label="展示名"
+            rules={[
+              { required: true, message: "展示名不能为空" },
+              { max: 191, message: "展示名过长（≤191 字符）" },
+            ]}
+            extra={
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                仅修改展示名；媒资 ID（{renameTarget?.id}）与 original 文件名保持不变
+              </Typography.Text>
+            }
+          >
+            <Input placeholder="媒资展示名" onPressEnter={() => void handleRename()} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* 上传封面：落 cover/{id}/poster.{ext}（intent.md「更多」菜单） */}
+      <Modal
+        open={coverTarget !== null}
+        title={`上传封面：${coverTarget?.title ?? coverTarget?.id ?? ""}`}
+        footer={null}
+        onCancel={() => setCoverTarget(null)}
+        destroyOnClose
+      >
+        {coverTarget && (
+          <Upload.Dragger
+            accept="image/jpeg,image/png,image/webp,image/gif,image/avif"
+            multiple={false}
+            showUploadList={false}
+            disabled={coverUploading}
+            beforeUpload={(file) => {
+              void handleCoverUpload(file as File);
+              return false;
+            }}
+          >
+            <p className="ant-upload-drag-icon">
+              <PictureOutlined />
+            </p>
+            <p className="ant-upload-text">
+              {coverUploading ? "上传中…" : "点击或拖拽图片到此区域上传"}
+            </p>
+            <p className="ant-upload-hint">
+              支持 jpg / png / webp / gif / avif，将覆盖为该媒资的 poster（cover/{coverTarget.id}/）
+            </p>
+          </Upload.Dragger>
+        )}
+      </Modal>
     </ProCard>
   );
 }

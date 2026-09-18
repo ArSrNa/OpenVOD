@@ -4,6 +4,7 @@ export const ERROR_CODES = [
   "unauthorized",
   "invalid_credentials",
   "forbidden",
+  "bad_request",
   "bad_token",
   "not_found",
   "not_playable",
@@ -49,8 +50,8 @@ export const STORAGE_KEYS = {
   // proceed：字幕（处理产物，spec.md §1.2）
   proceedSubtitle: (mediaId: string, trackId: string) =>
     `proceed/${mediaId}/subtitles/${trackId}.vtt`,
-  // cover：封面与图片
-  coverPoster: (mediaId: string) => `cover/${mediaId}/poster.jpg`,
+  // cover：封面与图片（ext 按实际上传格式落键，默认 jpg）
+  coverPoster: (mediaId: string, ext: string = "jpg") => `cover/${mediaId}/poster.${ext}`,
   // metadata
   metadataProbe: (mediaId: string) => `metadata/${mediaId}/probe.json`,
   metadataCustom: (mediaId: string) => `metadata/${mediaId}/custom.json`,
@@ -62,6 +63,43 @@ export const STORAGE_KEYS = {
 export const MEDIA_ID_CHARS = "[0-9]+";
 /** 整串完整匹配（校验给定 ID 是否为合法媒资 ID） */
 export const MEDIA_ID_PATTERN = /^\d+$/;
+
+// 媒资 ID 生成（spec.md §1.3）：长度取 MEDIA_ID_LENGTH（4–16，默认 8）；在 [0, 10^n)
+// 数字空间内随机取值并保留前导零（如 00000042，spec 示例），冲突时服务端重取；
+// 以字符串传输与存储（避免数值类型丢失前导零），排序与展示按数值语义。
+export const MEDIA_ID_CONFIG = {
+  env: "MEDIA_ID_LENGTH",
+  defaultLength: 8,
+  minLength: 4,
+  maxLength: 16,
+} as const;
+
+/** 解析 MEDIA_ID_LENGTH 环境变量；缺省 / 非法（非整数或越界）回退默认 8 */
+export function resolveMediaIdLength(raw: string | undefined | null): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < MEDIA_ID_CONFIG.minLength || n > MEDIA_ID_CONFIG.maxLength) {
+    return MEDIA_ID_CONFIG.defaultLength;
+  }
+  return n;
+}
+
+/**
+ * 生成 n 位数字媒资 ID（保留前导零，crypto 级随机源）。
+ * 逐位独立取 [0,9]（uint32 % 10，模偏差 <5e-10 可忽略），天然均匀覆盖含前导零的全值域。
+ */
+export function generateMediaId(length: number = MEDIA_ID_CONFIG.defaultLength): string {
+  if (!Number.isInteger(length) || length < 1 || length > 32) {
+    throw new Error(`媒资 ID 位数非法：${length}`);
+  }
+  const bytes = new Uint8Array(4);
+  const view = new DataView(bytes.buffer);
+  let id = "";
+  for (let i = 0; i < length; i++) {
+    crypto.getRandomValues(bytes);
+    id += String(view.getUint32(0) % 10);
+  }
+  return id;
+}
 
 export const DEFAULTS = {
   jwtTtlSec: 24 * 3600,

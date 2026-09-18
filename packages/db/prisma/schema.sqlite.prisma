@@ -166,9 +166,10 @@ model SigningKey {
   @@map("signing_keys")
 }
 
-/// 媒资（ADR-0004）
+/// 媒资（ADR-0004）；主键即数字媒资 ID（spec.md §1.3：应用层生成、保留前导零，
+/// 与 original/{id}.{ext} 唯一一一对应，title 为展示名可重命名）
 model Media {
-  id          String      @id @default(cuid())
+  id          String      @id
   title       String
   status      MediaStatus @default(UPLOADED)
   sourceKey   String?     @map("source_key")

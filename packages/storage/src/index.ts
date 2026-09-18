@@ -23,6 +23,8 @@ export interface StorageAdapter {
   get(key: string): Promise<Uint8Array>;
   /** 按闭区间 [start, end] 字节流式读取（管理端原视频预览 / Range 拖动用；不支持range的实现可不提供，如 s3 走预签名 302） */
   streamRange?(key: string, start: number, end: number): ReadableStream;
+  /** local 模式返回对象在本地文件系统的路径（供 ffprobe / ffmpeg 等本地工具直读；s3 模式不提供，走 presignGet） */
+  getFilePath?(key: string): string;
   stat(key: string): Promise<StatResult | null>;
   delete(key: string): Promise<void>;
   list(prefix: string): Promise<string[]>;

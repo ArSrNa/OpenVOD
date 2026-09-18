@@ -1,8 +1,8 @@
 "use client";
 
 // 媒资管理页（/media，intent.md 媒资管理操作 M1 竖切）：
-// 上传原视频 / 预览（弹窗播放 original）/ 详情 / 重命名 / 删除 / 上传封面；
-// 「更多」菜单中的转码 / 字幕管理 / 生成元数据为 TODO（随 M2 / M4 里程碑实现，接口 501 占位）。
+// 上传原视频 / 预览（弹窗播放 original）/ 详情 / 重命名 / 删除 / 上传封面 / 生成元数据（ffprobe）；
+// 「更多」菜单中的转码 / 字幕管理为 TODO（随 M2 / M4 里程碑实现，接口 501 占位）。
 import {
   CloudUploadOutlined,
   DeleteOutlined,
@@ -36,7 +36,7 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 
 interface MediaListItem {
   id: string;
@@ -58,7 +58,7 @@ interface MediaDetail {
   lastModified: string | null;
   createdAt: string | null;
   updatedAt: string | null;
-  probe: unknown;
+  probe: ProbeSummary | null;
   customData: unknown;
   durationMs: number | null;
   posterKey: string | null;
@@ -66,11 +66,46 @@ interface MediaDetail {
   assets: { proceed: number; cover: number; metadata: number };
 }
 
+// ffprobe 归一化摘要（服务端 @openvod/transcode summarizeProbe 落库 media.probe 的形状）
+interface ProbeVideoSummary {
+  codec: string | null;
+  profile: string | null;
+  pixFmt: string | null;
+  bitDepth: number | null;
+  width: number | null;
+  height: number | null;
+  fps: number | null;
+  frameRate: string | null;
+  colorSpace: string | null;
+  colorTransfer: string | null;
+  colorPrimaries: string | null;
+  colorRange: string | null;
+  bitrate: number | null;
+  frameCount: number | null;
+}
+
+interface ProbeSummary {
+  container: string | null;
+  durationMs: number | null;
+  bitrate: number | null;
+  sizeBytes: number | null;
+  streamCount: number | null;
+  video: ProbeVideoSummary | null;
+  audio: Array<{
+    codec: string | null;
+    profile: string | null;
+    sampleRate: number | null;
+    channels: number | null;
+    channelLayout: string | null;
+    bitrate: number | null;
+  }>;
+  subtitleCount: number;
+}
+
 // 存储布局分区（spec.md §1；列展示与 API 响应字段一一对应）
 const ASSET_COLUMNS: { key: keyof MediaListItem["assets"]; label: string }[] = [
   { key: "proceed", label: "转码产物" },
   { key: "cover", label: "封面图片" },
-  { key: "metadata", label: "元数据" },
 ];
 
 const STATUS_META: Record<string, { color: string; label: string }> = {
@@ -146,6 +181,101 @@ function useTableBodyHeight(ref: { current: HTMLElement | null }): number {
   return height;
 }
 
+/** 码率（bps）→ 可读字符串 */
+function formatBitrate(bps: number | null | undefined): string {
+  if (bps == null) return "—";
+  if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(2)} Mbps`;
+  if (bps >= 1_000) return `${Math.round(bps / 1000)} kbps`;
+  return `${bps} bps`;
+}
+
+function fmt(v: string | number | null | undefined, suffix = ""): string {
+  return v == null || v === "" ? "—" : `${v}${suffix}`;
+}
+
+const CELL: CSSProperties = { fontSize: 13, wordBreak: "break-all" };
+
+/** ffprobe 摘要结构化展示（宽高 / 帧率 / 色彩空间 / 编码等），附原始 JSON 折叠块 */
+function ProbeSummaryView({ probe }: { probe: ProbeSummary }) {
+  const v = probe.video;
+  const a = probe.audio[0];
+  return (
+    <div style={{ width: "100%" }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+          gap: "6px 16px",
+        }}
+      >
+        <div style={CELL}>
+          <Typography.Text type="secondary">容器：</Typography.Text>
+          {fmt(probe.container)}
+        </div>
+        <div style={CELL}>
+          <Typography.Text type="secondary">分辨率：</Typography.Text>
+          {v?.width != null && v?.height != null ? `${v.width}×${v.height}` : "—"}
+        </div>
+        <div style={CELL}>
+          <Typography.Text type="secondary">帧率：</Typography.Text>
+          {v?.fps != null ? `${v.fps} fps` : "—"}
+          {v?.frameRate && v.frameRate.includes("/") ? (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>（{v.frameRate}）</Typography.Text>
+          ) : null}
+        </div>
+        <div style={CELL}>
+          <Typography.Text type="secondary">视频编码：</Typography.Text>
+          {fmt(v?.codec)}
+          {v?.profile ? `（${v.profile}）` : ""}
+        </div>
+        <div style={CELL}>
+          <Typography.Text type="secondary">像素格式：</Typography.Text>
+          {fmt(v?.pixFmt)}
+          {v?.bitDepth ? ` / ${v.bitDepth}bit` : ""}
+        </div>
+        <div style={CELL}>
+          <Typography.Text type="secondary">码率：</Typography.Text>
+          {formatBitrate(probe.bitrate)}
+        </div>
+        <div style={CELL}>
+          <Typography.Text type="secondary">色彩空间：</Typography.Text>
+          {fmt(v?.colorSpace)}
+        </div>
+        <div style={CELL}>
+          <Typography.Text type="secondary">传输 / 原色：</Typography.Text>
+          {fmt(v?.colorTransfer)} / {fmt(v?.colorPrimaries)}
+        </div>
+        <div style={CELL}>
+          <Typography.Text type="secondary">量化范围：</Typography.Text>
+          {fmt(v?.colorRange)}
+        </div>
+        <div style={CELL}>
+          <Typography.Text type="secondary">音频：</Typography.Text>
+          {a ? `${fmt(a.codec)} / ${fmt(a.sampleRate)} Hz / ${fmt(a.channels)} 声道` : "无音轨"}
+          {probe.audio.length > 1 ? `（共 ${probe.audio.length} 轨）` : ""}
+        </div>
+        <div style={CELL}>
+          <Typography.Text type="secondary">流数：</Typography.Text>
+          {fmt(probe.streamCount)}
+          {probe.subtitleCount > 0 ? `（含字幕流 ${probe.subtitleCount}）` : ""}
+        </div>
+        <div style={CELL}>
+          <Typography.Text type="secondary">时长：</Typography.Text>
+          {probe.durationMs != null ? `${(probe.durationMs / 1000).toFixed(2)} s` : "—"}
+        </div>
+      </div>
+      <details style={{ marginTop: 8 }}>
+        <summary style={{ cursor: "pointer", fontSize: 12 }}>
+          <Typography.Text type="secondary">探测摘要 JSON（原始 ffprobe 输出见 metadata/{'{'}id{'}'}/probe.json）</Typography.Text>
+        </summary>
+        <pre style={{ margin: "4px 0 0", fontSize: 12, maxHeight: 220, overflow: "auto" }}>
+          {JSON.stringify(probe, null, 2)}
+        </pre>
+      </details>
+    </div>
+  );
+}
+
 export function MediaList() {
   const router = useRouter();
   const { message, modal } = App.useApp();
@@ -170,6 +300,8 @@ export function MediaList() {
 
   const [coverTarget, setCoverTarget] = useState<MediaListItem | null>(null);
   const [coverUploading, setCoverUploading] = useState(false);
+
+  const [metadataBusyId, setMetadataBusyId] = useState<string | null>(null);
 
   const fetchJson = useCallback(
     async (url: string, init?: RequestInit) => {
@@ -299,11 +431,37 @@ export function MediaList() {
   const todoHint = (label: string, milestone: string) => () =>
     message.info(`${label}功能尚未实现（随${milestone}里程碑落地），接口已预留 501 占位`);
 
+  // ---- 生成元数据（ffprobe → metadata/{id}/probe.json + media.probe / duration_ms） ----
+  const handleGenerateMetadata = async (record: MediaListItem) => {
+    if (metadataBusyId) return;
+    setMetadataBusyId(record.id);
+    try {
+      message.loading({ content: `正在探测媒资 ${record.id}（ffprobe）…`, key: `probe-${record.id}`, duration: 0 });
+      await fetchJson(`/api/admin/media/${record.id}/metadata`, { method: "POST" });
+      message.success({
+        content: `媒资 ${record.id} 元数据已生成`,
+        key: `probe-${record.id}`,
+      });
+      void load();
+      void openDetail(record);
+    } catch (e) {
+      message.error({ content: e instanceof Error ? e.message : "生成元数据失败", key: `probe-${record.id}` });
+      if ((e as Error).message === "未登录") return;
+    } finally {
+      setMetadataBusyId(null);
+    }
+  };
+
   const moreMenu = (record: MediaListItem) => ({
     items: [
       { key: "transcode", icon: <ThunderboltOutlined />, label: "转码" },
       { key: "subtitle", icon: <FontSizeOutlined />, label: "字幕管理" },
-      { key: "metadata", icon: <FileTextOutlined />, label: "生成元数据" },
+      {
+        key: "metadata",
+        icon: <FileTextOutlined />,
+        label: "生成元数据",
+        disabled: metadataBusyId !== null,
+      },
       { type: "divider" as const },
       { key: "cover", icon: <PictureOutlined />, label: "上传封面" },
     ],
@@ -312,7 +470,7 @@ export function MediaList() {
       if (key === "cover") setCoverTarget(record);
       else if (key === "transcode") todoHint("转码", "M2 转码")();
       else if (key === "subtitle") todoHint("字幕管理", "M4 字幕与元数据")();
-      else if (key === "metadata") todoHint("生成元数据", "M4 字幕与元数据")();
+      else if (key === "metadata") void handleGenerateMetadata(record);
     },
   });
 
@@ -573,13 +731,11 @@ export function MediaList() {
               {detail.assets.cover} 个对象{detail.posterKey ? "（已设 poster）" : ""}
             </Descriptions.Item>
             <Descriptions.Item label="系统元数据（probe）" span={2}>
-              {detail.probe != null ? (
-                <pre style={{ margin: 0, fontSize: 12, maxHeight: 200, overflow: "auto" }}>
-                  {JSON.stringify(detail.probe, null, 2)}
-                </pre>
+              {detail.probe ? (
+                <ProbeSummaryView probe={detail.probe} />
               ) : (
                 <Typography.Text type="secondary">
-                  未探测（探测 / 生成元数据随转码流水线 M2-M4 实现）
+                  未探测（通过「更多 → 生成元数据」执行 ffprobe 生成）
                 </Typography.Text>
               )}
             </Descriptions.Item>

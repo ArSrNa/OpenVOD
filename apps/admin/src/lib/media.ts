@@ -1,7 +1,7 @@
 // 媒资管理业务逻辑（M1 竖切：上传 → 列表 / 详情 → 重命名 / 删除 / 封面；spec.md §1/§2）
 // 存储视角与数据库视角合并：媒资集合以 original/ 分区为准（spec.md §1.4），
 // 数据库行补充展示名（title，可重命名）与生命周期状态。
-// 转码 / 字幕 / 元数据探测链路暂未实现（ADR-0008 TODO，见 intent.md / spec.md 标注）。
+// 转码 / 字幕链路暂未实现（ADR-0008 TODO）；元数据探测（ffprobe）见 lib/probe.ts。
 import {
   MEDIA_ID_CHARS,
   MEDIA_ID_PATTERN,

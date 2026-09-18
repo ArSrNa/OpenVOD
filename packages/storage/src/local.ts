@@ -61,6 +61,11 @@ export class LocalAdapter implements StorageAdapter {
     return createReadStream(this.path(this.fullKey(key))) as unknown as ReadableStream;
   }
 
+  /** 本地文件路径（管理端 ffprobe 元数据生成等本地工具直读用） */
+  getFilePath(key: string): string {
+    return this.path(this.fullKey(key));
+  }
+
   async stat(key: string): Promise<StatResult | null> {
     try {
       const s = await stat(this.path(this.fullKey(key)));

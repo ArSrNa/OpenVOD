@@ -9,6 +9,24 @@ import { clientIp, recordLoginAudit } from "./audit";
 const adminPort = process.env.ADMIN_PORT ?? process.env.PORT ?? 8787;
 
 /**
+ * CNB 运行环境识别：云原生开发/WebIDE 注入 CNB_VSCODE_PROXY_URI
+ * （形如 https://wy8gx4ck6i-{{port}}.cnb.run），把 {{port}} 换成 ADMIN_PORT
+ * 即管理端的对外访问基址。检测到即以它**覆盖** ADMIN_BASE_URL /
+ * ADMIN_TRUSTED_ORIGINS（CNB 端口映射固定，无需手工维护这两个变量）。
+ */
+function resolveCnbBaseURL(): string | undefined {
+  const proxyUri = process.env.CNB_VSCODE_PROXY_URI?.trim();
+  if (!proxyUri) return undefined;
+  return proxyUri.replace(/\{\{port\}\}/gi, String(adminPort)).replace(/\/+$/, "");
+}
+
+const cnbBaseURL = resolveCnbBaseURL();
+if (cnbBaseURL) {
+  process.env.ADMIN_BASE_URL = cnbBaseURL;
+  process.env.ADMIN_TRUSTED_ORIGINS = cnbBaseURL;
+}
+
+/**
  * trustedOrigins 归一化：better-auth 对不含通配符的条目按 `pattern === origin` 全量比对，
  * origin 带协议，因此裸域名（CNB 预览域、内网反代域名这类习惯写法）永远匹配不上 —— 裸域名展开成两条。
  *

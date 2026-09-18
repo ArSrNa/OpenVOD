@@ -2,11 +2,14 @@
 import { createReadStream } from "node:fs";
 import { mkdir, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { StorageAdapter, StatResult } from "./index";
+import type { StorageAdapter, StorageObject, StatResult } from "./index";
+import { withRootPrefix } from "./prefix";
 
 export interface LocalConfig {
   /** 存储根目录（.env: STORAGE_LOCAL_ROOT） */
   root: string;
+  /** 全局 root 前缀（.env: STORAGE_ROOT_PREFIX，spec.md §1.1）；空 = 根目录顶层 */
+  rootPrefix?: string;
   /** 公开访问基址（自托管下通常指向分发端/静态服务） */
   publicBaseUrl?: string;
 }
@@ -14,30 +17,35 @@ export interface LocalConfig {
 export class LocalAdapter implements StorageAdapter {
   constructor(private cfg: LocalConfig) {}
 
+  /** 相对键 → 完整键（拼全局 root 前缀，spec.md §1.1） */
+  private fullKey(key: string): string {
+    return withRootPrefix(this.cfg.rootPrefix, key);
+  }
+
   private path(key: string): string {
     if (key.includes("..")) throw new Error(`非法存储键：${key}`);
     return resolve(this.cfg.root, key);
   }
 
   async put(key: string, data: Uint8Array | string): Promise<void> {
-    const p = this.path(key);
+    const p = this.path(this.fullKey(key));
     await mkdir(dirname2(p), { recursive: true });
     await writeFile(p, data);
   }
 
   async get(key: string): Promise<Uint8Array> {
     const { readFile } = await import("node:fs/promises");
-    return readFile(this.path(key));
+    return readFile(this.path(this.fullKey(key)));
   }
 
   /** 流式读取（local 模式下分发端供片用，ADR-0005 local 分支） */
   stream(key: string): ReadableStream {
-    return createReadStream(this.path(key)) as unknown as ReadableStream;
+    return createReadStream(this.path(this.fullKey(key))) as unknown as ReadableStream;
   }
 
   async stat(key: string): Promise<StatResult | null> {
     try {
-      const s = await stat(this.path(key));
+      const s = await stat(this.path(this.fullKey(key)));
       return s.isFile() ? { size: s.size } : null;
     } catch {
       return null;
@@ -45,22 +53,32 @@ export class LocalAdapter implements StorageAdapter {
   }
 
   async delete(key: string): Promise<void> {
-    await unlink(this.path(key)).catch(() => {});
+    await unlink(this.path(this.fullKey(key))).catch(() => {});
   }
 
-  async list(prefix: string): Promise<string[]> {
-    const root = this.path(prefix);
-    const walk = async (dir: string, base: string): Promise<string[]> => {
+  async listObjects(prefix: string): Promise<StorageObject[]> {
+    // 出入参均为相对键：rel 基准用相对 prefix，落盘路径用 fullKey
+    const relBase = prefix.replace(/\/+$/, "");
+    const dirBase = this.path(this.fullKey(relBase));
+    const walk = async (dir: string, rel: string): Promise<StorageObject[]> => {
       const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
-      const out: string[] = [];
+      const out: StorageObject[] = [];
       for (const e of entries) {
-        const rel = base ? `${base}/${e.name}` : e.name;
-        if (e.isDirectory()) out.push(...(await walk(join(dir, e.name), rel)));
-        else out.push(rel);
+        const childRel = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) {
+          out.push(...(await walk(join(dir, e.name), childRel)));
+        } else {
+          const s = await stat(join(dir, e.name)).catch(() => null);
+          if (s?.isFile()) out.push({ key: childRel, size: s.size, lastModified: s.mtime });
+        }
       }
       return out;
     };
-    return (await walk(root, prefix.replace(/\/$/, ""))).map((k) => `${k}`);
+    return walk(dirBase, relBase);
+  }
+
+  async list(prefix: string): Promise<string[]> {
+    return (await this.listObjects(prefix)).map((o) => o.key);
   }
 
   async presignPut(): Promise<string> {
@@ -74,7 +92,7 @@ export class LocalAdapter implements StorageAdapter {
   publicUrl(key: string): string {
     const base = (this.cfg.publicBaseUrl ?? "").replace(/\/+$/, "");
     if (!base) throw new Error("STORAGE_PUBLIC_BASE_URL 未配置");
-    return `${base}/${key}`;
+    return `${base}/${this.fullKey(key)}`;
   }
 }
 

@@ -53,6 +53,7 @@
 - ADR-0002 管理端「Bun + Hono」条款由本 ADR 取代；`bun --cwd apps/admin dev` 实际拉起 `next dev`（Node）。
 - antd v5 + React 19 需 `@ant-design/v5-patch-for-react-19`（官方路径，**在客户端组件 `providers.tsx` 引入一次**；放在 root layout 这类 Server Component 里只有副作用导入的 client reference，浏览器不执行 patch，点击组件（wave）会告警 `antd v5 support React is 16 ~ 18`）。antd v6 需 `@ant-design/pro-components` v3（当前仅 beta 3.1.14-x 支持 antd 6），故暂留 v5 + patch。
 - CNB 预览网关会把请求头 `Origin` 改写成 `http://<目标域名>`（TLS 在网关终止），因此 `auth.ts` 除 `ADMIN_TRUSTED_ORIGINS` 外还自动信任 `ADMIN_BASE_URL` 的 http 等同体，并开启 `advanced.trustedProxyHeaders`（前提：管理端只在网关后暴露）。
+- `auth.ts` 检测到 `CNB_VSCODE_PROXY_URI`（形如 `https://xxx-{{port}}.cnb.run`）即判定为 CNB 环境，把 `{{port}}` 替换为 `ADMIN_PORT` 后**自动覆盖** `ADMIN_BASE_URL` 与 `ADMIN_TRUSTED_ORIGINS`（CNB 端口映射固定，无需手工维护这两项）。
 - Prisma 生成物必须在 `next build` 前生成（`task db:generate`），CI 顺序固化。
 - 契约包继续作为 DTO 真相源；Next route handlers 消费 zod schema。
 - 单容器后管理端与 Worker 仍分容器部署（ADR-0011 拓扑不变：两应用 = Next 管理端 + Go 分发端，Worker 为管理端侧常驻进程容器）。

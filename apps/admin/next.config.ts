@@ -17,7 +17,7 @@ const nextConfig: NextConfig = {
   // Prisma 客户端保持外部化（引擎二进制不走打包器）
   serverExternalPackages: ["@prisma/client"],
   // Next 16 起 Turbopack 为默认打包器（无自定义 webpack 配置，直接生效）
-  allowedDevOrigins: ["127.0.0.1", "x9uqmzqsqo-8787.cnb.run"],
+  allowedDevOrigins: ["127.0.0.1", "*.cnb.run"],
 };
 
 export default nextConfig;

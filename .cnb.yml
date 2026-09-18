@@ -3,7 +3,7 @@
     # build: .ide/Dockerfile
     image: docker.cnb.cool/arsrna/media/openvod/dev:latest
   runner:
-    cpus: 32
+    cpus: 64
 
 .install: &install
   name: 安装固定版本 Bun 和仓库依赖

@@ -10,7 +10,7 @@
 
 ## 决策
 
-- v1 字幕格式**仅 WebVTT**（文本，不入 HLS 打包），存储于对象存储 `sub/{mediaId}/{trackId}.vtt`。
+- v1 字幕格式**仅 WebVTT**（文本，不入 HLS 打包），存储于对象存储 `proceed/{mediaId}/subtitles/{trackId}.vtt`（布局见 spec.md §1）。
 - `media_subtitles`：`id, media_id, lang(BCP-47), label, is_default, status, storage_key, bytes, created_by, timestamps`。
 - 管理端：上传 .vtt（**服务端结构化校验**：header `WEBVTT`、cue 时间轴合法性、UTF-8 编码）→ 控制台可编辑文本（保存时再校验）→ 删除 / 设默认轨道。
 - 分发端：

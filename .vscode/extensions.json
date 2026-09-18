@@ -2,6 +2,7 @@
     "recommendations": [
         "golang.go",
         "redhat.vscode-yaml",
-        "eamodio.gitlens"
+        "eamodio.gitlens",
+        "ms-azuretools.vscode-docker"
     ]
 }

@@ -25,8 +25,8 @@ media 状态与 job 状态联动（ready / transcoding / failed / archived…）
 2. 预取源片到 `/tmp/jobs/{jobId}/`（本地卷）；
 3. `ffprobe` JSON → 写回 `media.probe`（时长 / 分辨率 / 编码 / 码率 / 音轨）；
 4. 按 **ladder 模板** 逐档 ffmpeg 转码 → HLS TS + AES-128（key_info，ADR-0006）+ 主 / 子清单；
-5. 抽帧：poster（取帧规则可配）→ `thumb/{mediaId}/`；
-6. 产物按 ADR-0005 布局上传至适配存储 → 更新 `hls_keys` / `media` → 清理工作目录；
+5. 抽帧：poster（取帧规则可配）→ `cover/{mediaId}/`；
+6. 产物按 [spec.md §1 布局](../spec.md)上传至适配存储 → 更新 `hls_keys` / `media` → 清理工作目录；
 7. 失败：结构化错误入 `job.last_error`，重试超限 → failed（管理端可见 / 可重派）。
 
 ### 自定义 ffmpeg 的安全边界

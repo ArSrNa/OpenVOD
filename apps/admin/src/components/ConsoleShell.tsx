@@ -2,6 +2,7 @@
 
 import {
   FontSizeOutlined,
+  InfoCircleOutlined,
   KeyOutlined,
   LogoutOutlined,
   SettingOutlined,
@@ -14,7 +15,7 @@ import { PageContainer, ProCard, ProLayout } from "@ant-design/pro-components";
 import { Dropdown, Empty, Typography } from "antd";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { authClient } from "@/lib/auth-client";
 
 // 模块骨架（ADR-0004 功能清单；模块路由随 specification 落地）
@@ -25,7 +26,11 @@ const MODULES = [
   { key: "/keys", label: "密钥管理", icon: <KeyOutlined /> },
   { key: "/jobs", label: "转码任务", icon: <ThunderboltOutlined /> },
   { key: "/settings", label: "系统设置", icon: <SettingOutlined /> },
+  { key: "/about", label: "关于", icon: <InfoCircleOutlined /> },
 ];
+
+// 已实现的真实路由页：菜单点击直接跳转（其余模块仍是内容区占位）
+const ROUTE_PAGES = new Set(["/media", "/about"]);
 
 // ProLayout 的菜单与面包屑由 route + location 推导（图标必须挂在 route 上，MODULES 仅用于内容区）
 const ROUTE = {
@@ -50,15 +55,43 @@ function BrandLogo() {
   );
 }
 
-export function ConsoleShell({ userName }: { userName: string }) {
+export function ConsoleShell({
+  userName,
+  version,
+  initialPath,
+  children,
+}: {
+  userName: string;
+  version: string;
+  /** 真实路由页（/about）传入：用于初始菜单选中与点击回跳控制 */
+  initialPath?: string;
+  /** 页面内容；缺省渲染 scaffold 占位 */
+  children?: ReactNode;
+}) {
   const router = useRouter();
-  const [current, setCurrent] = useState<string>(MODULES[0].key);
+  const [current, setCurrent] = useState<string>(initialPath ?? MODULES[0].key);
   const active = MODULES.find((m) => m.key === current) ?? MODULES[0];
+  const isRoutePage = initialPath !== undefined;
 
   const logout = async () => {
     await authClient.signOut();
     router.push("/login");
     router.refresh();
+  };
+
+  // 菜单点击：真实路由页（/media、/about）直接跳转；真实路由页上点未实现的模块项
+  // 回控制台首页；其余模块路由尚未实现，仅切换内容区（ProLayout 自身不做跳转）
+  const handleMenuClick = (path?: string) => {
+    if (!path) return;
+    if (ROUTE_PAGES.has(path)) {
+      if (path !== current) router.push(path);
+      return;
+    }
+    if (isRoutePage) {
+      router.push("/");
+      return;
+    }
+    setCurrent(path);
   };
 
   return (
@@ -72,9 +105,8 @@ export function ConsoleShell({ userName }: { userName: string }) {
       fixedHeader
       route={ROUTE}
       location={{ pathname: current }}
-      // 菜单点击：模块路由尚未实现，先切换内容区（ProLayout 自身不做跳转）
       menuItemRender={(item, dom) => (
-        <div onClick={() => item.path && setCurrent(item.path)}>{dom}</div>
+        <div onClick={() => handleMenuClick(item.path)}>{dom}</div>
       )}
       avatarProps={{
         icon: <UserOutlined />,
@@ -94,14 +126,17 @@ export function ConsoleShell({ userName }: { userName: string }) {
       menuFooterRender={(props) =>
         props?.collapsed ? undefined : (
           <Typography.Text type="secondary" style={{ display: "block", fontSize: 12, paddingInline: 8 }}>
-            OpenVOD v0.0.1
+            OpenVOD v{version}
           </Typography.Text>
         )
       }
     >
-      <PageContainer title={active.label} subTitle="scaffold：功能页随 specification 实现">
+      <PageContainer
+        title={active.label}
+        subTitle={children ? undefined : "scaffold：功能页随 specification 实现"}
+      >
         <ProCard bordered={false} style={{ minHeight: 320 }}>
-          <Empty description={`${active.label} — 暂未实现（ADR-0004 功能清单）`} />
+          {children ?? <Empty description={`${active.label} — 暂未实现（ADR-0004 功能清单）`} />}
         </ProCard>
       </PageContainer>
     </ProLayout>

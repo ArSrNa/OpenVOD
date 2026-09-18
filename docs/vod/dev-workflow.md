@@ -170,7 +170,7 @@ task contracts            # 契约生成物变更后需入库（契约门禁）
 | `Module not found: Can't resolve '../generated/sqlite'`（或 mysql） | 只生成了一份客户端；`task db:generate` 生成两份，然后重启 dev |
 | `P2021 The table xxx does not exist` | 目标库未建表；SQLite 用 `task db:push`，MySQL 用 §4.3 迁移/baseline |
 | `P3014 could not create the shadow database` | 账号无建库权限；按 §4.3 的 baseline 四步，不要用 `migrate dev` |
-| 登录 403 + `[Better Auth]: Invalid origin: http://xxx` | CNB 预览网关转发时会把请求头 `Origin` 改写成 `http://<目标域名>`（实测：任意 Origin 都被改写，与浏览器是否用 https 无关）。`auth.ts` 已把 `ADMIN_BASE_URL` 的 http 等同体加进 `trustedOrigins`；仍报错时核对 `ADMIN_BASE_URL` 的 host 是否就是访问域名。附：better-auth 对无通配符条目做全量相等比对，`ADMIN_TRUSTED_ORIGINS` 里裸域名会被展开为 http/https 两条 |
+| 登录 403 + `[Better Auth]: Invalid origin: http://xxx` | CNB 预览网关转发时会把请求头 `Origin` 改写成 `http://<目标域名>`（实测：任意 Origin 都被改写，与浏览器是否用 https 无关）。`auth.ts` 已把 `ADMIN_BASE_URL` 的 http 等同体加进 `trustedOrigins`；仍报错时核对 `ADMIN_BASE_URL` 的 host 是否就是访问域名（CNB 上若注入了 `CNB_VSCODE_PROXY_URI`，`auth.ts` 已自动按 `{{port}} → ADMIN_PORT` 覆盖，无需手填）。附：better-auth 对无通配符条目做全量相等比对，`ADMIN_TRUSTED_ORIGINS` 里裸域名会被展开为 http/https 两条 |
 | 分发端启动即退出，提示 `URL_SIGN_KEY_HEX 未配置` / `MASTER_KEYS 未配置` | 未加载 `.env`；改用 `./start-delivery.sh` 或 `task dev:delivery` |
 | `[worker] 缺少必需工具：ffmpeg, ffprobe` | 装 ffmpeg（`.ide/Dockerfile` 镜像已含） |
 | 管理端 `Fast Refresh had to perform a full reload due to a runtime error` | 通常是上面某类运行时错误的连带表现，先按上表修根因，再重启 `./start-admin.sh` |

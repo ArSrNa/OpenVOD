@@ -83,7 +83,7 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可轮换）
 - delivery 同一份 Go 静态二进制的两个同级目标：EdgeOne Pages Cloud Functions（Go 1.26）或 SCF 容器；无内网依赖，数据库必须公网可达 + 强制 TLS。
 - admin 为一个 Node 22 容器（`next build` + `next start`，UI/API 同源无 CORS）；worker 为 Bun 常驻容器。
 - P0 硬约束：转码禁止上任何函数；分片字节不经过函数；所有响应体 ≤6MB；SCF 镜像仅 x86。
-- 两应用共享一库一桶但独立发版；delivery 使用受限 DB 账号（约定表只读 + `playback_sessions` 读写），绝不能共用管理端全权账号；存储键前缀即隔离（`raw/` 仅管理端写）。
+- 两应用共享一库一桶但独立发版；delivery 使用受限 DB 账号（约定表只读 + `playback_sessions` 读写），绝不能共用管理端全权账号；存储键前缀即隔离（`original/` 仅管理端写，布局见 `docs/vod/spec.md §1`）。
 
 ### 当前实现状态（scaffold 骨架）
 

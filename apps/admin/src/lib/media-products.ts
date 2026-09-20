@@ -25,6 +25,23 @@ export interface MediaProduct {
 
 const PROCEED_UNDER_MEDIA_RE = new RegExp(`^${STORAGE_PARTITIONS.proceed}/(${MEDIA_ID_CHARS})/(.+)$`);
 
+/** 字幕对象键：`proceed/{id}/{保留段}/xxx.vtt`（保留段即 subtitles，spec.md §7.2） */
+const SUBTITLE_OBJECT_RE = new RegExp(
+  `^${STORAGE_PARTITIONS.proceed}/(${MEDIA_ID_CHARS})/${PROCEED_RESERVED_SEGMENTS[0]}/[^/]+\\.vtt$`,
+  "i",
+);
+
+/** 统计各媒资的字幕对象数（spec.md §7.2；媒资列表 / 字幕管理页选择器用，纯函数） */
+export function countSubtitlesByMedia(objs: StorageObject[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const o of objs) {
+    const m = SUBTITLE_OBJECT_RE.exec(o.key);
+    if (!m) continue;
+    counts.set(m[1], (counts.get(m[1]) ?? 0) + 1);
+  }
+  return counts;
+}
+
 /** 旧布局产物在 URL / 表单里的占位 ID（该层没有模板段；spec.md §1.3） */
 export const PRODUCT_LEGACY_ID = "legacy";
 

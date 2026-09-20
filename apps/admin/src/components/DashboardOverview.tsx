@@ -2,9 +2,10 @@
 
 // 控制台总览（管理端主页 /，intent.md「控制台总览」2026-09-18）：
 // 一屏展示常用运营指标，只读、不承载写操作。
-// 真实指标（GET /api/admin/stats）：媒资总数（就绪 / 未入库拆分，spec.md §1.4）与
-// 进行中转码任务（按状态拆分，ADR-0008）；其余指标（用户 / 存储 / 字幕 / 产物 / 元数据 / 会话）
-// 仍为 mock 占位，随各模块里程碑聚合接入（接入即替换，页面结构不变）。
+// 真实指标（GET /api/admin/stats）：媒资总数（就绪 / 未入库拆分，spec.md §1.4）、
+// 进行中转码任务（按状态拆分，ADR-0008）、播放端用户（总数 / 可用 / 已封禁，ADR-0007）；
+// 其余指标（存储 / 字幕 / 产物 / 元数据 / 会话）仍为 mock 占位，随各模块里程碑聚合接入
+// （接入即替换，页面结构不变）。
 import {
   CloudServerOutlined,
   EyeOutlined,
@@ -36,7 +37,6 @@ interface StatItem {
 
 // Mock 指标（接入真实接口时替换为聚合查询）
 const MOCK_STATS: StatItem[] = [
-  { key: "users", label: "播放端用户", value: 42, sub: "今日登录 9", icon: <TeamOutlined />, real: false },
   { key: "storage", label: "已用存储空间", value: 512.3, suffix: "GB", sub: "配额 1 TB · 已用 50%", icon: <CloudServerOutlined />, real: false },
   { key: "subtitles", label: "字幕文件", value: 56, sub: "已覆盖 32 个媒资", icon: <FontSizeOutlined />, real: false },
   { key: "proceed", label: "转码产物", value: 312, sub: "不含 HLS 分片对象", icon: <PlayCircleOutlined />, real: false },
@@ -108,6 +108,14 @@ export function DashboardOverview() {
       icon: <ThunderboltOutlined />,
       real: true,
     },
+    {
+      key: "users",
+      label: "播放端用户",
+      value: stats?.users.total ?? 0,
+      sub: stats ? `可用 ${stats.users.active} · 已封禁 ${stats.users.disabled}` : "加载中…",
+      icon: <TeamOutlined />,
+      real: true,
+    },
     ...MOCK_STATS,
   ];
 
@@ -132,14 +140,14 @@ export function DashboardOverview() {
               刷新
             </Button>
             <Tag color="blue" style={{ marginInlineEnd: 0 }}>
-              媒资 / 任务为实时数据
+              媒资 / 任务 / 用户为实时数据
             </Tag>
           </Space>
         }
       >
         <Typography.Paragraph type="secondary" style={{ marginTop: 0, marginBottom: 16, fontSize: 12 }}>
-          媒资总数与进行中任务为实时统计（/api/admin/stats）；用户 / 存储 / 字幕 / 产物 / 元数据 / 会话仍为 mock
-          占位，随对应模块里程碑聚合接入。
+          媒资总数、进行中任务与播放端用户为实时统计（/api/admin/stats）；存储 / 字幕 / 产物 / 元数据 /
+          会话仍为 mock 占位，随对应模块里程碑聚合接入。
         </Typography.Paragraph>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 16 }}>
           {items.map(({ key, label, value, suffix, sub, icon, real }) => (

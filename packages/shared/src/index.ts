@@ -68,6 +68,32 @@ export const PROCEED_RESERVED_SEGMENTS = ["subtitles"] as const;
 /** 旧布局（无模板段，`proceed/{id}/{variant}/…`）在列表/详情里归入的名称 */
 export const LEGACY_PRODUCT_LABEL = "未分组（旧布局）";
 
+// ---- 字幕（WebVTT，spec.md §7 / ADR-0009）----
+
+/** 字幕轨道 ID 形状：与模板 ID 同形（cuid 形状），用于路由 / 键名白名单校验（防路径注入） */
+export const SUBTITLE_TRACK_ID_PATTERN = /^c[a-z0-9]{20,}$/;
+/** 单字幕文件上限（字节）：5 MiB，低于 P0 的 6MB 响应体上限（spec.md §7.2） */
+export const SUBTITLE_MAX_BYTES = 5 * 1024 * 1024;
+/** 字幕展示名（label）长度上限（spec.md §7.1） */
+export const SUBTITLE_LABEL_MAX = 64;
+/** 字幕对象 Content-Type（分发端与存储落键共用） */
+export const SUBTITLE_CONTENT_TYPE = "text/vtt; charset=utf-8";
+
+/**
+ * 生成字幕轨道 ID（spec.md §7.1）：cuid 形状（`c` + 24 位小写字母数字，共 25 字符）。
+ * 必须先于落库生成 —— 存储键 `proceed/{mediaId}/subtitles/{trackId}.vtt` 要先于 DB 行确定，
+ * 且该 ID 同时是 `media_subtitles.id`、存储文件名与 API 路径参数。
+ */
+export function generateSubtitleTrackId(): string {
+  const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  let id = "c";
+  // 256 % 36 = 4 的模偏差对本用途（唯一性，非密码学随机）无实际影响
+  for (const b of bytes) id += alphabet[b % alphabet.length];
+  return id;
+}
+
 // 媒资 ID：纯数字字符串，默认 8 位（MEDIA_ID_LENGTH 可配，4–16），保留前导零；为
 // original/proceed/cover/metadata 四分区资产的唯一索引（spec.md §1.3）
 /** 字符模式（无锚点，供拼接复合正则，如按存储键解析媒资 ID） */

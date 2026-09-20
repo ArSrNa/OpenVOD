@@ -22,8 +22,10 @@ export interface S3Config {
   secretAccessKey: string;
   /** 全局 root 前缀（.env: STORAGE_ROOT_PREFIX，spec.md §1.1）；空 = 桶顶层 */
   rootPrefix?: string;
-  /** CDN 加速域名（.env: CDN_BASE_URL）；EO TypeA 签名由分发端附加 */
-  publicBaseUrl?: string;
+  /** CDN 加速域名（.env: STORAGE_CDN_BASE_URL）——**只替换 GET 预签名 URL 的 origin**（管理端预览 302 /
+   *  presign 分片直出）；上传预签名（presignPut）恒走存储端点。前提：CDN 回源 COS 且 Host 透传/改写为桶端点，
+   *  SigV4 签名覆盖 Host，域名替换后源站才能验签通过（ADR-0005 统一加速域名方案） */
+  cdnBaseUrl?: string;
   forcePathStyle?: boolean; // MinIO: true
 }
 
@@ -137,16 +139,20 @@ export class S3Adapter implements StorageAdapter {
   }
 
   async presignGet(key: string, ttlSec: number): Promise<string> {
-    return getSignedUrl(
+    const signed = await getSignedUrl(
       this.client,
       new GetObjectCommand({ Bucket: this.cfg.bucket, Key: this.fullKey(key) }),
       { expiresIn: ttlSec },
     );
+    return withCdnOrigin(signed, this.cfg.cdnBaseUrl);
   }
 
-  publicUrl(key: string): string {
-    const base = (this.cfg.publicBaseUrl ?? "").replace(/\/+$/, "");
-    if (!base) throw new Error("CDN_BASE_URL 未配置（EO TypeA 域名，ADR-0005）");
-    return `${base}/${this.fullKey(key)}`;
-  }
+}
+
+/** withCdnOrigin 把预签名 URL 的 origin 换成加速域名（路径与签名 query 原样保留）；未配置原样返回 */
+function withCdnOrigin(signed: string, cdnBaseUrl?: string): string {
+  const base = cdnBaseUrl?.trim().replace(/\/+$/, "");
+  if (!base) return signed;
+  const u = new URL(signed);
+  return base + u.pathname + u.search;
 }

@@ -17,16 +17,41 @@ const SKIN_STYLE = {
   "--media-border-radius": "8px",
 } as CSSProperties;
 
+/** 外挂字幕轨道（原生 `<track>`；Video.js 的字幕菜单可切换 / 关闭） */
+export interface VideoPreviewSubtitle {
+  /** WebVTT 地址（`text/vtt`；管理端同源走 /api/admin/media/[id]/subtitles/[trackId]/content） */
+  src: string;
+  /** BCP-47 语言标签（track 的 srclang） */
+  lang: string;
+  /** 展示名（字幕菜单项） */
+  label: string;
+  /** 是否默认开启 */
+  default?: boolean;
+}
+
 interface VideoPreviewPlayerProps {
   /** 媒体地址（管理端同源预览流，Range 由 /api/admin/media/[id]/original 处理） */
   src: string;
+  /** 字幕轨道（字幕预览：原视频 + 该轨字幕） */
+  subtitles?: VideoPreviewSubtitle[];
 }
 
-export function VideoPreviewPlayer({ src }: VideoPreviewPlayerProps) {
+export function VideoPreviewPlayer({ src, subtitles }: VideoPreviewPlayerProps) {
   return (
     <VideoPlayer>
       <VideoSkin style={SKIN_STYLE}>
-        <Video src={src} autoPlay playsInline />
+        <Video src={src} autoPlay playsInline>
+          {subtitles?.map((t) => (
+            <track
+              key={t.src}
+              kind="subtitles"
+              src={t.src}
+              srcLang={t.lang}
+              label={t.label}
+              default={t.default}
+            />
+          ))}
+        </Video>
       </VideoSkin>
     </VideoPlayer>
   );

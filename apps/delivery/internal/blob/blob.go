@@ -1,8 +1,7 @@
 // Package blob 对象存储访问（ADR-0005）：
 //   - local：分发端读本地卷（清单直读；分片走分发端流式输出，见 server 的 local 分支）
-//   - s3：清单 GetObject 读出后改写；分片输出 **预签名 GET URL 直出**（私有桶；字节不经过函数，
-//     满足 P0 约束）。生产 CDN 形态的 EdgeOne TypeA 签名是部署演进项（ADR-0005），
-//     未配置 CDN 基址时用 S3 预签名等价可用。
+//   - s3：清单 GetObject 读出后改写；分片输出**预签名 GET URL 直出**（私有桶，字节不经过分发端，
+//     P0）；可经 STORAGE_CDN_BASE_URL 把预签名 origin 替换为加速域名（回源 COS + Host 透传才可验签）。
 package blob
 
 import (
@@ -10,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -136,6 +136,7 @@ func (l *localStore) ListPrefixes(_ context.Context, prefix string) ([]string, e
 type s3Store struct {
 	prefix    string
 	bucket    string
+	cdnBase   string // 加速域名（STORAGE_CDN_BASE_URL）：presign 模式 GET 预签名 origin 替换；空 = 原样
 	client    *s3.Client
 	presigner *s3.PresignClient
 }
@@ -154,7 +155,20 @@ func newS3(cfg config.StorageConfig) (*s3Store, error) {
 		}
 		o.UsePathStyle = cfg.ForcePathStyle
 	})
-	return &s3Store{prefix: cfg.RootPrefix, bucket: cfg.Bucket, client: client, presigner: s3.NewPresignClient(client)}, nil
+	return &s3Store{prefix: cfg.RootPrefix, bucket: cfg.Bucket, cdnBase: cfg.CDNBaseURL, client: client, presigner: s3.NewPresignClient(client)}, nil
+}
+
+// withCdnOrigin 预签名 URL origin 替换（路径与签名 query 原样保留）；SigV4 签名覆盖 Host，
+// 前提是 CDN 回源 COS 时 Host 透传/改写为桶端点（ADR-0005 统一加速域名方案）
+func withCdnOrigin(signed, cdnBase string) string {
+	if cdnBase == "" {
+		return signed
+	}
+	u, err := url.Parse(signed)
+	if err != nil {
+		return signed
+	}
+	return cdnBase + u.Path + "?" + u.RawQuery
 }
 
 func (s *s3Store) Driver() string { return "s3" }
@@ -179,7 +193,7 @@ func (s *s3Store) PresignGet(ctx context.Context, key string, ttl time.Duration)
 	if err != nil {
 		return "", fmt.Errorf("S3 预签名失败（%s）: %w", key, err)
 	}
-	return req.URL, nil
+	return withCdnOrigin(req.URL, s.cdnBase), nil
 }
 
 func (s *s3Store) OpenLocal(_ string) (io.ReadSeekCloser, os.FileInfo, error) {

@@ -8,6 +8,8 @@
 // （预览账号用 apps/admin/scripts/bootstrap-playback.ts 创建，建议专用、只配本机/内网可达地址）。
 import { getDb } from "@openvod/db";
 
+import { getPlaybackBaseUrl } from "./settings";
+
 const db = getDb<any>();
 
 export class DeliveryPreviewError extends Error {
@@ -145,11 +147,25 @@ export async function previewPlay(
     .findUnique({ where: { mediaId }, select: { kid: true } })
     .catch(() => null);
 
-  const corsOk = probeOrigin ? await probeSegmentCors(body.manifest_url, probeOrigin) : null;
+  // 播放域名（系统设置）兜底改写：分发端自己会读同一设置生成播放 URL（spec §2.1.2，
+  // 清单 / 密钥 / 字幕 / local 分片基址）；此处仅防旧版分发端未升级时控制台预览仍指向错误域名。
+  // 读取失败时回退分发端原样 URL，不阻塞播放。
+  let manifestUrl = body.manifest_url;
+  const playbackBase = await getPlaybackBaseUrl().catch(() => "");
+  if (playbackBase) {
+    try {
+      const u = new URL(manifestUrl);
+      manifestUrl = playbackBase + u.pathname + u.search;
+    } catch {
+      // 分发端返回异常 URL：保持原样
+    }
+  }
+
+  const corsOk = probeOrigin ? await probeSegmentCors(manifestUrl, probeOrigin) : null;
 
   return {
     sid: body.sid ?? "",
-    manifest_url: body.manifest_url,
+    manifest_url: manifestUrl,
     expires_at: body.expires_at ?? "",
     template_id: body.template_id ?? "",
     encrypted: Boolean(keyRow),

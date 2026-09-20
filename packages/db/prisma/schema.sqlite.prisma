@@ -215,6 +215,8 @@ model MediaSubtitle {
   media Media @relation(fields: [mediaId], references: [id], onDelete: Cascade)
 
   @@index([mediaId])
+  /// 同一媒资内语言唯一（spec.md §7.1）：播放端按语言选轨无歧义
+  @@unique([mediaId, lang])
   @@map("media_subtitles")
 }
 
@@ -316,4 +318,13 @@ model AuditLog {
 
   @@index([actorType, actorId])
   @@map("audit_logs")
+}
+
+/// 系统设置（key-value，控制台运行时可调项；避免改 env 重启）
+model SystemSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_settings")
 }

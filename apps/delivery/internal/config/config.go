@@ -20,7 +20,10 @@ type StorageConfig struct {
 	Bucket          string
 	AccessKeyID     string
 	SecretAccessKey string
-	ForcePathStyle  bool
+	// 加速域名（STORAGE_CDN_BASE_URL，ADR-0005 统一加速域名方案）：只替换预签名 GET
+	// 的 origin（CDN 回源 COS 且 Host 透传桶端点才可验签）
+	CDNBaseURL     string
+	ForcePathStyle bool
 }
 
 type Config struct {
@@ -28,7 +31,8 @@ type Config struct {
 	Listen      string
 	DatabaseURL string // go-sql-driver DSN（由 DELIVERY_DATABASE_URL 归一，见 ParseDatabaseURL）
 
-	// 资源 URL 基址：拼清单 / 密钥 / 本地分片 URL（ADR-0006 §3）
+	// 资源 URL 基址：拼清单 / 密钥 / 字幕 / local 分片 URL（ADR-0006 §3）。
+	// 运行时可被 system_settings.playback_base_url 覆盖（分发端 60s 缓存读取，env 兜底）。
 	PublicBaseURL string
 
 	// 允许跨域访问的源（管理端产物预览用 hls.js 需要；`*` = 全部）。
@@ -45,6 +49,8 @@ type Config struct {
 	JWTTTLSec      int
 	SessionTTLSec  int
 	ManifestTTLSec int
+	// 字幕 token 有效期上限（spec.md §7.5）：实际 exp 取与会话 exp 的较小值
+	SubtitleTTLSec int
 }
 
 // Load 读取环境变量；部署形态见 ADR-0003（EdgeOne CF 环境注入 / SCF 容器 env）。
@@ -58,6 +64,7 @@ func Load() (*Config, error) {
 		JWTTTLSec:      getEnvInt("DELIVERY_JWT_TTL_SEC", 24*3600),
 		SessionTTLSec:  getEnvInt("PLAYBACK_SESSION_TTL_SEC", 4*3600),
 		ManifestTTLSec: getEnvInt("PLAYBACK_MANIFEST_TTL_SEC", 4*3600),
+		SubtitleTTLSec: getEnvInt("PLAYBACK_SUBTITLE_TTL_SEC", 24*3600),
 	}
 
 	db, err := ParseDatabaseURL(os.Getenv("DELIVERY_DATABASE_URL"))
@@ -119,6 +126,7 @@ func Load() (*Config, error) {
 		SecretAccessKey: os.Getenv("S3_SECRET_ACCESS_KEY"),
 		// COS 只接受 virtual-hosted-style，必须显式 S3_FORCE_PATH_STYLE="false"；MinIO 默认 true
 		ForcePathStyle: strings.ToLower(getEnv("S3_FORCE_PATH_STYLE", "true")) != "false",
+		CDNBaseURL:     strings.TrimRight(strings.TrimSpace(os.Getenv("STORAGE_CDN_BASE_URL")), "/"),
 	}
 	if cfg.Storage.Driver == "s3" {
 		if cfg.Storage.Bucket == "" || cfg.Storage.AccessKeyID == "" || cfg.Storage.SecretAccessKey == "" {

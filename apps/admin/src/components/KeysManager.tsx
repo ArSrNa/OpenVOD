@@ -303,7 +303,7 @@ export function KeysManager() {
           </Button>
         </Popconfirm>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          每媒资一份独立密钥（spec.md §4.1）；明文密钥不在此展示，仅由分发端鉴权后下发。
+          每媒资一份独立密钥，明文密钥仅由分发端鉴权后下发。
         </Typography.Text>
       </Space>
 
@@ -354,7 +354,7 @@ export function KeysManager() {
               <Space size={6}>
                 <KeyOutlined />
                 <Typography.Text type="secondary">
-                  不展示（P0 红线：明文 CEK 仅由分发端密钥接口在鉴权后下发，spec.md §4.3）
+                  明文CEK仅由分发端密钥接口在鉴权后下发，已隐藏
                 </Typography.Text>
               </Space>
             </Descriptions.Item>

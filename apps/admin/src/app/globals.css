@@ -1,3 +1,8 @@
+/* Tailwind v4：显式按层导入，不引入 preflight.css（antd 自带样式重置，preflight 会冲突） */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
 * {
   box-sizing: border-box;
 }

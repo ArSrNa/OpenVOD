@@ -3,7 +3,7 @@
 // 生成物提交入库，CI 以 `bun run check:contracts-go` 门禁防漂移。
 
 import { z } from "zod";
-import { ERROR_CODES } from "@openvod/shared";
+import { ERROR_CODES, SUBTITLE_LABEL_MAX } from "@openvod/shared";
 
 // ---- 错误信封（ADR-0010：失败统一 { error: { code, message } }） ----
 export const ErrorCode = z.enum(ERROR_CODES);
@@ -33,6 +33,11 @@ export const MediaSubtitleDTO = z.object({
   lang: z.string(), // BCP-47
   label: z.string(),
   is_default: z.boolean(),
+});
+
+/** 播放链路字幕轨道（play 返回；spec.md §7.5）：url 为带 typ=v 签名 token 的 .vtt 地址 */
+export const PlaybackSubtitleDTO = MediaSubtitleDTO.extend({
+  url: z.string(),
 });
 
 export const MediaListItem = z.object({
@@ -75,6 +80,12 @@ export const PlaybackResponse = z.object({
   expires_at: z.string(), // ISO 8601
   /** 实际选用的模板产物 ID；旧布局产物（无模板段）为空字符串 */
   template_id: z.string(),
+  /**
+   * 就绪字幕轨道（含签名 URL；空数组 = 该媒资无字幕，spec.md §7.5）。
+   * 内联 title 让 quicktype 生成 Go 类型名 `PlaybackSubtitle` —— 否则会与 MediaDetail
+   * 内联出的 `Subtitle` 在同一个 Go 包里重名。
+   */
+  subtitles: z.array(PlaybackSubtitleDTO.meta({ title: "PlaybackSubtitle" })),
 });
 
 export const PageQuery = z.object({
@@ -301,6 +312,119 @@ export const RotateMasterKeysResponse = z.object({
   /** 失败明细（仅 kid / media_id 与原因，不含密钥材料；最多返回 20 条） */
   errors: z.array(z.object({ media_id: z.string(), kid: z.string(), message: z.string() })).max(20),
 });
+
+// ---- 播放端用户管理（ADR-0004 users 表 / ADR-0007 账户域） ----
+// 仅管理端消费（分发端用户读模型在 Go 侧独立对齐）：分发端 login 只按 username 查 users 表，
+// 不消费本组 DTO，故本节**不进 gen-json.ts 清单、不生成 Go struct**（同转码模板 / 密钥管理）。
+
+/** users.status 取值（与 Prisma `UserStatus` 枚举逐字一致） */
+export const USER_STATUSES = ["ACTIVE", "DISABLED"] as const;
+
+/** 播放端用户名：字母数字与 `.` `_` `-`，3–32 位 */
+export const USERNAME_PATTERN = /^[a-zA-Z0-9._-]{3,32}$/;
+
+/** 口令长度上限：bcrypt 只取前 72 字节，超出被静默丢弃（多字节字符截断还可能与校验端不一致），契约层直接拒绝 */
+export const USER_PASSWORD_MAX_LENGTH = 72;
+
+/** 并发播放会话上限上限值（ADR-0007：0 = 不限） */
+export const MAX_CONCURRENT_SESSIONS_MAX = 10_000;
+
+/** 用户 DTO（绝不包含 password_hash：管理端无查看口令哈希的入口） */
+export const UserDTO = z.object({
+  id: z.string(),
+  username: z.string(),
+  display_name: z.string().nullable(),
+  status: z.enum(USER_STATUSES),
+  /** 单用户并发播放会话上限，0 = 不限（ADR-0007） */
+  max_concurrent_sessions: z
+    .number()
+    .int()
+    .min(0)
+    .max(MAX_CONCURRENT_SESSIONS_MAX),
+  /** 未过期且未吊销的播放会话数（封禁 / 删除前的判断依据） */
+  active_sessions: z.number().int(),
+  /** 分发端 login 成功时刷新（ADR-0007） */
+  last_login_at: z.string().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+
+/** 口令字段（创建 / 重置密码共用）：≥8 位，≤72 字节） */
+const UserPassword = z
+  .string()
+  .min(8, "密码至少 8 位")
+  .max(USER_PASSWORD_MAX_LENGTH, `密码最多 ${USER_PASSWORD_MAX_LENGTH} 个字符`);
+
+const UserMaxConcurrentSessions = z
+  .number()
+  .int()
+  .min(0, "并发上限不能为负")
+  .max(MAX_CONCURRENT_SESSIONS_MAX, `并发上限最大 ${MAX_CONCURRENT_SESSIONS_MAX}`);
+
+/** 创建播放端用户（bcrypt 哈希后入库，ADR-0007） */
+export const CreateUserRequest = z.object({
+  username: z
+    .string()
+    .trim()
+    .regex(USERNAME_PATTERN, "用户名需为 3–32 位字母、数字、`.`、`_` 或 `-`"),
+  password: UserPassword,
+  display_name: z.string().trim().max(64).optional(),
+  max_concurrent_sessions: UserMaxConcurrentSessions.default(0),
+  status: z.enum(USER_STATUSES).default("ACTIVE"),
+});
+
+/** PATCH 语义：字段缺省 = 不修改；display_name 传 null = 清空展示名 */
+export const UpdateUserRequest = z
+  .object({
+    display_name: z.string().trim().max(64).nullable().optional(),
+    status: z.enum(USER_STATUSES).optional(),
+    max_concurrent_sessions: UserMaxConcurrentSessions.optional(),
+  })
+  .refine((v) => Object.keys(v).length > 0, { message: "没有需要更新的字段" });
+
+/** 重置密码（管理员代重置，业务侧口令由 App 用户自行保管） */
+export const ResetUserPasswordRequest = z.object({
+  password: UserPassword,
+});
+
+export const UserListResponse = z.object({
+  total: z.number().int(),
+  items: z.array(UserDTO),
+});
+
+// ---- 字幕轨道管理（spec.md §7；ADR-0009）----
+// 管理端消费整组（轨道 CRUD）；分发端只消费 PlaybackSubtitleDTO（随 play 下发）。
+// 本组 DTO 仅管理端使用，**不进 gen-json.ts 清单、不生成 Go struct**（同模板 / 密钥 / 用户组）。
+
+/** media_subtitles.status 取值（与 Prisma `SubtitleStatus` 枚举逐字一致；v1 上传同步校验，恒为 READY） */
+export const SUBTITLE_STATUSES = ["PROCESSING", "READY", "FAILED"] as const;
+
+/** 字幕轨道 DTO（管理端「字幕管理」抽屉；spec.md §7.4） */
+export const SubtitleTrackDTO = z.object({
+  /** trackId：同时是 media_subtitles.id、存储文件名与 API 路径参数（spec.md §7.1） */
+  id: z.string(),
+  /** BCP-47 语言标签（服务端归一化后的连字符形态，如 `zh-CN`） */
+  lang: z.string(),
+  label: z.string(),
+  is_default: z.boolean(),
+  status: z.enum(SUBTITLE_STATUSES),
+  bytes: z.number().int(),
+  /** 相对存储键 proceed/{mediaId}/subtitles/{trackId}.vtt */
+  storage_key: z.string(),
+  /** 对应对象是否存在（存储不可用时为 null） */
+  storage_ok: z.boolean().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+
+/** PATCH 轨道元信息：字段缺省 = 不修改（语言走同一归一化与唯一校验） */
+export const UpdateSubtitleTrackRequest = z
+  .object({
+    label: z.string().trim().min(1, "展示名不能为空").max(SUBTITLE_LABEL_MAX).optional(),
+    lang: z.string().trim().min(2).max(35).optional(),
+    is_default: z.boolean().optional(),
+  })
+  .refine((v) => Object.keys(v).length > 0, { message: "没有需要更新的字段" });
 
 // 管理端 / Worker 直接复用同一份 zod 实例做请求校验（避免各包重复声明 zod 依赖）
 export { z } from "zod";

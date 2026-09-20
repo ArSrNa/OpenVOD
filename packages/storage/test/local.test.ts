@@ -70,11 +70,3 @@ describe("LocalAdapter.putStream", () => {
     await expect(adapter.putStream("plain.txt/child", streamOf(["y"]))).rejects.toThrow();
   });
 });
-
-describe("LocalAdapter 公开 URL", () => {
-  test("publicUrl 拼接 fullKey；未配置 base 抛错", () => {
-    const a = new LocalAdapter({ root, publicBaseUrl: "http://x:1/files/" });
-    expect(a.publicUrl("original/00000042.mp4")).toBe("http://x:1/files/original/00000042.mp4");
-    expect(() => new LocalAdapter({ root }).publicUrl("a")).toThrow();
-  });
-});

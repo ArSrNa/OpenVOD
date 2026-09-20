@@ -1,6 +1,6 @@
 // Package store 分发端 DB 读模型 + 播放会话写入（ADR-0004）：
 // 不用 Prisma（Go 侧 database/sql + sqlx），只读 users/media/media_subtitles/hls_keys/
-// signing_keys/transcode_templates，读写 playback_sessions。
+// signing_keys/transcode_templates/system_settings，读写 playback_sessions。
 // 与 Prisma schema 的对齐靠集成测试（apps/delivery）与列名显式映射。
 package store
 
@@ -127,22 +127,43 @@ func (s *Store) ListReady(ctx context.Context, limit int) ([]Media, error) {
 }
 
 type Subtitle struct {
-	ID        string `db:"id"`
-	Lang      string `db:"lang"`
-	Label     string `db:"label"`
-	IsDefault bool   `db:"is_default"`
+	ID         string `db:"id"`
+	Lang       string `db:"lang"`
+	Label      string `db:"label"`
+	IsDefault  bool   `db:"is_default"`
+	StorageKey string `db:"storage_key"`
 }
 
+/** ReadySubtitles 该媒资的就绪字幕轨道（status=READY；spec.md §7.5：未就绪不下发） */
 func (s *Store) ReadySubtitles(ctx context.Context, mediaID string) ([]Subtitle, error) {
 	rows := []Subtitle{}
 	err := s.db.SelectContext(ctx, &rows,
-		`SELECT id, lang, label, is_default FROM media_subtitles
+		`SELECT id, lang, label, is_default, storage_key FROM media_subtitles
 		  WHERE media_id = ? AND status = 'READY'
 		  ORDER BY is_default DESC, created_at ASC`, mediaID)
 	if err != nil {
 		return nil, err
 	}
 	return rows, nil
+}
+
+/**
+ * SubtitleByTrackID 按轨道 ID 取字幕行（spec.md §7.5）：
+ * trackId 同时是 media_subtitles.id 与存储文件名，但读取**以行内 storage_key 为准**（键可迁移）。
+ * 限定 media_id 防跨媒资引用；限定 status=READY 与下发口径一致。
+ */
+func (s *Store) SubtitleByTrackID(ctx context.Context, mediaID, trackID string) (*Subtitle, error) {
+	var row Subtitle
+	err := s.db.GetContext(ctx, &row,
+		`SELECT id, lang, label, is_default, storage_key FROM media_subtitles
+		  WHERE id = ? AND media_id = ? AND status = 'READY' LIMIT 1`, trackID, mediaID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &row, nil
 }
 
 // ---- hls_keys（每媒资一份 CEK，spec.md §4.1） ----
@@ -202,6 +223,24 @@ func (s *Store) DefaultTemplateID(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return id, nil
+}
+
+// ---- system_settings（只读；播放域名运行时覆盖，spec.md §2.1.2） ----
+
+/**
+ * SettingValue 读单个设置值（key 为 MySQL 保留字风格的列名，必须反引号）。
+ * 调用方（server 的 baseResolver）自带 60s 进程内缓存，DB 故障回退 env，不阻塞播放热路径。
+ */
+func (s *Store) SettingValue(ctx context.Context, key string) (string, error) {
+	var v string
+	err := s.db.GetContext(ctx, &v, "SELECT `value` FROM system_settings WHERE `key` = ? LIMIT 1", key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	return v, nil
 }
 
 // ---- playback_sessions（分发端写，可吊销；ADR-0006 §6） ----

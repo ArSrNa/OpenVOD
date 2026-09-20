@@ -13,13 +13,45 @@
     },
     "template_id": {
       "type": "string"
+    },
+    "subtitles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "lang": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "is_default": {
+            "type": "boolean"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "lang",
+          "label",
+          "is_default",
+          "url"
+        ],
+        "title": "PlaybackSubtitle"
+      }
     }
   },
   "required": [
     "sid",
     "manifest_url",
     "expires_at",
-    "template_id"
+    "template_id",
+    "subtitles"
   ],
   "$id": "PlaybackResponse.json",
   "title": "PlaybackResponse"

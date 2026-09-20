@@ -9,10 +9,12 @@
 //   已实现（转码 M2，ADR-0008）：/api/admin/media/[id]/transcode（POST 发起入队）、/api/admin/jobs（GET 任务列表）、
 //                         /api/admin/jobs/stream（SSE 实时推送，spec.md §2.1）、
 //                         /api/admin/jobs/[id]/stop、/api/admin/jobs/[id]/restart（停止 / 重启，spec.md §5.1）
-//   已实现（总览统计）：/api/admin/stats（媒资总数 / 就绪 / 未入库 + 进行中任务按状态计数）
-//   TODO 501 占位（随里程碑落地，intent.md 标注）：
-//     - /media/[id]/subtitles      字幕上传/管理（M4，ADR-0009；VTT → proceed/{id}/subtitles/）
-//     - /users 等（ADR-0004 功能清单）
+//   已实现（总览统计）：/api/admin/stats（媒资总数 / 就绪 / 未入库 + 进行中任务按状态计数 + 播放端用户总数/可用/已封禁）
+//   已实现（播放端用户，ADR-0004 users 表 / ADR-0007）：/api/admin/users（GET/POST）、/users/[id]（GET/PATCH/DELETE）、
+//                         /users/[id]/password（POST 重置口令）、/users/[id]/revoke-sessions（POST 手动吊销会话）
+//   已实现（字幕管理，spec.md §7 / ADR-0009）：/media/[id]/subtitles（GET 列表 / POST 新建）、
+//                         /media/[id]/subtitles/[trackId]（PATCH 元信息 / DELETE 轨道）、
+//                         /media/[id]/subtitles/[trackId]/content（PUT 覆盖文本）
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 

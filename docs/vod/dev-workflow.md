@@ -162,7 +162,7 @@ ffprobe "$MF" && ffmpeg -i "$MF" -c copy /tmp/out.mp4
 - 无 token 拉清单 / 取密钥 → 403 `bad_token`（P0 门禁语义）；密钥响应固定 16B + `no-store`；
 - token 以 query `t` 为主（改写后的清单里已自动带上）；App / hls.js 也可用 header `X-Playback-Token`（Safari 原生只能 query）；
 - 多套模板产物时 `play` 可带 `template_id`（不指定则取唯一产物或默认模板产物）；
-- M3 未覆盖项（CDN+TypeA / 限频 / 严格模式 / sqlite 驱动）见 spec.md §6.6。
+- M3 未覆盖项（限频 / 严格模式 / sqlite 驱动）见 spec.md §6.6；CDN+TypeA 演进项已于 2026-09-20 关闭（S3 预签名直出定稿，ADR-0005 修订）。
 
 > 启动脚本都会先加载根 `.env`。直接 `bun run --cwd apps/admin dev` 会缺少
 > `BETTER_AUTH_SECRET` / `DATABASE_URL`（Next 只读 `apps/admin/.env`，该文件默认不存在）。
@@ -196,6 +196,8 @@ task contracts            # 契约生成物变更后需入库（契约门禁）
 |---|---|
 | `Module not found: Can't resolve '../generated/sqlite'`（或 mysql） | 只生成了一份客户端；`task db:generate` 生成两份，然后重启 dev |
 | `P2021 The table xxx does not exist` | 目标库未建表；SQLite 用 `task db:push`，MySQL 用 §4.3 迁移/baseline |
+| `P1012 the URL must start with file:`（跑 `task db:push` 时） | `.env` 的 `DATABASE_URL` 是 MySQL——`db:push` 只服务 SQLite 开发库；MySQL 用 `task db:migrate`。临时要 SQLite 库可内联覆盖：`DATABASE_URL="file:./dev.db" bun run --cwd packages/db push:sqlite` |
+| `P3009 failed migrations` + MySQL `1064` near `'--…'` | 迁移 SQL 的 `--` 注释后**必须跟空格**（紧跟文字时 MySQL 不识别为注释，整个文件报 1064 且被记为 failed 挡住后续迁移）。修正 SQL 后：`bunx prisma migrate resolve --rolled-back <迁移名> --schema prisma/schema.mysql.prisma`，再 `task db:migrate` |
 | `P3014 could not create the shadow database` | 账号无建库权限；按 §4.3 的 baseline 四步，不要用 `migrate dev` |
 | 登录 403 + `[Better Auth]: Invalid origin: http://xxx` | CNB 预览网关转发时会把请求头 `Origin` 改写成 `http://<目标域名>`（实测：任意 Origin 都被改写，与浏览器是否用 https 无关）。`auth.ts` 已把 `ADMIN_BASE_URL` 的 http 等同体加进 `trustedOrigins`；仍报错时核对 `ADMIN_BASE_URL` 的 host 是否就是访问域名（CNB 上若注入了 `CNB_VSCODE_PROXY_URI`，`auth.ts` 已自动按 `{{port}} → ADMIN_PORT` 覆盖，无需手填）。附：better-auth 对无通配符条目做全量相等比对，`ADMIN_TRUSTED_ORIGINS` 里裸域名会被展开为 http/https 两条 |
 | 分发端启动即退出，提示 `URL_SIGN_KEY_HEX 未配置` / `MASTER_KEYS 未配置` | 未加载 `.env`；改用 `./start-delivery.sh` 或 `task dev:delivery` |

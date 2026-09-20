@@ -14,6 +14,7 @@ import {
 } from "@openvod/shared";
 import {
   PRODUCT_LEGACY_ID,
+  countSubtitlesByMedia,
   groupProductsByMedia,
   selectProductObjectKeys,
   type MediaProduct,
@@ -182,6 +183,8 @@ export interface MediaRow {
   assets: { proceed: number; cover: number; metadata: number };
   /** 转码产物按模板分组（spec.md §1.3）；空数组 = 尚无转码产物 */
   products: MediaProduct[];
+  /** 该媒资的字幕对象数（`proceed/{id}/subtitles/*.vtt`，spec.md §7.2；字幕管理页选择器用） */
+  subtitleCount: number;
 }
 
 export async function listMedia(): Promise<{ total: number; items: MediaRow[] }> {
@@ -213,6 +216,7 @@ export async function listMedia(): Promise<{ total: number; items: MediaRow[] }>
   const coverCounts = countUnder(covers, STORAGE_PARTITIONS.cover);
   const metadataCounts = countUnder(metadatas, STORAGE_PARTITIONS.metadata);
   const productsByMedia = groupProductsByMedia(proceeds);
+  const subtitleCounts = countSubtitlesByMedia(proceeds); // 保留段：字幕不计入 products（spec.md §7.2）
   await attachTemplateNames([...productsByMedia.values()].flat());
 
   const items: MediaRow[] = [];
@@ -235,6 +239,7 @@ export async function listMedia(): Promise<{ total: number; items: MediaRow[] }>
         metadata: metadataCounts.get(m[1]) ?? 0,
       },
       products: productsByMedia.get(m[1]) ?? [],
+      subtitleCount: subtitleCounts.get(m[1]) ?? 0,
     });
   }
   items.sort((a, b) => Number(b.id) - Number(a.id)); // 数值语义降序（新媒资在前）

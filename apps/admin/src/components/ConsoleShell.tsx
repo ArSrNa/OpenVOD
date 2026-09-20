@@ -33,14 +33,43 @@ const MODULES = [
   { key: "/about", label: "关于", icon: <InfoCircleOutlined /> },
 ];
 
+// 系统设置二级菜单：设置项按域拆子页（/settings 本身只做重定向到首个子页）
+const SETTINGS_CHILDREN = [
+  { key: "/settings/playback", label: "播放设置" },
+  { key: "/settings/storage", label: "存储设置" },
+  { key: "/settings/security", label: "安全设置" },
+];
+
+// 扁平查找表：内容区标题 / 占位判定用（含二级菜单项）
+const ALL_ENTRIES = [...MODULES, ...SETTINGS_CHILDREN];
+
 // 已实现的真实路由页：菜单点击直接跳转（其余模块仍是内容区占位）
-const ROUTE_PAGES = new Set(["/", "/media", "/templates", "/keys", "/jobs", "/about"]);
+const ROUTE_PAGES = new Set([
+  "/",
+  "/media",
+  "/templates",
+  "/subtitles",
+  "/users",
+  "/keys",
+  "/jobs",
+  "/settings/playback",
+  "/about",
+]);
 
 // ProLayout 的菜单与面包屑由 route + location 推导（图标必须挂在 route 上，MODULES 仅用于内容区）
 const ROUTE = {
   path: "/",
   name: "控制台",
-  routes: MODULES.map(({ key, label, icon }) => ({ path: key, name: label, icon })),
+  routes: MODULES.map(({ key, label, icon }) =>
+    key === "/settings"
+      ? {
+          path: key,
+          name: label,
+          icon,
+          routes: SETTINGS_CHILDREN.map(({ key: k, label: l }) => ({ path: k, name: l })),
+        }
+      : { path: key, name: label, icon },
+  ),
 };
 
 /** 品牌标识（远程 logo，域名白名单见 next.config.ts images.remotePatterns） */
@@ -81,7 +110,7 @@ export function ConsoleShell({
   // 仅壳层首帧短暂显示占位，无额外代价。
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
-  const active = MODULES.find((m) => m.key === current) ?? MODULES[0];
+  const active = ALL_ENTRIES.find((m) => m.key === current) ?? MODULES[0];
   // 当前内容区是否为未实现模块的占位页（真实路由页的 children 总是渲染）
   const showPlaceholder = !ROUTE_PAGES.has(current);
 

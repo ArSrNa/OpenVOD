@@ -32,10 +32,8 @@ export interface StorageAdapter {
   listObjects(prefix: string): Promise<StorageObject[]>;
   /** 上传预签名（管理端直传用，ADR-0005 上传路径；local 模式不支持） */
   presignPut(key: string, ttlSec: number): Promise<string>;
-  /** 下载预签名（管理侧取回源片用；播放分发不走这里，走 EO TypeA，ADR-0005） */
+  /** 下载预签名（管理侧取回源片 / s3 分片直出；可经 STORAGE_CDN_BASE_URL 替换 origin，ADR-0005） */
   presignGet(key: string, ttlSec: number): Promise<string>;
-  /** 经 CDN 域名的公开拼接（配合 EO TypeA 签名使用） */
-  publicUrl(key: string): string;
 }
 
 export type StorageConfig =

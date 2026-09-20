@@ -31,7 +31,7 @@
 - 未上架 / 转码中媒资：`media` 接口可见但 `play` 返回 409 `not_playable`。
 - m3u8 改写实现：分发端从存储适配读清单文本 → 行级改写（`EXT-X-KEY` URI、分片行、必要时 `EXT-X-MEDIA`）→ 注入 token 输出；响应体须 ≤6MB（平台 body 上限，极长视频策略见 open-questions #12）。
 - 限频：登录与 play 按 IP + 用户维度简单限频（进程内 / DB 计数，v1 无 Redis）。
-- **实现落点（2026-09-18，M3 竖切；细节以 spec.md §6 为准）**：子清单路径为 `/manifest/{variant}/index.m3u8`（可含子目录，通配路由）；`play` 与清单 URL 可带 `tpl={templateId}` 选择多套模板产物（缺省自动选择，spec.md §6.3）；token 以 query `t` 为主、**header `X-Playback-Token` 兜底**（Safari 原生只能走 query）；s3 形态分片为预签名直出，CDN + TypeA 属部署演进项（spec.md §6.6）；会话吊销当前每请求查库（比 §6 的 60s 收敛更严格）。
+- **实现落点（2026-09-18，M3 竖切；细节以 spec.md §6 为准）**：子清单路径为 `/manifest/{variant}/index.m3u8`（可含子目录，通配路由）；`play` 与清单 URL 可带 `tpl={templateId}` 选择多套模板产物（缺省自动选择，spec.md §6.3）；token 以 query `t` 为主、**header `X-Playback-Token` 兜底**（Safari 原生只能走 query）；s3 形态分片为**预签名直出**（2026-09-20 定稿，ADR-0005 修订，CDN + TypeA 与分发端代理均不采用）；会话吊销当前每请求查库（比 §6 的 60s 收敛更严格）。
 
 ## 后果与风险
 

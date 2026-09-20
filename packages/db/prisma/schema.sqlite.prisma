@@ -319,3 +319,12 @@ model AuditLog {
   @@index([actorType, actorId])
   @@map("audit_logs")
 }
+
+/// 系统设置（key-value，控制台运行时可调项；避免改 env 重启）
+model SystemSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_settings")
+}

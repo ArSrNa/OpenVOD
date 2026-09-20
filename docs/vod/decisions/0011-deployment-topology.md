@@ -20,7 +20,7 @@
 管理员 ─────▶ 管理端 admin ─────┘
               （admin API + admin-web + worker 常驻容器）
                   │
-                  └──▶ 对象存储（COS / 本地卷）──(EO 私有回源)──▶ EdgeOne CDN（TypeA）──▶ 播放端 App
+                  └──▶ 对象存储（COS / 本地卷）──(S3 预签名直出 / local 流式，可前置任意 CDN 透传)──▶ 播放端 App
 ```
 
 - **两个应用**：分发端（delivery，无状态，公网热点）与管理端（admin API + admin-web + worker，常驻容器）。
@@ -39,10 +39,10 @@
 ### 硬约束（违反即缺陷）
 
 1. **Schema 归属权唯一**：迁移仅由管理端 `packages/db` 执行；两应用独立发版，迁移必须向后兼容（expand-contract：先加列、双写过渡、后删列），纳入 CI 检查。
-2. **数据库账号分权**：分发端暴露公网，其 DB 凭据为全系统最高危凭据——开独立受限账号：`users / media / media_subtitles / hls_keys` 只读 + `playback_sessions` 读写 + 其余拒绝；管理端另持全权账号。绝不共用 root。
+2. **数据库账号分权**：分发端暴露公网，其 DB 凭据为全系统最高危凭据——开独立受限账号：`users / media / media_subtitles / hls_keys / system_settings` 只读 + `playback_sessions` 读写 + 其余拒绝（`system_settings` 仅 `playback_base_url` 播放域名一键被消费，spec.md §2.1.2）；管理端另持全权账号。绝不共用 root。
 3. **SQLite 边界**：SQLite 为嵌入文件库，两应用分开部署时仅允许「单机同卷共享一个文件」（单机 compose）；**跨机器 / 云函数部署必须 MySQL**。
-4. **存储凭据分权**：分发端理想情况下**不持有任何 COS 读凭据**（EO TypeA 边缘鉴权 + 私有回源，ADR-0005）；S3 写凭据仅管理端 / Worker 持有。
-5. **键前缀分区即隔离**：`original/` 仅管理端写；`proceed/`、`cover/`、`metadata/` 管理端与 Worker 写、分发端经 CDN/TypeA 读。单桶足够，不按应用拆桶。
+4. **存储凭据分权**：S3 **写**凭据仅管理端 / Worker 持有；分发端仅持**受限只读凭据**（限 `proceed/`、`cover/`、`metadata/` 前缀，用于生成播放预签名 URL——2026-09-20 随 ADR-0005 放弃 EO TypeA，由原「零读凭据」约束调整而来）。
+5. **键前缀分区即隔离**：`original/` 仅管理端写；`proceed/`、`cover/`、`metadata/` 管理端与 Worker 写、分发端经预签名读。单桶足够，不按应用拆桶。
 
 ### 失败场景
 
@@ -51,7 +51,7 @@
 | Worker 宕机 | 播放不受影响，新转码暂停，任务经 lease 过期自动重派 |
 | 管理端宕机 | 播放不受影响，管理操作不可用 |
 | 分发端宕机 | 播放不可用，管理端正常 |
-| 数据库不可用 | 新播放会话不可建、密钥不可下发；已下发 token 的分片仍可播（CDN 直出） |
+| 数据库不可用 | 新播放会话不可建、密钥不可下发；已下发 token 的分片仍可播（预签名直出） |
 
 ## 备选（否决）
 

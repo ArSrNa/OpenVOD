@@ -54,7 +54,7 @@ go -C apps/delivery test ./internal/token -run TestTokenVerify -v   # 单个 Go 
 
 **任务队列**（`apps/worker/src/job-store.ts:60-101`）：不引 Redis，靠 CAS `updateMany`（状态 + lease 过滤，`count===1` 才算认领）在 MySQL / SQLite 上语义一致；`lease_until` 过期即崩溃重派，`attempts >= WORKER_MAX_ATTEMPTS` 直接判 FAILED。执行期用心跳 `extendLease` 续租。转码链在 `apps/worker/src/executor.ts`，顺序即安全边界：解封/生成 CEK → 写 `key_info`（明文只在这两个瞬间存在）→ ffmpeg → 上传 → **上传成功才落 `hls_keys`** → `finally` 清理临时密钥文件。
 
-**双语言契约防漂移**：`packages/contracts/src/index.ts` 的 zod schema 是 DTO 唯一真相源 → `gen-json.ts` 出 JSON Schema → `gen-go.sh` 用 quicktype 出 Go struct。URL 签名 token / MK 封装（AES-256-GCM）/ EO TypeA 在 TS（`packages/crypto`）与 Go（`apps/delivery/internal/{token,mk}`）各有一份实现，靠 `packages/crypto/fixtures/crypto-v1.json` 共享向量保证互通——改任一侧必须重跑 `task vectors` 并跑两端测试。
+**双语言契约防漂移**：`packages/contracts/src/index.ts` 的 zod schema 是 DTO 唯一真相源 → `gen-json.ts` 出 JSON Schema → `gen-go.sh` 用 quicktype 出 Go struct。URL 签名 token / MK 封装（AES-256-GCM）在 TS（`packages/crypto`）与 Go（`apps/delivery/internal/{token,mk}`）各有一份实现（`packages/crypto` 的 TypeA 实现为废弃保留，不接入链路），靠 `packages/crypto/fixtures/crypto-v1.json` 共享向量保证互通——改任一侧必须重跑 `task vectors` 并跑两端测试。
 
 **Go 侧不用 Prisma**：`database/sql + sqlx`，只读读模型 + `playback_sessions` 读写，用受限 DB 账号（ADR-0011）。表结构对齐靠 `task db:parity` 与集成测试。分发端链路的规范性（normative）文档是 `docs/delivery/video-stream-standard.md`（「必须/禁止」按 RFC 2119 理解），改 delivery 行为前先对一遍。
 

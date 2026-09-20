@@ -12,8 +12,6 @@ export interface LocalConfig {
   root: string;
   /** 全局 root 前缀（.env: STORAGE_ROOT_PREFIX，spec.md §1.1）；空 = 根目录顶层 */
   rootPrefix?: string;
-  /** 公开访问基址（自托管下通常指向分发端/静态服务） */
-  publicBaseUrl?: string;
 }
 
 export class LocalAdapter implements StorageAdapter {
@@ -110,12 +108,6 @@ export class LocalAdapter implements StorageAdapter {
 
   async presignGet(): Promise<string> {
     throw new Error("local 模式不支持预签名下载（ADR-0005）：播放走分发端 token");
-  }
-
-  publicUrl(key: string): string {
-    const base = (this.cfg.publicBaseUrl ?? "").replace(/\/+$/, "");
-    if (!base) throw new Error("STORAGE_PUBLIC_BASE_URL 未配置");
-    return `${base}/${this.fullKey(key)}`;
   }
 }
 

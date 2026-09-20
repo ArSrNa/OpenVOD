@@ -24,6 +24,8 @@ export function createStorageFromEnv(env: NodeJS.ProcessEnv = process.env): Stor
           // COS（myqcloud）只接受 virtual-hosted-style（<bucket>.cos.<region>.myqcloud.com），
           // 必须显式 S3_FORCE_PATH_STYLE="false"；MinIO 保持默认 true
           forcePathStyle: (env.S3_FORCE_PATH_STYLE ?? "true").trim().toLowerCase() !== "false",
+          // 加速域名（ADR-0005 统一加速域名方案）：GET 预签名 origin 替换（管理端预览 / presign 分片）
+          cdnBaseUrl: env.STORAGE_CDN_BASE_URL || undefined,
           rootPrefix,
         }
       : {

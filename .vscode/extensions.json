@@ -3,6 +3,8 @@
         "golang.go",
         "redhat.vscode-yaml",
         "eamodio.gitlens",
-        "ms-azuretools.vscode-docker"
+        "ms-azuretools.vscode-docker",
+        "bradlc.vscode-tailwindcss",
+        "wakatime.vscode-wakatime"
     ]
 }

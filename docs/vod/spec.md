@@ -103,14 +103,26 @@ root 下按资产类别分四个分区，互不嵌套：
 | `/api/admin/media/{id}/products/{templateId}` | DELETE | 删除一套转码产物：`templateId` 为模板 cuid（删 `proceed/{id}/{templateId}/` 子树）或 `legacy`（旧布局：删 `proceed/{id}/` 顶层非保留段对象）。**只删存储对象**：`hls_keys`（可能被其它模板产物共用）与 `transcode_jobs` 历史保留；同模板存在未终结任务 → 409；不存在 → 404；落 `audit_logs`（`media.product_delete`，detail 含 template_id / objects / bytes） |
 | `/api/admin/jobs/{id}/stop` | POST | 停止（取消）任务：置 FAILED（`last_error=已手动停止（管理端）`）+ 清租约。仅对 **QUEUED**（撤下队列，不再被认领）或**租约已过期**的执行中任务（worker 失联，安全终止）开放；租约有效（worker 正在执行）→ 409。写入用 CAS（状态未变才生效）。落 `audit_logs`（`transcode.stop`） |
 | `/api/admin/jobs/{id}/restart` | POST | 重启（重新入队）：仅 **FAILED**（失败或手动停止）——`attempts` 清零（否则认领逻辑会立即判「超过重试上限」）+ 清错误 / 租约 / 时间戳 → QUEUED，由 worker 重新认领。落 `audit_logs`（`transcode.restart`） |
-| `/api/admin/stats` | GET | 控制台总览统计（intent.md「控制台总览」）：`media`（`total` 以 `original/` 分区为准、`ready` 为 `status=READY` 且已入库、`not_ingested` 为有 original 对象但无 `media` 行）与 `jobs`（未终结任务按 QUEUED / PROBING / ENCODING / PACKAGING 计数 + `active` 合计）。只读聚合：媒资只列举 `original/` 一个分区 + 两次 DB COUNT，任务为四次 DB COUNT，不拉取任务行 |
+| `/api/admin/stats` | GET | 控制台总览统计（intent.md「控制台总览」）：`media`（`total` 以 `original/` 分区为准、`ready` 为 `status=READY` 且已入库、`not_ingested` 为有 original 对象但无 `media` 行）、`jobs`（未终结任务按 QUEUED / PROBING / ENCODING / PACKAGING 计数 + `active` 合计）与 `users`（`total` / `active` / `disabled`，ADR-0007）。只读聚合：媒资只列举 `original/` 一个分区 + 两次 DB COUNT，任务为四次 DB COUNT，用户为两次 DB COUNT，均不拉取行 |
+| `/api/admin/users` | GET | 播放端用户列表（ADR-0004 `users` 表；ADR-0007 账户域，创建时间倒序）：用户名 / 展示名 / 状态 / 并发上限 / 进行中会话数 / 最近登录 / 注册时间。**响应不含 `password_hash`**（契约层不定义该字段，管理端无查看口令哈希的入口）。「进行中会话数」= `playback_sessions` 中未吊销且未过期的条数（批量 groupBy 一次统计） |
+| `/api/admin/users` | POST | 新建播放端用户：`username` + `password`（后者 bcrypt cost 12 摘要后入库，ADR-0007）→ 默认 `ACTIVE`；可选 `display_name` / `max_concurrent_sessions`。用户名重复 409；用户名或口令不合法 400。落 `audit_logs`（`user.create`） |
+| `/api/admin/users/{id}` | GET | 用户详情：DTO + 进行中会话数（404 若用户不存在） |
+| `/api/admin/users/{id}` | PATCH | 更新展示名 / 状态 / 并发上限（**用户名创建后不可修改**——口令与用户名变更分别走重置密码 / 新建+删除）。**封禁（ACTIVE → DISABLED）立即吊销该用户全部未过期会话**（ADR-0007：封禁 → 登录拒绝 + 全会话吊销），吊销条数随响应 `revoked_sessions` 返回；重复封禁 / 解除封禁不触发吊销。落 `audit_logs`（`user.update`，detail 含 `revoked_sessions`） |
+| `/api/admin/users/{id}/password` | POST | 重置口令（`password`，bcrypt cost 12）：凭据变更后同样**立即吊销该用户全部未过期会话**（否则已下发 JWT 在 exp 前仍可播放），`revoked_sessions` 随响应返回。落 `audit_logs`（`user.password_reset`） |
+| `/api/admin/users/{id}/revoke-sessions` | POST | 手动吊销该用户全部未过期会话（用户仍为 `ACTIVE`，可重新登录），返回 `revoked_sessions`。落 `audit_logs`（`user.sessions_revoke`） |
+| `/api/admin/users/{id}` | DELETE | 删除用户：`playback_sessions` 随用户级联删除（Prisma `onDelete: Cascade`，等价于全会话吊销），响应用级联条数回报。落 `audit_logs`（`user.delete`） |
+
+### 2.1.1 播放端用户（ADR-0004 / ADR-0007）
+
+- 用户表由管理端全量 CRUD，分发端 login 只读校验（`status=ACTIVE` 才允许登录）；已下发分片 token 在自身 `exp` 内仍有效（ADR-0006 已声明接受），吊销只影响新请求；
+- 口令只写不读：接口入参只接受明文口令并即时 bcrypt 摘要，响应与契约**均无口令 / 哈希字段**；`max_concurrent_sessions` 为 `0` 表示不限制（ADR-0007）；
+- 管理端用户（`admin_users` + better-auth Cookie 会话）与播放端用户（`users` + ES256 JWT）是两套体系，切勿混用。
 
 ### 2.2 未实现（501 占位，随里程碑落地）
 
 | 端点 | 归属 | 说明 |
 |---|---|---|
 | `/api/admin/media/{id}/subtitles` | M4（ADR-0009） | 字幕上传 / 管理：VTT → `proceed/{id}/subtitles/` 并绑定媒资 ID |
-| 其余 `/api/admin/*` | 随 specification | `/users` 等 |
 
 - 未实现端点统一由 `/api/admin/[...path]` 返回 501 `not_implemented`（会话守卫仍然生效）；管理端 UI 对应项为 TODO 提示（点击提示所属里程碑）。
 
@@ -140,7 +152,7 @@ root 下按资产类别分四个分区，互不嵌套：
 - 所有管理相关表格**必须**「表体限高、内部纵向滚动、表头固定」，页面本身不随条目数增长；内容超长必须滚动，不得撑开页面；
 - 超宽表格同时横向滚动（antd `scroll.x` = 各列宽合计）；
 - 统一复用 `apps/admin/src/components/tableScroll.ts` 的 `useTableBodyHeight`（视口高度推算 + resize 重算 + 极窄视口兜底），**不得各自实现**；
-- 已实现页面：`/media`（媒资列表）、`/templates`（转码模板）；后续所有表格页面（用户 / 密钥 / 转码任务等）同样遵循。
+- 已实现页面：`/media`（媒资列表）、`/templates`（转码模板）、`/users`（播放端用户）、`/keys`（密钥）、`/jobs`（转码任务）；后续所有表格页面同样遵循。
 
 ### 3.1 已实现页面
 
@@ -150,6 +162,7 @@ root 下按资产类别分四个分区，互不嵌套：
     - **删除** = 按模板删除该套产物（`DELETE /media/{id}/products/{templateId}`；确认弹窗给出前缀 / 对象数 / 体积与不可恢复警告；同模板有进行中任务时 409，需等待其结束）；
   - 播放失败的常见排查提示直接展示在弹窗内：分发端 CORS（`DELIVERY_CORS_ORIGINS`）或对象桶 CORS 未放行管理端源站；预览账号未配置时接口 501（dev-workflow §5.3）；
 - `/templates`（转码模板，ADR-0014 已实现）：模板列表表格——模板名（默认标记）、描述、模式（转码 / 保持原视频）、加密（AES-128）、格式（M3U8）、参数摘要（编码器 / 码率或 CRF / 分辨率档位 / 帧率 / preset）、更新时间；操作：新建 / 编辑（弹窗表单，含分辨率档位多行编辑：固定宽×高或自适应上限约束）、删除（确认弹窗注明已发起任务不受影响）；API 见 §2（`/api/admin/templates`）。
+- `/users`（播放端用户，ADR-0004 `users` 表 / ADR-0007 账户域）：用户列表表格——用户名（加粗，已封禁标红 Tag）、展示名、状态（可用 / 封禁 Tag）、并发上限（`0` 悬停提示「0 = 不限制」）、进行中会话数、最近登录、注册时间；操作：新建 / 编辑（弹窗表单：用户名创建后为只读，口令仅新建时可填，状态用 Switch，并发上限 0–10000）、重置密码（独立弹窗，双口令确认，提示将吊销全部会话）、吊销会话（有会话时才可点）、封禁 / 启用、删除（确认弹窗区分「级联删除会话」与「封禁后可恢复」）。页面**不提供口令 / 哈希的查看与导出入口**；API 见 §2.1.1。
 - `/keys`（密钥管理，已实现）：密钥列表表格——媒资 ID、展示名、媒资状态、kid（截断 + Tooltip 全量）、算法、MK 版本（非当前版本标「待轮换」）、加密产物对象数、生成时间；顶部条展示当前封装版本与各版本密钥用量；操作：详情（弹窗：kid / IV / mk_ver / 生成时间 / 使用中会话数，并明确标注「明文密钥不展示」）、删除（确认弹窗警告需重转码才能恢复可播）、「轮换 MK」（确认后重封装旧版本，无需重转码）；API 见 §2.1 与 §4.3。**页面不提供任何明文密钥的展示 / 导出入口**。
 - `/jobs`（转码任务，M2 已实现，M3 增停止 / 重启）：任务列表表格——任务 ID、媒资（ID + 展示名）、状态（排队 / 探测中 / 转码中 / 封装上传中 / 完成 / 失败；worker 失联的执行中任务标「中断」）、模板名（取任务快照）、尝试次数、耗时、失败原因、创建时间；**操作列**：停止（取消）/ 重启（重新入队），规则见 §5.1；**实时推送（SSE）**——连接即回放全量快照，任务变化由服务端主动推送（客户端零轮询），断线自动重连并展示连接状态；「刷新」= 重建连接（服务端随即回放最新快照），「耗时」列由本地时钟每秒重算（不发请求）；API 见 §2.1（`/api/admin/jobs`、`/api/admin/jobs/stream`、`/api/admin/jobs/{id}/stop|restart`），执行规则见 §5。
 - 操作（对应 §2.1）：上传视频（原始字节流直传，带进度）、预览（弹窗 `<video>` 播放 original，local 支持 Range 拖动）、详情（弹窗展示元数据：probe 摘要结构化展示——容器 / 分辨率 / 帧率 / 编码 / 像素格式 / 色彩空间 / 码率 / 音轨等 + 摘要 JSON 折叠块）、重命名（仅展示名）、删除（确认后硬删除全级联）、设置封面（弹窗双模式：手动上传 / 视频截帧，§2.3）、「更多 → 生成元数据」（ffprobe 探测，§2.1）、「更多 → 转码」（M2 已实现：弹窗**多选**模板（默认勾选默认模板）→ 逐个展示所选模板的模式 / 加密 / 输出格式 → 一次发起入队多条 `transcode_jobs`（每个模板各一条、各落 `proceed/{id}/{模板id}/`），进度跳「转码任务」页查看）；「更多 → 字幕管理」为 TODO（§2.2）。

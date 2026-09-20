@@ -34,7 +34,7 @@ const MODULES = [
 ];
 
 // 已实现的真实路由页：菜单点击直接跳转（其余模块仍是内容区占位）
-const ROUTE_PAGES = new Set(["/", "/media", "/templates", "/keys", "/jobs", "/about"]);
+const ROUTE_PAGES = new Set(["/", "/media", "/templates", "/users", "/keys", "/jobs", "/about"]);
 
 // ProLayout 的菜单与面包屑由 route + location 推导（图标必须挂在 route 上，MODULES 仅用于内容区）
 const ROUTE = {

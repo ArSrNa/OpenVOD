@@ -96,7 +96,7 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可轮换）
 
 - `apps/delivery` **播放链路（M3）已实现**：`internal/{config,contracts,server,token,auth,blob,mk,playback,store}`——login（bcrypt + ES256 JWT，私钥自 `signing_keys` 解封）、media 列表/详情、play（会话幂等复用 / `force_new` / 并发上限 / 多模板产物自动或显式选择）、主 + 子清单改写（`EXT-X-KEY` URI → token(k)、分片 → token(s) 或 S3 预签名直出）、`/key`（MK 解封 16B CEK，`no-store`）、local 驱动分片流式（Range）；无签名 403。规则与未覆盖项（CDN + EO TypeA、限频、严格模式、sqlite）见 `docs/vod/spec.md §6`。**本地调试分发端需把 `DELIVERY_DATABASE_URL` 指向可达库**（仓库 `.env` 里是 127.0.0.1 占位）。管理端「产物 → 播放」预览由后端以预览账号（`DELIVERY_BASE_URL` / `DELIVERY_PREVIEW_USERNAME|PASSWORD`）换签名主清单 URL，浏览器用 Video.js v10（`@videojs/hlsjs-video`）直连分发端播放——**密钥仍只由分发端下发**；跨域由 `DELIVERY_CORS_ORIGINS` 控制（默认 `*`），s3 形态还需对象桶 CORS 放行管理端源站（否则「有总时长但一直转圈」，见 dev-workflow §8）。
 - `apps/worker/src/index.ts` 的 `tick()` 为空实现，注释列出 ADR-0008 的完整流程（认领 → ffprobe → key_info → 转码 → 上传 → 写 `hls_keys`）。
-- `apps/admin` 的 `/api/auth/*`（better-auth）、`/healthz`、登录页与建号脚本可用；`/api/admin/[...path]` 会话守卫后返回 501，待按 path 分发实现。
+- `apps/admin` 的 `/api/auth/*`（better-auth）、`/healthz`、登录页与建号脚本可用；`/api/admin/*` 业务端点按里程碑逐条落地——已实现：媒资（上传 / 列表 / 详情 / 重命名 / 删除 / 预览 / 封面 / 元数据 / 产物 / 转码发起）、`/api/admin/templates`、`/api/admin/keys`（含 MK 轮换）、`/api/admin/jobs`（列表 + SSE + 停止 / 重启）、`/api/admin/stats`、`/api/admin/users`（播放端用户 CRUD + 重置口令 + 吊销会话，spec.md §2.1.1）；其余路径仍由 `/api/admin/[...path]` 会话守卫后返回 501。
 
 ## 仓库约定
 

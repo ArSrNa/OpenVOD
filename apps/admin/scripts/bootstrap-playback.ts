@@ -7,6 +7,7 @@
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { parseMasterKeys, pickWrappingMasterKey, wrap } from "@openvod/crypto";
 import { getDb } from "@openvod/db";
+import { hashPassword, PASSWORD_MAX_LENGTH } from "../src/lib/password";
 
 const args = process.argv.slice(2);
 const rotate = args.includes("--rotate-jwt-key");
@@ -15,6 +16,14 @@ const [username, password, displayName] = args.filter((a) => !a.startsWith("--")
 if (!username || !password || password.length < 8) {
   console.error(
     "用法：bun apps/admin/scripts/bootstrap-playback.ts <username> <password≥8位> [显示名] [--rotate-jwt-key]",
+  );
+  process.exit(1);
+}
+// 与 contracts CreateUserRequest 对齐：bcrypt 只取前 72 字节，超出部分被静默丢弃（截断点还可能
+// 落在多字节字符中间，导致校验端对同一口令判定不一致），契约层直接拒绝超长口令。
+if (password.length > PASSWORD_MAX_LENGTH) {
+  console.error(
+    `[bootstrap] 口令过长：${password.length} 字符（上限 ${PASSWORD_MAX_LENGTH}，bcrypt 只取前 72 字节）`,
   );
   process.exit(1);
 }
@@ -60,7 +69,9 @@ if (existing && !rotate) {
 }
 
 // ---- 2) 播放端用户 ----
-const passwordHash = await Bun.password.hash(password, { algorithm: "bcrypt", cost: 12 });
+// 哈希走管理端唯一实现 lib/password.ts（cost 12，ADR-0007）：与「管理端重置密码」同一路径，
+// 避免两处 bcrypt 参数漂移导致同库口令一套能登一套不能登。
+const passwordHash = await hashPassword(password);
 const user = await db.user.findUnique({ where: { username } });
 if (user) {
   await db.user.update({ where: { username }, data: { passwordHash, status: "ACTIVE" } });

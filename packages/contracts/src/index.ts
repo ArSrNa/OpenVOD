@@ -302,5 +302,84 @@ export const RotateMasterKeysResponse = z.object({
   errors: z.array(z.object({ media_id: z.string(), kid: z.string(), message: z.string() })).max(20),
 });
 
+// ---- 播放端用户管理（ADR-0004 users 表 / ADR-0007 账户域） ----
+// 仅管理端消费（分发端用户读模型在 Go 侧独立对齐）：分发端 login 只按 username 查 users 表，
+// 不消费本组 DTO，故本节**不进 gen-json.ts 清单、不生成 Go struct**（同转码模板 / 密钥管理）。
+
+/** users.status 取值（与 Prisma `UserStatus` 枚举逐字一致） */
+export const USER_STATUSES = ["ACTIVE", "DISABLED"] as const;
+
+/** 播放端用户名：字母数字与 `.` `_` `-`，3–32 位 */
+export const USERNAME_PATTERN = /^[a-zA-Z0-9._-]{3,32}$/;
+
+/** 口令长度上限：bcrypt 只取前 72 字节，超出被静默丢弃（多字节字符截断还可能与校验端不一致），契约层直接拒绝 */
+export const USER_PASSWORD_MAX_LENGTH = 72;
+
+/** 并发播放会话上限上限值（ADR-0007：0 = 不限） */
+export const MAX_CONCURRENT_SESSIONS_MAX = 10_000;
+
+/** 用户 DTO（绝不包含 password_hash：管理端无查看口令哈希的入口） */
+export const UserDTO = z.object({
+  id: z.string(),
+  username: z.string(),
+  display_name: z.string().nullable(),
+  status: z.enum(USER_STATUSES),
+  /** 单用户并发播放会话上限，0 = 不限（ADR-0007） */
+  max_concurrent_sessions: z
+    .number()
+    .int()
+    .min(0)
+    .max(MAX_CONCURRENT_SESSIONS_MAX),
+  /** 未过期且未吊销的播放会话数（封禁 / 删除前的判断依据） */
+  active_sessions: z.number().int(),
+  /** 分发端 login 成功时刷新（ADR-0007） */
+  last_login_at: z.string().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+
+/** 口令字段（创建 / 重置密码共用）：≥8 位，≤72 字节） */
+const UserPassword = z
+  .string()
+  .min(8, "密码至少 8 位")
+  .max(USER_PASSWORD_MAX_LENGTH, `密码最多 ${USER_PASSWORD_MAX_LENGTH} 个字符`);
+
+const UserMaxConcurrentSessions = z
+  .number()
+  .int()
+  .min(0, "并发上限不能为负")
+  .max(MAX_CONCURRENT_SESSIONS_MAX, `并发上限最大 ${MAX_CONCURRENT_SESSIONS_MAX}`);
+
+/** 创建播放端用户（bcrypt 哈希后入库，ADR-0007） */
+export const CreateUserRequest = z.object({
+  username: z
+    .string()
+    .trim()
+    .regex(USERNAME_PATTERN, "用户名需为 3–32 位字母、数字、`.`、`_` 或 `-`"),
+  password: UserPassword,
+  display_name: z.string().trim().max(64).optional(),
+  max_concurrent_sessions: UserMaxConcurrentSessions.default(0),
+  status: z.enum(USER_STATUSES).default("ACTIVE"),
+});
+
+/** PATCH 语义：字段缺省 = 不修改；display_name 传 null = 清空展示名 */
+export const UpdateUserRequest = z
+  .object({
+    display_name: z.string().trim().max(64).nullable().optional(),
+    status: z.enum(USER_STATUSES).optional(),
+    max_concurrent_sessions: UserMaxConcurrentSessions.optional(),
+  })
+  .refine((v) => Object.keys(v).length > 0, { message: "没有需要更新的字段" });
+
+/** 重置密码（管理员代重置，业务侧口令由 App 用户自行保管） */
+export const ResetUserPasswordRequest = z.object({
+  password: UserPassword,
+});
+
+export const UserListResponse = z.object({
+  total: z.number().int(),
+  items: z.array(UserDTO),
+});
+
 // 管理端 / Worker 直接复用同一份 zod 实例做请求校验（避免各包重复声明 zod 依赖）
 export { z } from "zod";

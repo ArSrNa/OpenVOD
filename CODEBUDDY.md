@@ -89,9 +89,9 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可轮换）
 
 ### 当前实现状态（scaffold 骨架）
 
-- `apps/delivery/internal/` 仅有 `config` / `contracts` / `server` / `token` 四包；读模型仓储、JWT 登录、TypeA、m3u8 改写等均为 501 stub，注入点在 `internal/server/server.go` 的路由注册处。
-- `apps/worker/src/index.ts` 的 `tick()` 为空实现，注释列出 ADR-0008 的完整流程（认领 → ffprobe → key_info → 转码 → 上传 → 写 `hls_keys`）。
-- `apps/admin` 的 `/api/auth/*`（better-auth）、`/healthz`、登录页与建号脚本可用；`/api/admin/[...path]` 会话守卫后返回 501，待按 path 分发实现。
+- `apps/delivery` 播放链路（M3）已实现：`internal/{config,contracts,server,token,auth,blob,mk,playback,store}`——login（bcrypt + ES256 JWT）、media 列表/详情、play（会话幂等 / 并发上限）、主 + 子清单改写、`/key`、local 驱动分片流式。未覆盖项见 `docs/vod/spec.md §6`。
+- `apps/worker/src/index.ts` 的转码执行链已实现（ADR-0008：认领 → ffprobe → key_info → 转码 → 上传 → 写 `hls_keys`）。
+- `apps/admin` 的 `/api/auth/*`（better-auth）、`/healthz`、登录页与建号脚本可用；`/api/admin/*` 业务端点按里程碑逐条落地——已实现：媒资（上传 / 列表 / 详情 / 重命名 / 删除 / 预览 / 封面 / 元数据 / 产物 / 转码发起）、`/api/admin/templates`、`/api/admin/keys`（含 MK 轮换）、`/api/admin/jobs`（列表 + SSE + 停止 / 重启）、`/api/admin/stats`、`/api/admin/users`（播放端用户 CRUD + 重置口令 + 吊销会话，spec.md §2.1.1）；其余路径仍由 `/api/admin/[...path]` 会话守卫后返回 501。
 
 ## 仓库约定
 

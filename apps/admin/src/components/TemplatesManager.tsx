@@ -232,10 +232,10 @@ export function TemplatesManager() {
           r.mode === "fixed"
             ? { mode: "fixed", width: r.width, height: r.height }
             : {
-                mode: "adaptive",
-                ...(r.max_width != null ? { max_width: r.max_width } : {}),
-                ...(r.max_height != null ? { max_height: r.max_height } : {}),
-              },
+              mode: "adaptive",
+              ...(r.max_width != null ? { max_width: r.max_width } : {}),
+              ...(r.max_height != null ? { max_height: r.max_height } : {}),
+            },
         );
         payload.params = {
           codec: values.codec,
@@ -449,7 +449,7 @@ export function TemplatesManager() {
                 <Form.Item
                   name="fps"
                   label="目标帧率"
-                  tooltip="留空保持源帧率；降帧率（如 60→30）会执行，升格不补帧（取源帧率）"
+                  tooltip="留空保持源帧率，低于源帧率时会执行，高于则保持源帧率"
                 >
                   <InputNumber min={1} max={240} precision={0} placeholder="保持源" style={{ width: 120 }} />
                 </Form.Item>
@@ -491,7 +491,7 @@ export function TemplatesManager() {
                 </Form.Item>
               )}
 
-              <Typography.Title level={5}>分辨率档位（多档 = ABR ladder）</Typography.Title>
+              <Typography.Title level={5}>分辨率</Typography.Title>
               <Form.List name="resolutions">
                 {(fields, { add, remove }) => (
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>

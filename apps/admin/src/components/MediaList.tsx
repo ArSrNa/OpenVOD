@@ -671,9 +671,10 @@ export function MediaList() {
     {
       title: "变体",
       dataIndex: "variants",
+      width: 100,
       render: (variants: string[]) => (variants.length ? variants.join(" / ") : "—"),
     },
-    { title: "对象数", dataIndex: "objects", width: 90 },
+    { title: "对象数", dataIndex: "objects", width: 80 },
     { title: "体积", dataIndex: "bytes", width: 110, render: (bytes: number) => formatSize(bytes) },
     {
       title: "操作",
@@ -787,34 +788,36 @@ export function MediaList() {
       dataIndex: "title",
       ellipsis: true,
       render: (title: string | null, record) => (
-        <div style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
-          <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
-            <Typography.Text style={{ fontSize: 13 }} ellipsis={{ tooltip: title ?? "数据库无该媒资记录（存储孤儿对象）" }}>
+        <div className="flex flex-col gap-0.5">
+          <div className="flex items-center gap-1">
+            <Typography.Text ellipsis={{ tooltip: title ?? "媒资数据库内无该记录（存储孤儿对象）" }}>
               {title ?? "—"}
             </Typography.Text>
-            <Typography.Text type="secondary" code style={{ fontSize: 11, lineHeight: "14px" }}>
-              {record.id}
-            </Typography.Text>
+            <Tooltip title="重命名">
+              <Button
+                type="text"
+                size="small"
+                icon={<EditOutlined />}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openRename(record);
+                }}
+              />
+            </Tooltip>
           </div>
-          <Tooltip title="复制媒资 ID">
-            <Button
-              type="text"
-              size="small"
-              icon={<CopyOutlined />}
-              onClick={(e) => void copyId(e, record.id)}
-            />
-          </Tooltip>
-          <Tooltip title="重命名">
-            <Button
-              type="text"
-              size="small"
-              icon={<EditOutlined />}
-              onClick={(e) => {
-                e.stopPropagation();
-                openRename(record);
-              }}
-            />
-          </Tooltip>
+
+          <div className="flex items-center">
+            {record.id}
+            <Tooltip title="复制媒资 ID">
+              <Button
+                color="default"
+                type="text"
+                size="small"
+                icon={<CopyOutlined />}
+                onClick={(e) => void copyId(e, record.id)}
+              />
+            </Tooltip>
+          </div>
         </div>
       ),
     },

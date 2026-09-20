@@ -360,7 +360,7 @@ export function SubtitleTracksPanel({ mediaId, mediaTitle, onChanged }: Subtitle
       width: 320,
       render: (_, t) => (
         <Space size={0}>
-          <Tooltip title={t.storage_ok === false ? "字幕对象缺失，无法预览" : "预览：原视频 + 该字幕"}>
+          <Tooltip title={t.storage_ok === false ? "字幕对象缺失，无法预览" : "原视频 + 该字幕"}>
             <span>
               <Button
                 type="link"
@@ -418,9 +418,6 @@ export function SubtitleTracksPanel({ mediaId, mediaTitle, onChanged }: Subtitle
         <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>
           刷新
         </Button>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {items.length ? `共 ${items.length} 条轨道` : "支持多语言多轨（语言如 zh-CN / en-US）"}
-        </Typography.Text>
       </Space>
 
       <div ref={tableRef}>
@@ -435,17 +432,14 @@ export function SubtitleTracksPanel({ mediaId, mediaTitle, onChanged }: Subtitle
           locale={{
             emptyText: (
               <Typography.Text type="secondary">
-                该媒资暂无字幕（点击「上传字幕」添加 .vtt）
+                暂无字幕（点击「上传字幕」添加）
               </Typography.Text>
             ),
           }}
         />
       </div>
       <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 12, marginBottom: 0 }}>
-        存储：<Typography.Text code>proceed/{mediaId}/subtitles/&#123;trackId&#125;.vtt</Typography.Text>
-        （保留段，不参与模板产物分组）。语言按 BCP-47 归一化存储（输入 zh_CN 会转为 zh-CN）；
-        同一媒资内语言唯一，每媒资至多一条默认轨。播放端通过分发端 play 接口领取带签名 token
-        的字幕地址（不入 HLS 清单），明细见 spec.md §7。
+        字幕位置：<Typography.Text code>proceed/{mediaId}/subtitles/&#123;trackId&#125;.vtt</Typography.Text>
       </Typography.Paragraph>
 
       {/* 字幕预览（spec.md §7.6）：播放 original 原视频，并挂上该轨道的 WebVTT（Video.js 原生 <track>）。

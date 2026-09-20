@@ -303,7 +303,7 @@ export function KeysManager() {
           </Button>
         </Popconfirm>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          每媒资一份独立密钥（spec.md §4.1）；明文密钥不在此展示，仅由分发端鉴权后下发。
+          每媒资一份独立密钥，明文密钥仅由分发端鉴权后下发。
         </Typography.Text>
       </Space>
 

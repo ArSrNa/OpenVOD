@@ -55,12 +55,10 @@ export function SubtitleTracksPage() {
   }, [load]);
 
   const current = items.find((m) => m.id === selected) ?? null;
-  const withSubtitles = items.filter((m) => m.subtitleCount > 0).length;
 
   return (
     <ProCard
-      title="字幕轨道"
-      subTitle={`共 ${items.length} 个媒资${withSubtitles ? ` · ${withSubtitles} 个已有字幕` : ""}`}
+      title="字幕"
       bordered={false}
       extra={
         <Space>
@@ -76,9 +74,8 @@ export function SubtitleTracksPage() {
             notFoundContent={<Empty description="存储中暂无媒资" />}
             options={items.map((m) => ({
               value: m.id,
-              label: `${m.id} · ${m.title ?? "（无展示名）"}${
-                m.subtitleCount ? `（${m.subtitleCount} 条字幕）` : ""
-              }`,
+              label: `${m.id} · ${m.title ?? "（无展示名）"}${m.subtitleCount ? `（${m.subtitleCount} 条字幕）` : ""
+                }`,
             }))}
           />
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -90,7 +87,7 @@ export function SubtitleTracksPage() {
       {!items.length && !loading ? (
         <Empty description="存储中暂无媒资（先到「媒资管理」上传视频）" />
       ) : current ? (
-        <>
+        <div className="flex flex-col">
           <Space size={6} style={{ marginBottom: 12 }} wrap>
             <Typography.Text strong>{current.title ?? "（无展示名）"}</Typography.Text>
             <Typography.Text code>{current.id}</Typography.Text>
@@ -104,7 +101,7 @@ export function SubtitleTracksPage() {
             mediaTitle={current.title}
             onChanged={() => void load()}
           />
-        </>
+        </div>
       ) : (
         <Empty description="请选择要管理字幕的媒资" />
       )}

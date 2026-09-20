@@ -1129,7 +1129,7 @@ export function MediaList() {
       >
         <Space direction="vertical" size={12} style={{ display: "flex", marginTop: 8 }}>
           <div>
-            <Typography.Text type="secondary">转码模板（可多选，每个模板各出一套产物）</Typography.Text>
+            <Typography.Text type="secondary">转码模板（可多选）</Typography.Text>
             <Select
               mode="multiple"
               optionFilterProp="label"
@@ -1155,7 +1155,7 @@ export function MediaList() {
                   <Tag color={t.keep_original ? "purple" : "geekblue"}>
                     {t.keep_original ? "保持原视频（仅封装 + 可选加密）" : "转码"}
                   </Tag>
-                  <Tag color={t.encrypt ? "red" : "default"}>
+                  <Tag color={t.encrypt ? "purple" : "default"}>
                     {t.encrypt ? "AES-128 加密" : "不加密"}
                   </Tag>
                   <Tag>{t.format}</Tag>
@@ -1164,8 +1164,7 @@ export function MediaList() {
             </div>
           )}
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            发起后每个模板各入队一条任务，由 Worker 认领执行：ffprobe 探测 → 按模板逐档转码（分辨率 / 帧率 / 码率均不低于源的档位自动跳过；
-            全部档位都无降级时按源规格兜底产出一档）→ 上传 proceed/{transcodeTarget?.id ?? "{id}"}/{"{模板id}"}/。进度与失败原因见「转码任务」页。
+            发起后将直接添加到转码任务
           </Typography.Text>
         </Space>
       </Modal>

@@ -20,6 +20,17 @@ if [ ! -f "$ROOT/.env" ]; then
 fi
 set -a; . "$ROOT/.env"; set +a
 
+# 本地调试便利：.env 模板的 DELIVERY_DATABASE_URL 指向本机占位（生产用受限账号，ADR-0011）。
+# 若该地址是 127.0.0.1/localhost 而 DATABASE_URL 可达，则回退用 DATABASE_URL（带警告）。
+case "${DELIVERY_DATABASE_URL-}" in
+  ""|*127.0.0.1*|*localhost*)
+    if [ -n "${DATABASE_URL-}" ]; then
+      echo "[env] DELIVERY_DATABASE_URL=${DELIVERY_DATABASE_URL:-未设置} → 本地调试回退用 DATABASE_URL（生产请配置受限账号 DSN）"
+      export DELIVERY_DATABASE_URL="$DATABASE_URL"
+    fi
+    ;;
+esac
+
 command -v go >/dev/null 2>&1 || { echo "错误：未找到 go"; exit 1; }
 
 probe() { curl -fsS -m 2 -o /dev/null "$1" 2>/dev/null; }

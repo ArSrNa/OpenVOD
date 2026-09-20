@@ -1,6 +1,6 @@
 # ADR-0005：对象存储适配（本地 / S3）
 
-- 状态：提议（待复核）
+- 状态：提议（待复核）；**存储布局部分已由用户确认（2026-09-18），权威定义见 [spec.md §1](../spec.md)**
 - 日期：2026-09-17
 - 关联：ADR-0003、ADR-0006、ADR-0008
 
@@ -26,15 +26,21 @@ PublicUrl(key)              # 经 CDN 域名拼 URL
 
 ### 存储布局（键规范）
 
+> 2026-09-18 用户定稿，取代本 ADR 早期 `raw/` / `hls/` / `sub/` / `thumb/` 布局；完整规范见 [spec.md §1](../spec.md)。
+
 ```
-raw/{mediaId}/source.{ext}                 # 原始上传
-hls/{mediaId}/master.m3u8                  # 主清单模板（改写发生在分发端）
-hls/{mediaId}/{variant}/index.m3u8         # 子清单
-hls/{mediaId}/{variant}/seg-{n}.ts         # 分片（已 AES-128 加密）
-sub/{mediaId}/{trackId}.vtt                # 字幕
-thumb/{mediaId}/poster.jpg                 # 海报 / 缩略图
+{root}/original/{id}.{ext}                          # 原始上传（一个媒资一个文件，{id} = 数字媒资 ID）
+{root}/proceed/{id}/master.m3u8                     # 主清单模板（改写发生在分发端）
+{root}/proceed/{id}/{variant}/index.m3u8            # 子清单
+{root}/proceed/{id}/{variant}/seg-{n}.ts            # 分片（已 AES-128 加密）
+{root}/proceed/{id}/subtitles/{trackId}.vtt         # 字幕
+{root}/cover/{id}/poster.jpg                        # 海报 / 封面图
+{root}/metadata/{id}/probe.json                     # ffprobe 系统元数据
+{root}/metadata/{id}/custom.json                    # 业务扩展元数据
 ```
 
+- `{root}` 为**全局 root 前缀**（`STORAGE_ROOT_PREFIX`，可不在桶根、可与其它业务共享桶，可为空）；由存储适配层统一拼接，业务代码与键常量只写相对键。
+- 四分区：`original/`（原视频）、`proceed/`（转码与处理产物）、`cover/`（封面与图片）、`metadata/`（元数据）；数字媒资 ID（默认 8 位，长度可配）为全部资产的唯一索引。
 - **密钥绝不入对象存储**：wrapped CEK、JWT 私钥只入数据库（ADR-0006 / 0007）。
 - 桶策略：生产用私有桶，仅经签名 URL 或 CDN 鉴权访问。
 
@@ -71,4 +77,4 @@ thumb/{mediaId}/poster.jpg                 # 海报 / 缩略图
 
 - TypeA 签名 URL 的 query 参与缓存键：不同会话生成的 rand 不同，首播回源一次后命中；有效时长在控制台配置（建议 ≥4h）以减少回源。
 - TypeA 鉴权密钥为敏感材料：仅管理端与分发端持有（MK 封装入库）；私有回源下 COS 读凭据配置在 EO 侧，分发端无需持有 COS 读 SK（上传预签名凭据仍归管理端）。
-- 键前缀分区即隔离：`raw/` 仅管理端写，`hls/`、`sub/`、`thumb/` 管理端写、分发端经 CDN/TypeA 读；单桶足够，不按应用拆桶（ADR-0011 约束 5）。
+- 键前缀分区即隔离：`original/` 仅管理端写；`proceed/`、`cover/`、`metadata/` 管理端与 Worker 写、分发端经 CDN/TypeA 读；单桶足够，不按应用拆桶（ADR-0011 约束 5）。

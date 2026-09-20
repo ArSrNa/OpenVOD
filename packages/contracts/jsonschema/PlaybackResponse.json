@@ -10,12 +10,16 @@
     },
     "expires_at": {
       "type": "string"
+    },
+    "template_id": {
+      "type": "string"
     }
   },
   "required": [
     "sid",
     "manifest_url",
-    "expires_at"
+    "expires_at",
+    "template_id"
   ],
   "$id": "PlaybackResponse.json",
   "title": "PlaybackResponse"

@@ -17,16 +17,16 @@ task db:push              # 开发库建表（SQLite）
 task contracts            # zod → JSON Schema → Go struct（生成物入库，ADR-0001 门禁）
 task vectors              # 生成 TS/Go 加密互通测试向量
 
-./start.sh                # 一键启动（后台：管理端 + 分发端，日志在 .run/）
+./start.sh                # 一键启动（后台：管理端 + 分发端 + 转码 Worker，日志在 .run/）
 task test                 # bun test + go test
 ```
 
 | 组件 | 端口 | 启动命令 |
 |---|---|---|
-| 管理端 admin（UI + API） | `:8787` | `./start-admin.sh` 或 `task dev:admin` |
+| 管理端 admin（UI + API） | `:8787` | `./start-admin.sh`（**同时后台起 Worker**）或 `task dev:admin` |
 | 分发端 delivery | `:9000` | `./start-delivery.sh` 或 `task dev:delivery` |
-| 转码 Worker | — | `task dev:worker`（需 ffmpeg / ffprobe） |
-| 全部（后台） | — | `./start.sh`，另支持 `stop`、`status`、`logs` |
+| 转码 Worker | — | `./start-worker.sh` 或 `task dev:worker`（需 ffmpeg / ffprobe）；`./start.sh` 与 `./start-admin.sh` 会一并启动 |
+| 全部（后台） | — | `./start.sh`（admin + delivery + worker），另支持 `stop`、`status`、`logs admin / delivery / worker` |
 
 数据库选择（SQLite / MySQL）、管理员建号、常见报错处理见
 [docs/vod/dev-workflow.md](./docs/vod/dev-workflow.md)；

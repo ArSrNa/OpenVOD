@@ -2,11 +2,15 @@
   "name": "@openvod/crypto",
   "version": "0.0.1",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
   },
   "scripts": {
     "vectors": "bun scripts/gen-vectors.ts"
+  },
+  "dependencies": {
+    "@openvod/shared": "workspace:*"
   }
 }

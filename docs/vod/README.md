@@ -39,8 +39,9 @@ flowchart LR
 
 1. [intent.md](./intent.md) — 项目意图、目标与非目标、成功标准
 2. `decisions/` 按编号阅读；**ADR-0006（视频加密与播放密钥）为核心**
-3. [open-questions.md](./open-questions.md) — 进入 specification 前必须关闭的问题
-4. [dev-workflow.md](./dev-workflow.md) — 本地开发环境与工作流（启动、数据库、建号、排错）
+3. [spec.md](./spec.md) — 功能规范（媒资存储布局 / 媒资 ID / 控制台 API 面）
+4. [open-questions.md](./open-questions.md) — 进入 specification 前必须关闭的问题
+5. [dev-workflow.md](./dev-workflow.md) — 本地开发环境与工作流（启动、数据库、建号、排错）
 
 ## 决策索引
 
@@ -59,6 +60,7 @@ flowchart LR
 | [ADR-0011](./decisions/0011-deployment-topology.md) | 部署拓扑：两应用共享数据面 | 已接受 |
 | [ADR-0012](./decisions/0012-admin-oauth-login.md) | 管理端 OAuth 登录（OIDC + PKCE，双轨账号） | 已接受 |
 | [ADR-0013](./decisions/0013-admin-nextjs-betterauth.md) | 管理端迁移 Next.js 全栈 + better-auth | 已接受 |
+| [ADR-0014](./decisions/0014-transcode-template-storage.md) | 转码模板的存储位置（DB 表 + 任务快照） | 已接受 |
 
 状态语义：**已接受** = 用户已拍板，或沿用仓库既有决策（开发镜像 / 前期文档）；**提议（待复核）** = 本文档给出的推荐方案，specification 前需确认。
 

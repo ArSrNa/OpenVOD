@@ -11,6 +11,7 @@
             "unauthorized",
             "invalid_credentials",
             "forbidden",
+            "bad_request",
             "bad_token",
             "not_found",
             "not_playable",

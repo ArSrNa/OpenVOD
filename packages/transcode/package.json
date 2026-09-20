@@ -2,8 +2,12 @@
   "name": "@openvod/transcode",
   "version": "0.0.1",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@openvod/contracts": "workspace:*"
   }
 }

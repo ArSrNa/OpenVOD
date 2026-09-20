@@ -64,7 +64,7 @@ function LoginInner() {
         登录
       </Button>
       <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 12 }}>
-        本地兜底账号（ADR-0012 双轨）：bun apps/admin/scripts/create-admin.ts &lt;email&gt; &lt;pass&gt;
+        在控制台使用<code>bun apps/admin/scripts/create-admin.ts &lt;email&gt; &lt;pass&gt;</code>创建账号
       </Typography.Paragraph>
     </Form>
   );

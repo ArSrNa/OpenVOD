@@ -1,11 +1,14 @@
 {
+  "version": "0.0.1",
   "name": "openvod",
   "private": true,
+  "license": "Apache-2.0",
   "workspaces": [
     "apps/*",
     "packages/*"
   ],
   "scripts": {
+    "dev": "./start-admin.sh",
     "contracts:json": "bun packages/contracts/scripts/gen-json.ts",
     "contracts:go": "bash packages/contracts/scripts/gen-go.sh",
     "contracts": "bun run contracts:json && bun run contracts:go",

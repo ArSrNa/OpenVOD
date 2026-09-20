@@ -2,7 +2,7 @@
 
 - 状态：提议（待复核）
 - 日期：2026-09-17
-- 关联：ADR-0004、ADR-0005、ADR-0006
+- 关联：ADR-0004、ADR-0005、ADR-0006、ADR-0014（模板存储）
 
 ## 背景
 
@@ -21,17 +21,17 @@ media 状态与 job 状态联动（ready / transcoding / failed / archived…）
 
 ### Worker（apps/worker，常驻容器）
 
-1. 认领任务：MySQL `FOR UPDATE SKIP LOCKED`（`$queryRaw`）/ SQLite CAS（ADR-0004）；
+1. 认领任务：**v1 统一用 CAS 条件更新**（`status ∈ 未终结 且 lease 为空/已过期` → 条件置 `PROBING`，受影响行数 = 1 才算认领成功）——MySQL 与 SQLite 语义一致、可测；本 ADR 原本设想的 MySQL `FOR UPDATE SKIP LOCKED`（`$queryRaw`）作为**高并发演进项**保留（CAS 已保证不重复认领，仅并发吞吐略低）。实现记录见 spec.md §5.1；
 2. 预取源片到 `/tmp/jobs/{jobId}/`（本地卷）；
 3. `ffprobe` JSON → 写回 `media.probe`（时长 / 分辨率 / 编码 / 码率 / 音轨）；
 4. 按 **ladder 模板** 逐档 ffmpeg 转码 → HLS TS + AES-128（key_info，ADR-0006）+ 主 / 子清单；
-5. 抽帧：poster（取帧规则可配）→ `thumb/{mediaId}/`；
-6. 产物按 ADR-0005 布局上传至适配存储 → 更新 `hls_keys` / `media` → 清理工作目录；
+5. 抽帧：poster（取帧规则可配）→ `cover/{mediaId}/`；
+6. 产物按 [spec.md §1 布局](../spec.md)上传至适配存储 → 更新 `hls_keys` / `media` → 清理工作目录；
 7. 失败：结构化错误入 `job.last_error`，重试超限 → failed（管理端可见 / 可重派）。
 
 ### 自定义 ffmpeg 的安全边界
 
-- 模板 = **argv 数组模板**（变量插值 `{input} {outdir} {height} {bitrate} ...`），**永不经 shell 拼接**（防注入）；
+- 模板 = **结构化 params JSON**（存储见 ADR-0014），由 Worker 的白名单 argv builder 编译为 **argv 数组命令**（变量插值 `{input} {outdir} {height} {bitrate} ...`），**永不经 shell 拼接**（防注入）；
 - 全局 presets（管理端 CRUD）+ 每媒资 override（JSON）；
 - 执行超时、输出大小上限、禁网络输入源；密钥文件路径仅 Worker 注入。
 

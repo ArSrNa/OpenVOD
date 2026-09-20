@@ -4,6 +4,12 @@
   "properties": {
     "force_new": {
       "type": "boolean"
+    },
+    "template_id": {
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "$id": "PlaybackRequest.json",

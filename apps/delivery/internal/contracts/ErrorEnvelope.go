@@ -12,6 +12,7 @@ type Error struct {
 type Code string
 
 const (
+	BadRequest         Code = "bad_request"
 	BadToken           Code = "bad_token"
 	Forbidden          Code = "forbidden"
 	Internal           Code = "internal"

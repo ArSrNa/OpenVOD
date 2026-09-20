@@ -10,7 +10,7 @@
 |---|---|---|---|---|
 | 管理端 admin（UI + API） | `apps/admin` | Node（`next dev` / `next start`） | `:8787` · `GET /healthz` | UI/API 同源，无 CORS（ADR-0013） |
 | 分发端 delivery | `apps/delivery` | Go（Chi） | `:9000` · `GET /healthz` | 播放热路径（ADR-0010） |
-| 转码 Worker | `apps/worker` | Bun（常驻） | 无端口（轮询） | 需 `ffmpeg` / `ffprobe`（ADR-0008） |
+| 转码 Worker | `apps/worker` | Bun（常驻） | 无端口（轮询） | 需 `ffmpeg` / `ffprobe`（ADR-0008）；`./start.sh` 已一并启动，**不启动则转码任务停在「排队中」** |
 | 共享包 | `packages/{db,shared,crypto,storage,transcode,contracts}` | TS 源码直引 | — | Next 经 `transpilePackages` 转译 |
 
 ## 2. 前置工具链
@@ -118,24 +118,51 @@ mkdir -p prisma/migrations/20260918000000_init
 ### 5.1 一键（后台运行）
 
 ```bash
-./start.sh                              # 启动 admin + delivery（已在运行则跳过）
-./start.sh status                       # 运行状态
-./start.sh logs admin                   # 跟踪日志（admin | delivery）
+./start.sh                              # 启动 admin + delivery + worker（已在运行则跳过）
+./start.sh status                       # 运行状态（含 worker）
+./start.sh logs worker                  # 跟踪日志（admin | delivery | worker）
 ./start.sh stop                         # 停止
 ```
 
 - 日志与 pid 在 `.run/`（已忽略）；启动前自动补依赖与 Prisma 生成物（两份客户端）。
-- 探测方式：`curl -fsS http://localhost:8787/healthz`、`http://localhost:9000/healthz`。
+- 探测方式：`curl -fsS http://localhost:8787/healthz`、`http://localhost:9000/healthz`；**worker 无 HTTP 端口，存活判定用 `.run/worker.pid`**。
+- ⚠️ **worker 是转码队列的唯一消费者**：只起 admin 而不起 worker 时，管理端发起的任务会一直停在「排队中」（`transcode_jobs.attempts=0`、`lease_until` 为空即"从未被认领"）。
 
 ### 5.2 单服务前台（调试用）
 
 | 命令 | 服务 | 说明 |
 |---|---|---|
-| `./start-admin.sh` | 管理端 `:8787` | 前台，`next dev`；自动加载根 `.env`、补依赖与生成物 |
+| `./start-admin.sh` | 管理端 `:8787` | 前台，`next dev`；自动加载根 `.env`、补依赖与生成物。**并会自动后台启动 Worker**（日志 `.run/worker.log`），脚本退出（含 Ctrl-C）时一并停掉；若已有 Worker 在跑则沿用、退出时不动它 |
 | `./start-delivery.sh` | 分发端 `:9000` | 前台；每次增量 `go build` 到 `.run/delivery` |
-| `task dev:admin` | 管理端 `:8787` | 同 `start-admin.sh`（含 `.env` 注入） |
+| `./start-worker.sh` | Worker | 前台单跑（观察认领 / 转码日志）；需 `ffmpeg`/`ffprobe` |
+| `task dev:admin` | 管理端 `:8787` | 同 `start-admin.sh`（含 `.env` 注入）；**注意：此路径不自动起 Worker**，转码需另开 `task dev:worker` |
 | `task dev:delivery` | 分发端 `:9000` | `go run .`（含 `.env` 注入） |
 | `task dev:worker` | Worker | `bun --watch`，需 `ffmpeg`/`ffprobe` |
+
+### 5.3 播放链路本地调试（M3；规则见 spec.md §6）
+
+```bash
+# 1) 引导（幂等）：生成 JWT 签名密钥（入 signing_keys）+ 创建/重置播放端用户
+bun apps/admin/scripts/bootstrap-playback.ts demo <密码≥8位>
+
+# 2) 分发端：本地调试需把 DELIVERY_DATABASE_URL 指向可达库（.env 里是 127.0.0.1 占位，见 §8）
+DELIVERY_DATABASE_URL="$DATABASE_URL" ./start-delivery.sh    # 或直接改 .env
+
+# 3) login 取 JWT → play 取签名主清单 URL
+TOKEN=$(curl -s -X POST localhost:9000/v1/auth/login -H 'content-type: application/json' \
+  -d '{"username":"demo","password":"<密码>"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+MF=$(curl -s -X POST localhost:9000/v1/media/<媒资id>/play -H "authorization: Bearer $TOKEN" -d '{}' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["manifest_url"])')
+
+# 4) 真播放器视角（自动取密钥 + 本地解密）
+ffprobe "$MF" && ffmpeg -i "$MF" -c copy /tmp/out.mp4
+```
+
+- **管理端「产物 → 播放」预览**：在同一份 `.env` 里配置 `DELIVERY_BASE_URL`、`DELIVERY_PREVIEW_USERNAME`、`DELIVERY_PREVIEW_PASSWORD`（预览账号用 `bun apps/admin/scripts/bootstrap-playback.ts preview <密码>` 创建，建议专用）；管理端后端以该账号调分发端换签名主清单 URL，浏览器用 hls.js 直连分发端播放（解密仍在浏览器本地）。未配置时预览接口返回 501，其余管理功能不受影响；
+- 无 token 拉清单 / 取密钥 → 403 `bad_token`（P0 门禁语义）；密钥响应固定 16B + `no-store`；
+- token 以 query `t` 为主（改写后的清单里已自动带上）；App / hls.js 也可用 header `X-Playback-Token`（Safari 原生只能 query）；
+- 多套模板产物时 `play` 可带 `template_id`（不指定则取唯一产物或默认模板产物）；
+- M3 未覆盖项（CDN+TypeA / 限频 / 严格模式 / sqlite 驱动）见 spec.md §6.6。
 
 > 启动脚本都会先加载根 `.env`。直接 `bun run --cwd apps/admin dev` 会缺少
 > `BETTER_AUTH_SECRET` / `DATABASE_URL`（Next 只读 `apps/admin/.env`，该文件默认不存在）。
@@ -170,9 +197,19 @@ task contracts            # 契约生成物变更后需入库（契约门禁）
 | `Module not found: Can't resolve '../generated/sqlite'`（或 mysql） | 只生成了一份客户端；`task db:generate` 生成两份，然后重启 dev |
 | `P2021 The table xxx does not exist` | 目标库未建表；SQLite 用 `task db:push`，MySQL 用 §4.3 迁移/baseline |
 | `P3014 could not create the shadow database` | 账号无建库权限；按 §4.3 的 baseline 四步，不要用 `migrate dev` |
-| 登录 403 + `[Better Auth]: Invalid origin: http://xxx` | CNB 预览网关转发时会把请求头 `Origin` 改写成 `http://<目标域名>`（实测：任意 Origin 都被改写，与浏览器是否用 https 无关）。`auth.ts` 已把 `ADMIN_BASE_URL` 的 http 等同体加进 `trustedOrigins`；仍报错时核对 `ADMIN_BASE_URL` 的 host 是否就是访问域名。附：better-auth 对无通配符条目做全量相等比对，`ADMIN_TRUSTED_ORIGINS` 里裸域名会被展开为 http/https 两条 |
+| 登录 403 + `[Better Auth]: Invalid origin: http://xxx` | CNB 预览网关转发时会把请求头 `Origin` 改写成 `http://<目标域名>`（实测：任意 Origin 都被改写，与浏览器是否用 https 无关）。`auth.ts` 已把 `ADMIN_BASE_URL` 的 http 等同体加进 `trustedOrigins`；仍报错时核对 `ADMIN_BASE_URL` 的 host 是否就是访问域名（CNB 上若注入了 `CNB_VSCODE_PROXY_URI`，`auth.ts` 已自动按 `{{port}} → ADMIN_PORT` 覆盖，无需手填）。附：better-auth 对无通配符条目做全量相等比对，`ADMIN_TRUSTED_ORIGINS` 里裸域名会被展开为 http/https 两条 |
 | 分发端启动即退出，提示 `URL_SIGN_KEY_HEX 未配置` / `MASTER_KEYS 未配置` | 未加载 `.env`；改用 `./start-delivery.sh` 或 `task dev:delivery` |
+| 分发端启动报 `数据库连接失败: dial tcp 127.0.0.1:3306` | `.env` 的 `DELIVERY_DATABASE_URL` 是本地占位；本地调试用 `DELIVERY_DATABASE_URL="$DATABASE_URL" ./start-delivery.sh`（生产必须用受限账号，ADR-0011） |
+| `login` 返回 503「未配置 JWT 签名密钥」 | `signing_keys` 无 ACTIVE 的 JWT 行：`bun apps/admin/scripts/bootstrap-playback.ts <用户> <密码≥8位>` 后重启分发端 |
+| `play` 返回 409 `not_playable` | 媒资非 `READY`（转码中 / 失败）、该媒资无转码产物，或多套产物未指定 `template_id`（响应消息会列出可选值；模板 ID 亦可在管理端媒资详情查看） |
+| 管理端「产物 → 播放」有总时长但一直转圈 | **对象桶 CORS 未放行管理端源站**（s3 形态：浏览器直连 COS 拉分片被拦；`curl -H "Origin: http://localhost:8787" <预签名分片 URL>` 可复现「200 但没有 `Access-Control-Allow-Origin`」）。到 COS 控制台加 CORS 规则：Origin 含管理端访问源站（本地 `http://localhost:8787`、CNB 预览 `https://*.cnb.run` 或 `*`）、Method `GET/HEAD`、Header `*`、ExposeHeader `ETag, Content-Length, Content-Range, Accept-Ranges`。临时本地验证可把 `STORAGE_DRIVER` 切 `local`（分片经分发端流式输出，自带 CORS，无需桶配置） |
 | `[worker] 缺少必需工具：ffmpeg, ffprobe` | 装 ffmpeg（`.ide/Dockerfile` 镜像已含） |
+| 运行时报 `Cannot find module '@openvod/xxx'`（某 app 里） | **该 app 的 `package.json` 没声明这个 workspace 依赖**：bun 只给声明了依赖的包建软链，缺声明时从该包内解析不到（`packages/*` 之间同理）。补 `"@openvod/xxx": "workspace:*"` 后 `bun i`。已在 `packages/crypto`（→ shared）与 `apps/worker`（→ contracts）踩到过 |
+| 管理端 `Error: [safe-delete]...SAFE_DELETE_BULK_CONFIRM_REQUIRED`（构建时） | Next 清理 `.next/turbopack` 触发环境的批量删除保护；先 `rm -rf apps/admin/.next` 再 `task build:admin` |
+| 任务一直停在「排队中」 | **worker 没在跑**（最常见）：`./start.sh status` 看 worker 行；起起来用 `./start.sh`（含 worker）或 `task dev:worker`。判据：该行 `attempts=0` 且 `lease_until` 为空 = 从未被任何消费者认领。若两者都非空，则是上一实例仍在执行或 lease 未过期（`WORKER_LEASE_MS`）|
+| 任务反复失败 / `last_error` 提到「重试次数已达上限」 | Worker 崩溃循环；看 `last_error` 根因（常见：`MASTER_KEYS 不可用`、源片缺失、模板快照非法）。修好后在「转码任务」页重新发起。注：档位「全部被跳过」已不再判失败（2026-09-18 起改走源规格兜底产出，spec.md §5.4） |
+| 「转码任务」页一直显示「连接中断，自动重连中…」 | SSE 长连接被中间层掐断或缓冲：浏览器会自动重连（端点已带 `no-store` / `X-Accel-Buffering: no`，反向代理需放行长连接）；若会话已过期，重连 401，重新登录即可 |
+| Worker 停不掉 / 有看不见的残留消费者 | `bun --watch` 会吞 SIGTERM，必须整组 SIGKILL：用 `./start.sh stop`（按 `.run/worker.pid` 对进程组收尾）。若启动脚本曾被 `\| head`/`\| grep` 之类管道提前中断（SIGPIPE 会跳过退出清理），pid 文件仍在，`./start.sh stop` 照样能收掉 |
 | 管理端 `Fast Refresh had to perform a full reload due to a runtime error` | 通常是上面某类运行时错误的连带表现，先按上表修根因，再重启 `./start-admin.sh` |
 | 端口被占 / `已是运行状态` | `./start.sh status` 查看，`./start.sh stop` 停止；或换 `ADMIN_PORT` / `DELIVERY_LISTEN` |
 | `bun run --cwd packages/db exec ...` 报 `Script not found "exec"` | 用 `cd packages/db && ./node_modules/.bin/prisma ...` |

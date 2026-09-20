@@ -42,7 +42,7 @@
 2. **数据库账号分权**：分发端暴露公网，其 DB 凭据为全系统最高危凭据——开独立受限账号：`users / media / media_subtitles / hls_keys` 只读 + `playback_sessions` 读写 + 其余拒绝；管理端另持全权账号。绝不共用 root。
 3. **SQLite 边界**：SQLite 为嵌入文件库，两应用分开部署时仅允许「单机同卷共享一个文件」（单机 compose）；**跨机器 / 云函数部署必须 MySQL**。
 4. **存储凭据分权**：分发端理想情况下**不持有任何 COS 读凭据**（EO TypeA 边缘鉴权 + 私有回源，ADR-0005）；S3 写凭据仅管理端 / Worker 持有。
-5. **键前缀分区即隔离**：`raw/` 仅管理端写；`hls/`、`sub/`、`thumb/` 管理端写、分发端经 CDN/TypeA 读。单桶足够，不按应用拆桶。
+5. **键前缀分区即隔离**：`original/` 仅管理端写；`proceed/`、`cover/`、`metadata/` 管理端与 Worker 写、分发端经 CDN/TypeA 读。单桶足够，不按应用拆桶。
 
 ### 失败场景
 

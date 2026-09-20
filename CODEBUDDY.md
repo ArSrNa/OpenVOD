@@ -21,8 +21,10 @@ OpenVOD：自建云点播系统（媒资 → 转码加密 → 元数据 / 字幕
 | `task db:parity` | 校验两份 Prisma schema 的 enum/model 段逐字一致（CI 门禁） |
 | `task contracts` | zod → JSON Schema → Go struct（quicktype）。生成物**必须入库**，CI 用 `bun run check:contracts-go` diff 门禁 |
 | `task vectors` | 生成 TS/Go 加密互通测试向量；未生成时两端互通测试会 skip |
-| `./start.sh` | 后台一键启动 admin + delivery；子命令 `stop` / `status` / `logs admin\|delivery`；pid 与日志在 `.run/` |
-| `./start-admin.sh` / `./start-delivery.sh` | 前台单服务调试（`task dev:admin` / `task dev:delivery` 等价） |
+| `./start.sh` | 后台一键启动 admin + delivery + **worker（转码队列消费者，必须一起跑）**；子命令 `stop` / `status` / `logs admin\|delivery\|worker`；pid 与日志在 `.run/`（worker 无端口，用 pid 判定存活） |
+| `./start-admin.sh` | 前台管理端调试。**会自动一并启动 Worker**（后台，日志 `.run/worker.log`），退出时一并收掉；已在跑则沿用不动它 |
+| `./start-delivery.sh` | 前台分发端调试（`task dev:delivery` 等价） |
+| `./start-worker.sh` | 前台单跑转码 Worker（观察认领 / 转码日志用）；`task dev:worker` 等价 |
 | `task dev:worker` | 转码 Worker（Bun `--watch`，需 ffmpeg/ffprobe，缺失直接退出） |
 | `task test` | `bun test` + `go -C apps/delivery test ./...` |
 | `bun test packages/crypto/test/interop.test.ts` | 运行单个 TS 测试文件；`bun test -t "用例名"` 按名称过滤 |
@@ -83,7 +85,7 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可轮换）
 - delivery 同一份 Go 静态二进制的两个同级目标：EdgeOne Pages Cloud Functions（Go 1.26）或 SCF 容器；无内网依赖，数据库必须公网可达 + 强制 TLS。
 - admin 为一个 Node 22 容器（`next build` + `next start`，UI/API 同源无 CORS）；worker 为 Bun 常驻容器。
 - P0 硬约束：转码禁止上任何函数；分片字节不经过函数；所有响应体 ≤6MB；SCF 镜像仅 x86。
-- 两应用共享一库一桶但独立发版；delivery 使用受限 DB 账号（约定表只读 + `playback_sessions` 读写），绝不能共用管理端全权账号；存储键前缀即隔离（`raw/` 仅管理端写）。
+- 两应用共享一库一桶但独立发版；delivery 使用受限 DB 账号（约定表只读 + `playback_sessions` 读写），绝不能共用管理端全权账号；存储键前缀即隔离（`original/` 仅管理端写，布局见 `docs/vod/spec.md §1`）。
 
 ### 当前实现状态（scaffold 骨架）
 

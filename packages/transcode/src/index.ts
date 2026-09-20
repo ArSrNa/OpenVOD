@@ -22,26 +22,197 @@ export async function runFFmpeg(argv: string[], timeoutMs = 6 * 3600_000): Promi
   }
 }
 
-export interface ProbeResult {
-  format: {
-    duration?: string;
-    bit_rate?: string;
-  };
-  streams: Array<{
-    codec_type?: string;
-    codec_name?: string;
-    width?: number;
-    height?: number;
-  }>;
+// ---- ffprobe 系统元数据（spec.md §1.3 `metadata/{id}/probe.json`；管理端「生成元数据」/ Worker 探测共用） ----
+
+/** ffprobe -show_streams 单条流（保留原始字段名，probe.json 即原始 ffprobe JSON） */
+export interface FFprobeStream {
+  index?: number;
+  codec_name?: string;
+  codec_long_name?: string;
+  profile?: string;
+  codec_type?: string; // video / audio / subtitle / data ...
+  codec_tag_string?: string;
+  width?: number;
+  height?: number;
+  coded_width?: number;
+  coded_height?: number;
+  /** 像素格式（yuv420p / yuv420p10le ...） */
+  pix_fmt?: string;
+  /** 平均帧率（"30000/1001" 分数形式） */
+  avg_frame_rate?: string;
+  /** 基础帧率（编码层） */
+  r_frame_rate?: string;
+  sample_aspect_ratio?: string;
+  display_aspect_ratio?: string;
+  color_range?: string; // tv / pc
+  /** 色彩空间 / 矩阵系数（bt709 / bt2020nc ...） */
+  color_space?: string;
+  /** 色彩传输特性（bt709 / smpte2084 / arib-std-b67 ...） */
+  color_transfer?: string;
+  /** 色彩原色（bt709 / bt2020 ...） */
+  color_primaries?: string;
+  /** 位深（8 / 10，缺省时按 pix_fmt 推断） */
+  bits_per_raw_sample?: string;
+  bit_rate?: string;
+  nb_frames?: string;
+  sample_fmt?: string;
+  sample_rate?: string;
+  channels?: number;
+  channel_layout?: string;
+  duration?: string;
+  disposition?: Record<string, number>;
+  tags?: Record<string, string>;
 }
 
-export async function ffprobeJSON(input: string): Promise<ProbeResult> {
+/** ffprobe -show_format 容器段 */
+export interface FFprobeFormat {
+  filename?: string;
+  /** 容器封装（mov,mp4,m4a,3gp,3g2,mj2 ...） */
+  format_name?: string;
+  format_long_name?: string;
+  /** 秒（字符串） */
+  duration?: string;
+  size?: string;
+  bit_rate?: string;
+  nb_streams?: number;
+  nb_programs?: number;
+  start_time?: string;
+  tags?: Record<string, string>;
+}
+
+/** ffprobe 原始输出（-print_format json -show_format -show_streams） */
+export interface ProbeResult {
+  streams?: FFprobeStream[];
+  format?: FFprobeFormat;
+}
+
+export async function ffprobeJSON(input: string, timeoutMs = 120_000): Promise<ProbeResult> {
   const { stdout } = await execFileP(
     "ffprobe",
     ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", input],
-    { timeout: 120_000, maxBuffer: 32 * 1024 * 1024 },
+    { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 },
   );
-  return JSON.parse(stdout);
+  return JSON.parse(stdout) as ProbeResult;
+}
+
+/** 解析 ffprobe 分数帧率（"30000/1001" → 29.97）；非法返回 null */
+function parseRate(rate?: string): number | null {
+  if (!rate) return null;
+  const m = /^(\d+)\/(\d+)$/.exec(rate.trim());
+  const [num, den] = m ? [Number(m[1]), Number(m[2])] : [Number(rate), 1];
+  if (!Number.isFinite(num) || !Number.isFinite(den) || den === 0 || num === 0) return null;
+  return Math.round((num / den) * 1000) / 1000;
+}
+
+function numOr(v: string | number | undefined, scale = 1): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.round(n * scale) || null : null;
+}
+
+// yuv420p10le / yuv444p12le 等后缀数字即位深；p010le 特殊（10bit）
+const PIXFMT_DEPTH_RE = /(\d{2})(?:le|be)?$/;
+function pixFmtDepth(pixFmt?: string): number | null {
+  if (!pixFmt) return null;
+  if (pixFmt.startsWith("p010")) return 10;
+  const m = PIXFMT_DEPTH_RE.exec(pixFmt);
+  return m ? Number(m[1]) : null;
+}
+
+/** 视频流摘要（宽高 / 帧率 / 色彩空间 / 编码，spec「生成元数据」核心字段） */
+export interface ProbeVideoSummary {
+  codec: string | null;
+  profile: string | null;
+  pixFmt: string | null;
+  bitDepth: number | null;
+  width: number | null;
+  height: number | null;
+  /** 平均帧率（fps，数值）；解析失败为 null */
+  fps: number | null;
+  /** ffprobe 原始帧率分数（"30000/1001"），供精确还原 */
+  frameRate: string | null;
+  /** 色彩空间（矩阵系数） */
+  colorSpace: string | null;
+  colorTransfer: string | null;
+  colorPrimaries: string | null;
+  /** 色彩量化范围（tv / pc） */
+  colorRange: string | null;
+  bitrate: number | null;
+  frameCount: number | null;
+}
+
+export interface ProbeAudioSummary {
+  codec: string | null;
+  profile: string | null;
+  sampleRate: number | null;
+  channels: number | null;
+  channelLayout: string | null;
+  bitrate: number | null;
+}
+
+/** 归一化探测摘要：入库 media.probe（Json），详情弹窗结构化展示用 */
+export interface ProbeSummary {
+  /** 容器封装格式（ffprobe format_name） */
+  container: string | null;
+  durationMs: number | null;
+  /** 总码率（bps） */
+  bitrate: number | null;
+  sizeBytes: number | null;
+  /** 总流数 */
+  streamCount: number | null;
+  video: ProbeVideoSummary | null;
+  /** 可能存在多音轨，按流顺序保留 */
+  audio: ProbeAudioSummary[];
+  /** 字幕流条数 */
+  subtitleCount: number;
+}
+
+/** 从 ffprobe 原始输出提取摘要（取分辨率最高的视频流为主轨，音轨全保留） */
+export function summarizeProbe(probe: ProbeResult): ProbeSummary {
+  const streams = probe.streams ?? [];
+  const videos = streams.filter((s) => s.codec_type === "video");
+  const main =
+    videos.slice().sort((a, b) => (b.width ?? 0) * (b.height ?? 0) - (a.width ?? 0) * (a.height ?? 0))[0] ?? null;
+
+  const video: ProbeVideoSummary | null = main
+    ? {
+        codec: main.codec_name ?? null,
+        profile: main.profile ?? null,
+        pixFmt: main.pix_fmt ?? null,
+        bitDepth: numOr(main.bits_per_raw_sample) ?? pixFmtDepth(main.pix_fmt),
+        width: main.width ?? null,
+        height: main.height ?? null,
+        fps: parseRate(main.avg_frame_rate) ?? parseRate(main.r_frame_rate),
+        frameRate: main.avg_frame_rate ?? main.r_frame_rate ?? null,
+        colorSpace: main.color_space ?? null,
+        colorTransfer: main.color_transfer ?? null,
+        colorPrimaries: main.color_primaries ?? null,
+        colorRange: main.color_range ?? null,
+        bitrate: numOr(main.bit_rate),
+        frameCount: numOr(main.nb_frames),
+      }
+    : null;
+
+  const audio = streams
+    .filter((s) => s.codec_type === "audio")
+    .map<ProbeAudioSummary>((s) => ({
+      codec: s.codec_name ?? null,
+      profile: s.profile ?? null,
+      sampleRate: numOr(s.sample_rate),
+      channels: s.channels ?? null,
+      channelLayout: s.channel_layout ?? null,
+      bitrate: numOr(s.bit_rate),
+    }));
+
+  return {
+    container: probe.format?.format_name ?? null,
+    durationMs: numOr(probe.format?.duration, 1000),
+    bitrate: numOr(probe.format?.bit_rate),
+    sizeBytes: numOr(probe.format?.size),
+    streamCount: probe.format?.nb_streams ?? streams.length,
+    video,
+    audio,
+    subtitleCount: streams.filter((s) => s.codec_type === "subtitle").length,
+  };
 }
 
 // ---- 默认 ladder（ADR-0008 表格） ----
@@ -63,7 +234,11 @@ export const DEFAULT_LADDER: LadderEntry[] = [
  * HLS AES-128 key_info 文件内容（三行，ADR-0006 §2）：
  *   1) 密钥 URI（转码期占位，分发时由 m3u8 改写替换）
  *   2) 本地 16B CEK 文件路径（任务结束即清理）
- *   3) 显式 IV（hex，0x 前缀）
+ *   3) 显式 IV（**纯 hex，不带 0x 前缀**）
+ *
+ * 第三行不能带 `0x`：ffmpeg 会原样取用该字符串并在清单里自行加前缀，
+ * 带上就会产出 `EXT-X-KEY:...IV=0x0x…` 并报
+ * `Error setting option encryption_iv`（加密失败，分片不产出）——实测于 ffmpeg 6.1。
  */
 export function buildKeyInfoFile(opts: {
   keyUriPlaceholder: string;
@@ -71,7 +246,7 @@ export function buildKeyInfoFile(opts: {
   ivHex: string;
 }): string {
   const iv = opts.ivHex.toLowerCase().replace(/^0x/, "");
-  return `${opts.keyUriPlaceholder}\n${opts.cekFilePath}\n0x${iv}\n`;
+  return `${opts.keyUriPlaceholder}\n${opts.cekFilePath}\n${iv}\n`;
 }
 
 /** 单档转码 ffmpeg argv（TS + AES-128，ADR-0006/0008；完整 preset/override 机制 specification 落地） */
@@ -113,3 +288,7 @@ export function buildMasterPlaylist(entries: LadderEntry[], opts: { mediaId: str
   }
   return lines.join("\n") + "\n";
 }
+
+// 模板 → argv 编译器（ADR-0014；compileTemplate / compileKeepOriginal / validateTemplateParams）。
+// 必须在此 re-export：包的 exports 只暴露 "."，不 re-export 则消费者（Worker / 管理端）无法引用。
+export * from "./template";

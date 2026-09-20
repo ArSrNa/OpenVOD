@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # =============================================================================
-# OpenVOD 一键启动：管理端（Control Plane）+ 分发端（Data Plane）
+# OpenVOD 一键启动：管理端（Control Plane）+ 分发端（Data Plane）+ 转码 Worker
 #
 # 用法：
 #   ./start.sh                    启动全部（后台运行，日志写入 .run/）
 #   ./start.sh stop               停止全部
 #   ./start.sh status             查看运行状态
-#   ./start.sh logs <admin|delivery>       跟踪某个服务日志
+#   ./start.sh logs <admin|delivery|worker>   跟踪某个服务日志
 #
 # 组件与端口：
 #   admin     管理端 UI + API（apps/admin，Next.js 全栈，ADR-0013）  :8787   GET /healthz
 #   delivery  分发端（apps/delivery，Go + Chi）                      :9000   GET /healthz
+#   worker    转码 Worker（apps/worker，Bun 常驻，ADR-0008）         无端口  转码队列消费者
+#
+# 注意：**worker 必须一起跑**——否则管理端发起的转码任务会一直停在「排队中」
+# （没有消费者认领 transcode_jobs；这是历史上最容易踩的坑）。
 # =============================================================================
 set -euo pipefail
 
@@ -67,6 +71,9 @@ start_one() { # $1=名称 $2=pidfile $3=logfile $4=探测URL $5...=启动命令
   wait_http "$url" "$name"
 }
 
+# ---- Worker 生命周期（共享实现：scripts/worker.sh；start-admin.sh 用的是同一份）----
+. "$ROOT/scripts/worker.sh"
+
 # ---- 子命令 -----------------------------------------------------------------
 cmd_start() {
   load_env
@@ -86,11 +93,15 @@ cmd_start() {
     wait_http "$SVC_DELIVERY_URL" delivery
   fi
 
+  # 队列消费者：不启动它，管理端发起的转码任务会一直停在「排队中」
+  start_worker || echo "[worker] 启动失败：转码任务将停在「排队中」，见 $RUN_DIR/worker.log"
+
   echo
   echo "全部就绪："
   echo "  管理端（UI + API）   http://localhost:8787"
   echo "  分发端               http://localhost:9000"
-  echo "停止：./start.sh stop    状态：./start.sh status    日志：./start.sh logs <admin|delivery>"
+  echo "  转码 Worker          后台常驻（无端口；./start.sh logs worker 看认领与转码日志）"
+  echo "停止：./start.sh stop    状态：./start.sh status    日志：./start.sh logs <admin|delivery|worker>"
 }
 
 stop_pidfile() { # $1=名称 $2=pidfile
@@ -115,6 +126,7 @@ stop_pidfile() { # $1=名称 $2=pidfile
 }
 
 cmd_stop() {
+  stop_worker
   stop_pidfile delivery "$RUN_DIR/delivery.pid"
   stop_pidfile admin    "$RUN_DIR/admin.pid"
 }
@@ -131,6 +143,7 @@ cmd_status() {
   echo "OpenVOD 运行状态："
   status_one admin    "$SVC_ADMIN_URL"    "$RUN_DIR/admin.pid"
   status_one delivery "$SVC_DELIVERY_URL" "$RUN_DIR/delivery.pid"
+  status_worker
 }
 
 cmd_logs() {
@@ -139,7 +152,8 @@ cmd_logs() {
   case "$name" in
     admin)    file="$RUN_DIR/admin.log" ;;
     delivery) file="$RUN_DIR/delivery.log" ;;
-    *) echo "用法：./start.sh logs <admin|delivery>"; exit 1 ;;
+    worker)   file="$RUN_DIR/worker.log" ;;
+    *) echo "用法：./start.sh logs <admin|delivery|worker>"; exit 1 ;;
   esac
   [ -f "$file" ] || { echo "[$name] 暂无日志（$file）"; exit 0; }
   tail -n 50 -f "$file"

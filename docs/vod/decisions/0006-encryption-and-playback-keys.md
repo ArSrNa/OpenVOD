@@ -34,11 +34,14 @@ MK（Master Key，32B，AES-256-GCM 封装根）
 ```
 https://DELIVERY_PLACEHOLDER/v1/media/{id}/key      # 转码期占位，分发时改写
 /tmp/jobs/{jobId}/ceks/{kid}.key
-0x{IV_HEX}
+{IV_HEX}                                            # 纯 hex、不带 0x
 ```
 
+- 第三行**绝不能带 `0x` 前缀**：ffmpeg 会自行加前缀，带上会产出 `EXT-X-KEY:...IV=0x0x…` 并报 `Error setting option encryption_iv`，加密失败、分片不产出（实测 ffmpeg 6.1；`buildKeyInfoFile` 已归一化并有单测守卫，spec.md §4.2）；
+- CEK 文件按 **16 字节裸字节**写入（ffmpeg 原生支持；非 2n 长度即不走 hex 解码分支）。
+
 3. `ffmpeg -hls_key_info_file key_info -hls_time 6 -hls_playlist_type vod ...` 输出加密 TS 分片；
-4. 用 MK 封装 CEK（AES-256-GCM）→ 连同 iv / kid / mk_ver 写入 `hls_keys`；
+4. 用 MK 封装 CEK（AES-256-GCM）→ **产物上传成功之后**才连同 iv / kid / mk_ver 写入 `hls_keys`（每媒资一份：事务内先删旧行再写新行；提前落库会让失败的转码换掉旧密钥，使既有密文无法解密，spec.md §4.2）；
 5. 任务结束即清理本地 key 文件与临时目录。
 
 ### 3. 播放期（分发端）
@@ -130,6 +133,7 @@ payload = ver | typ(m清单 / s分片 / k密钥 / v字幕) | mid | sid | exp | k
 **触发迁移 CENC 的条件**：接入 DRM、带宽成本敏感（省 5–20%）、或需 HEVC。迁移 = Shaka 重打包 + 密钥表扩展，架构不变。
 
 - **fMP4+CENC+DRM**：防破解最强，但需 license server 与证书、客户端集成，成本高；且无 DRM 时受 Safari 原生兼容限制 —— 作为演进路径保留（Shaka Packager 已在工具链，fMP4+CENC 输出可平滑切换）。
+- **固定单一密钥 / 跨媒资共享密钥**：全部媒资共用一个 AES-128 密钥。一次泄露（一次 key 响应被抓、人员导出、客户端残留）即全部内容可离线解密，且无法按媒资轮换 / 吊销（重加密需要全库重转码）——**否决**；v1 坚持每媒资随机 CEK（爆炸半径限制在单个媒资，可经会话吊销 + 重转码收敛）。管理端亦不提供「查看 / 导出 / 手工指定密钥」入口。
 - **仅 URL 签名不加密**：拿到链接即可拼出完整明文视频 —— 不满足需求。
 - **每用户 / 每会话分片加密**：需按会话实时重加密，函数 / 边缘不可行、成本数量级上升 —— v1 否决（用会话吊销 + 短 exp 部分替代其目标）。
 

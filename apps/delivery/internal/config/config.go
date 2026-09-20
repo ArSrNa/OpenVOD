@@ -45,6 +45,8 @@ type Config struct {
 	JWTTTLSec      int
 	SessionTTLSec  int
 	ManifestTTLSec int
+	// 字幕 token 有效期上限（spec.md §7.5）：实际 exp 取与会话 exp 的较小值
+	SubtitleTTLSec int
 }
 
 // Load 读取环境变量；部署形态见 ADR-0003（EdgeOne CF 环境注入 / SCF 容器 env）。
@@ -58,6 +60,7 @@ func Load() (*Config, error) {
 		JWTTTLSec:      getEnvInt("DELIVERY_JWT_TTL_SEC", 24*3600),
 		SessionTTLSec:  getEnvInt("PLAYBACK_SESSION_TTL_SEC", 4*3600),
 		ManifestTTLSec: getEnvInt("PLAYBACK_MANIFEST_TTL_SEC", 4*3600),
+		SubtitleTTLSec: getEnvInt("PLAYBACK_SUBTITLE_TTL_SEC", 24*3600),
 	}
 
 	db, err := ParseDatabaseURL(os.Getenv("DELIVERY_DATABASE_URL"))

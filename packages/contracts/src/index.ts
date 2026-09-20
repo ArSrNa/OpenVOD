@@ -3,7 +3,7 @@
 // 生成物提交入库，CI 以 `bun run check:contracts-go` 门禁防漂移。
 
 import { z } from "zod";
-import { ERROR_CODES } from "@openvod/shared";
+import { ERROR_CODES, SUBTITLE_LABEL_MAX } from "@openvod/shared";
 
 // ---- 错误信封（ADR-0010：失败统一 { error: { code, message } }） ----
 export const ErrorCode = z.enum(ERROR_CODES);
@@ -33,6 +33,11 @@ export const MediaSubtitleDTO = z.object({
   lang: z.string(), // BCP-47
   label: z.string(),
   is_default: z.boolean(),
+});
+
+/** 播放链路字幕轨道（play 返回；spec.md §7.5）：url 为带 typ=v 签名 token 的 .vtt 地址 */
+export const PlaybackSubtitleDTO = MediaSubtitleDTO.extend({
+  url: z.string(),
 });
 
 export const MediaListItem = z.object({
@@ -75,6 +80,12 @@ export const PlaybackResponse = z.object({
   expires_at: z.string(), // ISO 8601
   /** 实际选用的模板产物 ID；旧布局产物（无模板段）为空字符串 */
   template_id: z.string(),
+  /**
+   * 就绪字幕轨道（含签名 URL；空数组 = 该媒资无字幕，spec.md §7.5）。
+   * 内联 title 让 quicktype 生成 Go 类型名 `PlaybackSubtitle` —— 否则会与 MediaDetail
+   * 内联出的 `Subtitle` 在同一个 Go 包里重名。
+   */
+  subtitles: z.array(PlaybackSubtitleDTO.meta({ title: "PlaybackSubtitle" })),
 });
 
 export const PageQuery = z.object({
@@ -380,6 +391,40 @@ export const UserListResponse = z.object({
   total: z.number().int(),
   items: z.array(UserDTO),
 });
+
+// ---- 字幕轨道管理（spec.md §7；ADR-0009）----
+// 管理端消费整组（轨道 CRUD）；分发端只消费 PlaybackSubtitleDTO（随 play 下发）。
+// 本组 DTO 仅管理端使用，**不进 gen-json.ts 清单、不生成 Go struct**（同模板 / 密钥 / 用户组）。
+
+/** media_subtitles.status 取值（与 Prisma `SubtitleStatus` 枚举逐字一致；v1 上传同步校验，恒为 READY） */
+export const SUBTITLE_STATUSES = ["PROCESSING", "READY", "FAILED"] as const;
+
+/** 字幕轨道 DTO（管理端「字幕管理」抽屉；spec.md §7.4） */
+export const SubtitleTrackDTO = z.object({
+  /** trackId：同时是 media_subtitles.id、存储文件名与 API 路径参数（spec.md §7.1） */
+  id: z.string(),
+  /** BCP-47 语言标签（服务端归一化后的连字符形态，如 `zh-CN`） */
+  lang: z.string(),
+  label: z.string(),
+  is_default: z.boolean(),
+  status: z.enum(SUBTITLE_STATUSES),
+  bytes: z.number().int(),
+  /** 相对存储键 proceed/{mediaId}/subtitles/{trackId}.vtt */
+  storage_key: z.string(),
+  /** 对应对象是否存在（存储不可用时为 null） */
+  storage_ok: z.boolean().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+
+/** PATCH 轨道元信息：字段缺省 = 不修改（语言走同一归一化与唯一校验） */
+export const UpdateSubtitleTrackRequest = z
+  .object({
+    label: z.string().trim().min(1, "展示名不能为空").max(SUBTITLE_LABEL_MAX).optional(),
+    lang: z.string().trim().min(2).max(35).optional(),
+    is_default: z.boolean().optional(),
+  })
+  .refine((v) => Object.keys(v).length > 0, { message: "没有需要更新的字段" });
 
 // 管理端 / Worker 直接复用同一份 zod 实例做请求校验（避免各包重复声明 zod 依赖）
 export { z } from "zod";

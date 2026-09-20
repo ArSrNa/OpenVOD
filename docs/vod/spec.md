@@ -42,7 +42,7 @@ root 下按资产类别分四个分区，互不嵌套：
 {root}/proceed/{id}/{templateId}/master.m3u8                # HLS 主清单（按模板分组；改写发生在分发端）
 {root}/proceed/{id}/{templateId}/{variant}/index.m3u8       # 子清单
 {root}/proceed/{id}/{templateId}/{variant}/seg-{n}.ts       # 分片（AES-128 加密）
-{root}/proceed/{id}/subtitles/{trackId}.vtt                 # 字幕（保留段，不属于任何模板产物）
+{root}/proceed/{id}/subtitles/{trackId}.vtt                 # 字幕（保留段；trackId = 轨道唯一 ID，规则见 §7）
 {root}/cover/{id}/poster.jpg                                # 海报 / 封面图
 {root}/metadata/{id}/probe.json                             # ffprobe 系统元数据
 {root}/metadata/{id}/custom.json                            # 业务扩展元数据
@@ -53,7 +53,7 @@ root 下按资产类别分四个分区，互不嵌套：
 - 第一级是媒资 ID，第二级是**模板 ID**（即 `transcode_templates.id`，cuid）：目录名就是模板 ID，所以「这份产物是哪个模板转出来的」可以直接从存储键读出；
 - 同一媒资**允许多套模板产物并存**（如「原画加密」与「1080p 加密」各一套），互不覆盖；重转某个模板只替换 / 清理**该模板子树**（§5.2）；
 - 单次发起转码可**多选模板**（§2.1）：每个模板各入队一条任务、各落一个 `proceed/{id}/{templateId}/` 子树，一次提交即可同时产出多套互不覆盖的产物；
-- `proceed/{id}/subtitles/` 是**保留段**：字幕不属于模板产物，不参与模板分组。模板 ID 为 cuid 形状（`TEMPLATE_ID_PATTERN = /^c[a-z0-9]{20,}$/`），与保留段不会冲突；
+- `proceed/{id}/subtitles/` 是**保留段**：字幕不属于模板产物，不参与模板分组。模板 ID 为 cuid 形状（`TEMPLATE_ID_PATTERN = /^c[a-z0-9]{20,}$/`），与保留段不会冲突；字幕文件名 `{trackId}` 即轨道唯一 ID（= `media_subtitles.id`，服务端生成），权威规则见 §7；
 - **旧布局兼容**：M2 之前的产物落在 `proceed/{id}/{variant}/…`（无模板段），列举时归入空模板 ID 并展示为「未分组（旧布局）」；对该媒资重转码一次即可迁到新布局。
 
 ### 1.4 媒资列举规则（管理端「媒资列表」）
@@ -62,7 +62,7 @@ root 下按资产类别分四个分区，互不嵌套：
 - `id` 必须为纯数字（`MEDIA_ID_PATTERN`）；非数字文件名或更深层级的对象不属于媒资，列举时忽略；
 - 其余三个分区**只按 id 归组补充资产状态**（各分区下该 id 的对象数量），不反向定义媒资；
 - `proceed/` 额外按「媒资 → 模板」归组为 `products[]`（M2 实现）：每项给出 `template_id`、`template_name`（查 `transcode_templates`，模板已删为 `null`）、`objects`（对象数）、`bytes`（体积）、`variants[]`（变体目录名，如 `1080p` / `720p`）——列表与详情都用它回答「这份产物是哪个模板转的」；`proceed/{id}/subtitles/` 等保留段不参与分组；
-- 管理端 `GET /api/admin/media` 一次列举四个分区并按 id 内存聚合返回；v1 全量列举即可，分页 / 前缀裁剪留待媒资规模需要时再加；
+- 管理端 `GET /api/admin/media` 一次列举四个分区并按 id 内存聚合返回（每条另附 `subtitleCount` = `proceed/{id}/subtitles/*.vtt` 对象数，供字幕管理页选择器使用）；v1 全量列举即可，分页 / 前缀裁剪留待媒资规模需要时再加；
 - 列表同时合并 `media` 表（M1 实现，见 §2.1）：展示名（`title`）与生命周期状态由数据库补充，DB 查询失败时降级为纯存储视角（字段置 null）；数据库行**不参与**媒资集合定义（仍以 `original/` 分区为准）。
 
 ### 1.5 相关环境变量
@@ -78,11 +78,11 @@ root 下按资产类别分四个分区，互不嵌套：
 - 上传协议（M1）：原视频 / 封面上传以**原始文件字节流**为请求体（`Content-Type: application/octet-stream`），文件名 / 展示名走查询参数——流式直传不经过 multipart 缓冲，服务端内存占用与文件大小无关；
 - 管理端 API 响应一律 `Cache-Control: no-store`；敏感操作（上传 / 重命名 / 删除 / 封面）落 `audit_logs`（open-questions #14）。
 
-### 2.1 已实现（M1 媒资管理 + 密钥管理 + M2 转码，2026-09-18）
+### 2.1 已实现（M1 媒资 / M2 转码 / M3 播放产物 / M4 字幕 / 用户 / 密钥，2026-09-20）
 
 | 端点 | 方法 | 说明 |
 |---|---|---|
-| `/api/admin/media` | GET | 媒资列表（§1.4 存储视角 + DB 展示名/状态合并）；每条含 `products[]`——按模板分组的转码产物（模板名 / 对象数 / 体积 / 变体），旧布局产物归入 `template_id=""` |
+| `/api/admin/media` | GET | 媒资列表（§1.4 存储视角 + DB 展示名/状态合并）；每条含 `products[]`——按模板分组的转码产物（模板名 / 对象数 / 体积 / 变体），旧布局产物归入 `template_id=""`；另含 `subtitleCount`（该媒资字幕对象数，§7.2） |
 | `/api/admin/media/upload` | POST | 原视频上传（§1.3）：生成数字 ID（主键冲突即重取）→ 流式写 `original/{id}.{ext}` → `media` 行落库；存储失败回滚 DB 行 |
 | `/api/admin/media/{id}` | GET | 详情：存储资产计数 + DB 元数据合并 + `products[]`（每套模板产物的模板名 / 变体 / 对象数 / 体积，模板 ID 可追溯到 `proceed/{id}/{模板id}/`） |
 | `/api/admin/media/{id}` | PATCH | 重命名：仅修改 `media.title`，绝不改动 original 文件名与媒资 ID |
@@ -111,6 +111,13 @@ root 下按资产类别分四个分区，互不嵌套：
 | `/api/admin/users/{id}/password` | POST | 重置口令（`password`，bcrypt cost 12）：凭据变更后同样**立即吊销该用户全部未过期会话**（否则已下发 JWT 在 exp 前仍可播放），`revoked_sessions` 随响应返回。落 `audit_logs`（`user.password_reset`） |
 | `/api/admin/users/{id}/revoke-sessions` | POST | 手动吊销该用户全部未过期会话（用户仍为 `ACTIVE`，可重新登录），返回 `revoked_sessions`。落 `audit_logs`（`user.sessions_revoke`） |
 | `/api/admin/users/{id}` | DELETE | 删除用户：`playback_sessions` 随用户级联删除（Prisma `onDelete: Cascade`，等价于全会话吊销），响应用级联条数回报。落 `audit_logs`（`user.delete`） |
+| `/api/admin/media/{id}/subtitles` | GET | 字幕轨道列表（§7.4）：trackId / `lang`（BCP-47，归一化后）/ `label` / `is_default` / `status` / `bytes` / `storage_key` / 时间戳 + `storage_ok`（对象存在性，存储不可用为 null）；顺序 `is_default DESC, created_at ASC`；媒资未入库 404 |
+| `/api/admin/media/{id}/subtitles` | POST | 新建字幕轨道（§7.4）：查询参数 `lang`（必填，兼容 `zh_CN` 写法、服务端归一化为 `zh-CN`）/ `label`（必填 1–64）/ `is_default`（可选）；请求体为**原始字幕字节流**（octet-stream：`.vtt` 直接用，`.srt` 自动转 VTT，§7.3）→ 结构化校验（UTF-8 / `WEBVTT` 头 / cue 时间轴，§7.3）→ 生成 trackId → 写 `proceed/{id}/subtitles/{trackId}.vtt` → 落 `media_subtitles`（`status=READY`、`created_by`=管理端账号）→ 审计 `subtitle.create`；同媒资同语言 409（DB 唯一约束 `(media_id, lang)`）；首条自动成为默认轨；校验失败 400 且不落库不落存储 |
+| `/api/admin/media/{id}/subtitles/{trackId}` | PATCH | 更新轨道元信息（`label` / `lang` / `is_default`）：`lang` 走同一归一化与唯一校验（409）；`is_default=true` 在事务内清除该媒资其它默认轨；审计 `subtitle.update` |
+| `/api/admin/media/{id}/subtitles/{trackId}/content` | GET | 读取该轨道 WebVTT（管理端「字幕预览」用：original 原视频 + 该轨字幕，同源 `<track>` 引用）：两种驱动均由管理端代理输出 `text/vtt; charset=utf-8` + `no-store`；轨道或对象缺失 404 |
+| `/api/admin/media/{id}/subtitles/{trackId}/content` | PUT | 覆盖字幕文本（原始字幕字节流：`.vtt` / `.srt`（自动转 VTT），同一校验）：**就地覆盖同一对象**（trackId / 存储键不变）→ 更新 `bytes` / `updated_at`；审计 `subtitle.update`（detail 含 `content_replaced`） |
+| `/api/admin/media/{id}/subtitles/{trackId}/content` | GET | 读取该轨道 WebVTT（**字幕预览**用，§7.6）：以行内 `storage_key` 读对象，两种驱动均由管理端代理输出（≤5MiB）+ `text/vtt; charset=utf-8` + `no-store`；轨道或对象缺失 404 |
+| `/api/admin/media/{id}/subtitles/{trackId}` | DELETE | 删除轨道：先删存储对象、再删 DB 行（幂等可重试）；删默认轨不自动改派；审计 `subtitle.delete` |
 
 ### 2.1.1 播放端用户（ADR-0004 / ADR-0007）
 
@@ -120,9 +127,7 @@ root 下按资产类别分四个分区，互不嵌套：
 
 ### 2.2 未实现（501 占位，随里程碑落地）
 
-| 端点 | 归属 | 说明 |
-|---|---|---|
-| `/api/admin/media/{id}/subtitles` | M4（ADR-0009） | 字幕上传 / 管理：VTT → `proceed/{id}/subtitles/` 并绑定媒资 ID |
+本文件已列出的端点均已实现（M1~M4）；**未列出的路径**统一由 `/api/admin/[...path]` 返回 501 `not_implemented`（会话守卫仍然生效）。
 
 - 未实现端点统一由 `/api/admin/[...path]` 返回 501 `not_implemented`（会话守卫仍然生效）；管理端 UI 对应项为 TODO 提示（点击提示所属里程碑）。
 
@@ -152,7 +157,7 @@ root 下按资产类别分四个分区，互不嵌套：
 - 所有管理相关表格**必须**「表体限高、内部纵向滚动、表头固定」，页面本身不随条目数增长；内容超长必须滚动，不得撑开页面；
 - 超宽表格同时横向滚动（antd `scroll.x` = 各列宽合计）；
 - 统一复用 `apps/admin/src/components/tableScroll.ts` 的 `useTableBodyHeight`（视口高度推算 + resize 重算 + 极窄视口兜底），**不得各自实现**；
-- 已实现页面：`/media`（媒资列表）、`/templates`（转码模板）、`/users`（播放端用户）、`/keys`（密钥）、`/jobs`（转码任务）；后续所有表格页面同样遵循。
+- 已实现页面：`/media`（媒资列表）、`/templates`（转码模板）、`/subtitles`（字幕管理）、`/users`（播放端用户）、`/keys`（密钥）、`/jobs`（转码任务）；后续所有表格页面同样遵循。
 
 ### 3.1 已实现页面
 
@@ -161,11 +166,12 @@ root 下按资产类别分四个分区，互不嵌套：
     - **播放** = 解密播放预览（`POST /media/{id}/preview-play` → 分发端签名主清单 URL → hls.js / Safari 原生播放，浏览器本地解密；管理端不出密钥，§4.3），播放弹窗标注「AES-128 加密（浏览器本地解密）」或「未加密」与模板 ID；
     - **删除** = 按模板删除该套产物（`DELETE /media/{id}/products/{templateId}`；确认弹窗给出前缀 / 对象数 / 体积与不可恢复警告；同模板有进行中任务时 409，需等待其结束）；
   - 播放失败的常见排查提示直接展示在弹窗内：分发端 CORS（`DELIVERY_CORS_ORIGINS`）或对象桶 CORS 未放行管理端源站；预览账号未配置时接口 501（dev-workflow §5.3）；
+- `/subtitles`（字幕管理，M4 已实现）：顶部可搜索媒资选择器（选项标注已有字幕条数，默认选中已有字幕的媒资）+ 该媒资的轨道面板（预览 / 上传 / 编辑 / 替换内容 / 删除，与媒资页抽屉同一组件）；规范见 §7.6。
 - `/templates`（转码模板，ADR-0014 已实现）：模板列表表格——模板名（默认标记）、描述、模式（转码 / 保持原视频）、加密（AES-128）、格式（M3U8）、参数摘要（编码器 / 码率或 CRF / 分辨率档位 / 帧率 / preset）、更新时间；操作：新建 / 编辑（弹窗表单，含分辨率档位多行编辑：固定宽×高或自适应上限约束）、删除（确认弹窗注明已发起任务不受影响）；API 见 §2（`/api/admin/templates`）。
 - `/users`（播放端用户，ADR-0004 `users` 表 / ADR-0007 账户域）：用户列表表格——用户名（加粗，已封禁标红 Tag）、展示名、状态（可用 / 封禁 Tag）、并发上限（`0` 悬停提示「0 = 不限制」）、进行中会话数、最近登录、注册时间；操作：新建 / 编辑（弹窗表单：用户名创建后为只读，口令仅新建时可填，状态用 Switch，并发上限 0–10000）、重置密码（独立弹窗，双口令确认，提示将吊销全部会话）、吊销会话（有会话时才可点）、封禁 / 启用、删除（确认弹窗区分「级联删除会话」与「封禁后可恢复」）。页面**不提供口令 / 哈希的查看与导出入口**；API 见 §2.1.1。
 - `/keys`（密钥管理，已实现）：密钥列表表格——媒资 ID、展示名、媒资状态、kid（截断 + Tooltip 全量）、算法、MK 版本（非当前版本标「待轮换」）、加密产物对象数、生成时间；顶部条展示当前封装版本与各版本密钥用量；操作：详情（弹窗：kid / IV / mk_ver / 生成时间 / 使用中会话数，并明确标注「明文密钥不展示」）、删除（确认弹窗警告需重转码才能恢复可播）、「轮换 MK」（确认后重封装旧版本，无需重转码）；API 见 §2.1 与 §4.3。**页面不提供任何明文密钥的展示 / 导出入口**。
 - `/jobs`（转码任务，M2 已实现，M3 增停止 / 重启）：任务列表表格——任务 ID、媒资（ID + 展示名）、状态（排队 / 探测中 / 转码中 / 封装上传中 / 完成 / 失败；worker 失联的执行中任务标「中断」）、模板名（取任务快照）、尝试次数、耗时、失败原因、创建时间；**操作列**：停止（取消）/ 重启（重新入队），规则见 §5.1；**实时推送（SSE）**——连接即回放全量快照，任务变化由服务端主动推送（客户端零轮询），断线自动重连并展示连接状态；「刷新」= 重建连接（服务端随即回放最新快照），「耗时」列由本地时钟每秒重算（不发请求）；API 见 §2.1（`/api/admin/jobs`、`/api/admin/jobs/stream`、`/api/admin/jobs/{id}/stop|restart`），执行规则见 §5。
-- 操作（对应 §2.1）：上传视频（原始字节流直传，带进度）、预览（弹窗 `<video>` 播放 original，local 支持 Range 拖动）、详情（弹窗展示元数据：probe 摘要结构化展示——容器 / 分辨率 / 帧率 / 编码 / 像素格式 / 色彩空间 / 码率 / 音轨等 + 摘要 JSON 折叠块）、重命名（仅展示名）、删除（确认后硬删除全级联）、设置封面（弹窗双模式：手动上传 / 视频截帧，§2.3）、「更多 → 生成元数据」（ffprobe 探测，§2.1）、「更多 → 转码」（M2 已实现：弹窗**多选**模板（默认勾选默认模板）→ 逐个展示所选模板的模式 / 加密 / 输出格式 → 一次发起入队多条 `transcode_jobs`（每个模板各一条、各落 `proceed/{id}/{模板id}/`），进度跳「转码任务」页查看）；「更多 → 字幕管理」为 TODO（§2.2）。
+- 操作（对应 §2.1）：上传视频（原始字节流直传，带进度）、预览（弹窗 `<video>` 播放 original，local 支持 Range 拖动）、详情（弹窗展示元数据：probe 摘要结构化展示——容器 / 分辨率 / 帧率 / 编码 / 像素格式 / 色彩空间 / 码率 / 音轨等 + 摘要 JSON 折叠块）、重命名（仅展示名）、删除（确认后硬删除全级联）、设置封面（弹窗双模式：手动上传 / 视频截帧，§2.3）、「更多 → 生成元数据」（ffprobe 探测，§2.1）、「更多 → 转码」（M2 已实现：弹窗**多选**模板（默认勾选默认模板）→ 逐个展示所选模板的模式 / 加密 / 输出格式 → 一次发起入队多条 `transcode_jobs`（每个模板各一条、各落 `proceed/{id}/{模板id}/`），进度跳「转码任务」页查看）；「更多 → 字幕管理」打开**字幕管理抽屉**（M4 已实现：多轨 VTT 列表 / 上传 / 编辑元信息 / 替换文本 / 删除，语言按 BCP-47 归一化；规范见 §7.6）。
 
 ## 4. 密钥管理与视频加密（以 ADR-0006 为决策源）
 
@@ -309,12 +315,12 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 | `POST /v1/auth/login` | 凭据 | bcrypt 校验 `users`（须 `status=ACTIVE`）→ ES256 JWT（`kid` / `exp=DELIVERY_JWT_TTL_SEC`；未配置签名密钥时 503） |
 | `GET /v1/media` | JWT | 上架列表（`status=READY`；`limit` ≤200，默认 50；`poster_url` s3 形态为预签名） |
 | `GET /v1/media/{id}` | JWT | 详情：probe 摘要（契约 `Probe` 子集）+ 就绪字幕轨道 + `playable` |
-| `POST /v1/media/{id}/play` | JWT | 建 / 复用播放会话：`template_id` 可选（见 §6.3）；同用户同媒资未过期末吊销会话**默认复用**（幂等），`force_new=true` 强制新建；并发上限命中 → 409 `session_limit`；媒资非 READY → 409 `not_playable`；返回 `{sid, manifest_url, expires_at, template_id}` |
+| `POST /v1/media/{id}/play` | JWT | 建 / 复用播放会话：`template_id` 可选（见 §6.3）；同用户同媒资未过期末吊销会话**默认复用**（幂等），`force_new=true` 强制新建；并发上限命中 → 409 `session_limit`；媒资非 READY → 409 `not_playable`；返回 `{sid, manifest_url, expires_at, template_id}`（M4 起附签名 `subtitles[]` 与每条轨道的 `url`，§7.5） |
 | `GET /v1/media/{id}/manifest/master.m3u8` | token(m) | 改写主清单：变体行替换为分发端 URL（typ=m + `tpl`）；`no-store` |
 | `GET /v1/media/{id}/manifest/{variant}/index.m3u8` | token(m) | 改写子清单：`EXT-X-KEY` URI → key 接口（typ=k）；分片行 → typ=s / 预签名；`no-store` |
 | `GET /v1/media/{id}/key` | token(k) | **16B CEK**（`application/octet-stream`，`no-store`）：验签 + 会话有效 → 按 `hls_keys.mk_ver` 取 MK 解封 |
 | `GET /v1/media/{id}/local/{tpl}/{variant}/{seg}` | token(s) | **local 驱动**分片流式输出（支持 Range）；s3 驱动分片为预签名直出，不走此处 |
-| `GET /v1/media/{id}/subtitles/{trackId}.vtt` | token(v) | M4（ADR-0009），当前 501 |
+| `GET /v1/media/{id}/subtitles/{trackId}.vtt` | token(v) | 字幕 VTT 输出（§7.5）：验签 + 会话有效 → 查轨道（`status=READY`）→ 按行内 `storage_key` 读对象，**两种驱动均由分发端代理输出**（≤5MiB）；`text/vtt; charset=utf-8` + `no-store` |
 
 **token 传递（用户定，2026-09-18）**：URL query `t` 优先，其次请求头 `X-Playback-Token`（App / hls.js 可带自定义头；**Safari 原生 HLS 的密钥与分片请求无法带头**，因此 query 是必须形态）。token 自包含（`ver|typ|mid|sid|exp|kid`，HMAC-SHA256），`typ` 作用域 `m 清单 / s 分片 / k 密钥 / v 字幕`，`mid` 绑定防跨媒资重放，`sid` 绑定会话可吊销。
 
@@ -356,6 +362,7 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 | `DELIVERY_JWT_TTL_SEC` | `86400` | JWT 有效期（ADR-0007：默认 24h，无 refresh） |
 | `PLAYBACK_SESSION_TTL_SEC` | `14400` | 播放会话有效期 |
 | `PLAYBACK_MANIFEST_TTL_SEC` | `14400` | 清单 token / 预签名有效期上限（token exp ≤ 会话 exp） |
+| `PLAYBACK_SUBTITLE_TTL_SEC` | `86400` | 字幕 token 有效期上限（`@openvod/shared DEFAULTS.subtitleTtlSec`）；实际 `exp` 取与会话 `exp` 的较小值（§7.5） |
 | `STORAGE_DRIVER` / `STORAGE_ROOT_PREFIX` / `STORAGE_LOCAL_ROOT` / `S3_*` | 对齐管理端 | 与 `packages/storage` 同源命名（§1.5） |
 | `DELIVERY_CORS_ORIGINS` | `*` | 允许跨域读取清单 / 密钥 / 分片（管理端「产物解密播放」的 hls.js 需要）；播放鉴权全走 URL token、不带 Cookie，`*` 不引入凭证泄露面，可收敛为管理端源站（逗号分隔） |
 
@@ -366,6 +373,120 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 - 会话吊销的进程内 60s 缓存（当前每请求查库，语义更严格、量级可接受）；
 - SQLite 自托管驱动（当前 Go 侧仅 MySQL；ADR-0004 的单机同卷形态待补）；
 - `poster_url` 的 local 直出与 `custom_data` **公开白名单**（当前返回空对象，避免泄露内部字段）；
-- 字幕链路（M4）。
+- 字幕链路（M4）：规范见 §7（当前 501）；字幕进 CDN 缓存（ADR-0009 原始设想）为演进项，前置条件是引入内容版本号 / 共享 token 形态。
 
 **部署前置（非未完成项）**：管理端「产物 → 播放」由浏览器直连对象存储拉分片（s3 形态），要求**对象桶 CORS 放行管理端源站**（与封面截帧同一前提，§2.3）——未配置时表现为「有总时长但一直转圈」（分片请求被浏览器拦截），播放弹窗会在等待超时后给出该提示；`local` 形态分片经分发端流式输出（已带 CORS 头），无需桶配置。播放器为 Video.js v10（与媒资预览同一皮肤），HLS 由 `@videojs/hlsjs-video`（hls.js / MSE）承载，Safari 由 Video.js 自行回退原生 HLS。
+
+## 7. 字幕（WebVTT，M4）
+
+> 决策源 ADR-0009（本节按实现细化，冲突时以本节为准并回写 ADR）。本节定义管理端（控制面）与分发端（数据面）的字幕规则。格式 v1 仅 **WebVTT**，不入 HLS 打包。
+
+### 7.1 轨道模型
+
+- **一媒资多轨**：一条轨道 = `media_subtitles` 一行 + 一个对象 `proceed/{id}/subtitles/{trackId}.vtt`；同一媒资可并存多条轨道（按语言区分），互不覆盖；
+- **`trackId`（轨道唯一 ID）**：服务端生成的唯一 ID，**同时是 `media_subtitles.id`、存储文件名与 API 路径参数**；形状与模板 ID 同形（cuid 形状 `^c[a-z0-9]{20,}$`），便于统一做路径白名单校验（防路径注入）；
+  - 生成**先于落库**（存储键必须先于 DB 行确定），故由应用层生成并显式写入主键，不依赖 Prisma `@default(cuid())`；
+  - 一经写入**不再变更**（编辑文本 / 改展示名 / 改语言均不变键），保证播放端已持有的引用长期有效；
+- **`lang`（语言）**：BCP-47（RFC 5646）语言标签，规范形态用连字符（`zh-CN` / `en-US` / `ja-JP`）；**输入兼容**下划线写法（`zh_CN` / `en_US`）与任意大小写，服务端归一化（language 小写、script 首字母大写、region 大写）后存储与返回；非法标签 400。动机：`<track srclang>`、HLS `LANGUAGE`、iOS / Android 选轨 API 均以 BCP-47 为准，下划线仅为历史 UI 写法；
+  - **同一媒资内 `lang` 唯一**（DB 唯一约束 `(media_id, lang)`）：播放端按语言选轨无歧义；重复 409 `bad_request`。不同语言区域的同语言轨（`zh-CN` / `zh-TW`）视为不同语言，可并存；
+- **`label`（展示名）**：必填，1–64 字符（播放器字幕菜单展示；不参与选轨逻辑）；
+- **`is_default`（默认轨）**：每媒资**至多一条**默认轨；首条上传的轨道自动置默认；显式设默认时在事务内把该媒资其它轨道置 `false`（MySQL / SQLite 均无「部分唯一索引」，故为应用层事务保证）；
+- **`status`**：`PROCESSING` / `READY` / `FAILED` 取值保留（Prisma `SubtitleStatus`），但 **v1 上传为同步校验** —— 通过即写 `READY`；失败直接 400 且**不落库、不落存储**（不留 `FAILED` 残留行）。`PROCESSING` / `FAILED` 留给未来异步链路（语音转写 / 机器翻译）；
+- 其余列：`storage_key`（不含 root 的相对对象键）、`bytes`（对象字节数）、`created_by`（管理端账号 id）。
+
+### 7.2 存储与生命周期
+
+- 落键 `proceed/{mediaId}/subtitles/{trackId}.vtt`：`subtitles` 是 `proceed/{id}/` 下的**保留段**（`PROCEED_RESERVED_SEGMENTS`）—— 不参与模板产物分组（§1.4 的 `products[]`）、不被「按模板删除产物」（§2.1）清理、也不随重转码变化；
+- **写入顺序**：先 `put` 对象、再落 DB 行（与封面上传同序）；对象写入失败 → 不落库，返回 500；
+- **存储对象恒为 WebVTT**（`{trackId}.vtt`）：`.srt` 仅作输入，在上传 / 覆盖时转换（§7.3），不落 SRT 对象；
+- **文本编辑 = 就地覆盖同一对象**（trackId 与键不变）；分发端字幕响应 `no-store`（§7.5），编辑后下一次请求即取到新文本；
+- **删除轨道 = 先删对象、再删 DB 行**（与媒资删除同序，幂等可重试）：对象已不存在视为成功；删默认轨后**不自动改派**新默认轨（允许暂时无默认，避免意料外的轨道切换）；
+- **媒资删除**：`proceed/{id}/` 整子树删除自然覆盖字幕对象，`media_subtitles` 随 `media` 级联删除（§2.1）；
+- 单文件上限 `SUBTITLE_MAX_BYTES` = **5 MiB**（远低于 P0 的 6MB 响应体上限，MB 级长片字幕足够）。
+
+### 7.3 输入格式与校验（SRT 自动转 VTT；只校验不重排）
+
+**输入格式**：`POST /subtitles` 与 `PUT /{trackId}/content` 都接受 `.vtt` 与 `.srt`，按**内容**识别（不看扩展名 / 不信任文件名）：
+
+- 首个非空行以 `WEBVTT` 开头 → 视为 WebVTT，直接进入校验；
+- 否则含至少一条 SRT 时间轴行 `00:00:01,000 --> 00:00:03,000` → 视为 SubRip，**服务端自动转为 WebVTT** 后进入校验：时间轴逗号改点、小时补齐两位、前置 `WEBVTT` 头、序号行原样保留（WebVTT 允许 cue 标识行）、丢弃 SRT 专有定位参数（时间轴行尾的 `X1:… / Y1:…` 等，WebVTT 不支持）；
+- 两者都不是 → 400（消息同时提示支持 `.vtt` 与 `.srt`）。
+
+**存储恒为 WebVTT**：对象键固定 `proceed/{id}/subtitles/{trackId}.vtt`，不并存 SRT 对象、不保存 SRT 原文（v1 仅 WebVTT，intent.md 非目标）。
+
+上传与覆盖文本时逐条校验，任一项不满足 → 400 `bad_request`（消息指出原因）：
+
+1. 请求体为非空字节流且 ≤ `SUBTITLE_MAX_BYTES`（转换后体积再校验一次 —— 补 `WEBVTT` 头会略增）；
+2. **合法 UTF-8**（非法字节序列拒绝）；允许并剥离 UTF-8 BOM；
+3. 首个非空行以 `WEBVTT` 开头（允许 `WEBVTT - 说明` 形态）；
+4. 至少一条 cue：存在 `时间轴 --> 时间轴` 行，时间戳为 `HH:MM:SS.mmm` 或 `MM:SS.mmm`；每条 cue 结束时间**严格大于**开始时间；
+5. 归一化仅限：换行统一为 `\n`（`\r\n` / `\r` → `\n`）、去 BOM、SRT→VTT 的时间轴改写；其余内容**原样存储**（不重排、不重编号、不修时间轴，ADR-0009）；
+6. 转换与校验都是纯函数，落 `apps/admin/src/lib/vtt.ts`（`toVttText` 统一入口 / `convertSrtToVtt` / `validateVttText`，唯一使用方是管理端，带单测）；分发端只读取与下发，不做格式处理。
+
+### 7.4 管理端 API（`/api/admin/media/{id}/subtitles`）
+
+沿用 §2 通用约定（better-auth 会话守卫、统一错误信封、响应 `no-store`、敏感操作落 `audit_logs`）；请求体为**原始 VTT 字节流**（`Content-Type: application/octet-stream`，与 §2 上传协议一致，不经 multipart 缓冲）。
+
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/api/admin/media/{id}/subtitles` | GET | 轨道列表：`id`(trackId) / `lang` / `label` / `is_default` / `status` / `bytes` / `storage_key` / `created_at` / `updated_at`，另附 `storage_ok`（对象存在性；存储不可用为 null）；顺序 `is_default DESC, created_at ASC` |
+| `/api/admin/media/{id}/subtitles` | POST | 新建轨道：查询参数 `lang`（必填，归一化后校验）/ `label`（必填 1–64）/ `is_default`（可选）→ 校验 VTT（§7.3）→ 生成 trackId → 写对象 → 落 `media_subtitles`（`status=READY`、`created_by`=当前管理端账号）→ 审计 `subtitle.create`；返回 201 轨道 DTO。`lang` 重复 409；媒资未入库 404 |
+| `/api/admin/media/{id}/subtitles/{trackId}` | PATCH | 更新元信息（JSON：`label` / `lang` / `is_default`）：`lang` 走同一归一化与唯一校验（409）；`is_default=true` 事务内把其它轨道置 `false`；审计 `subtitle.update` |
+| `/api/admin/media/{id}/subtitles/{trackId}/content` | PUT | 覆盖字幕文本（原始 VTT 字节流）：同一校验（§7.3）→ 就地覆盖对象 → 更新 `bytes` / `updated_at`；审计 `subtitle.update`（detail 含 bytes） |
+| `/api/admin/media/{id}/subtitles/{trackId}` | DELETE | 删除轨道（先对象后行，幂等）；审计 `subtitle.delete` |
+
+- 轨道不存在 / 不属于该媒资 → 404 `not_found`；`trackId` 形状不符 → 404（路由层先校验，防路径注入）；
+- 不提供「按语言批量替换」「自动翻译 / 转写」等入口（非目标，intent.md）。
+
+### 7.5 分发端 API（字幕链路）
+
+| 端点 | 鉴权 | 说明 |
+|---|---|---|
+| `GET /v1/media/{id}` | JWT | 详情 `subtitles[]`（`MediaSubtitleDTO`：id / lang / label / is_default）——**不含 URL**（URL 需会话 token）；已实现（查 `status=READY`） |
+| `POST /v1/media/{id}/play` | JWT | 响应新增 `subtitles[]` = `{id, lang, label, is_default, url}`：`url` = `{DELIVERY_PUBLIC_BASE_URL}/v1/media/{id}/subtitles/{trackId}.vtt?t=<typ=v token>`，`exp = min(now + PLAYBACK_SUBTITLE_TTL_SEC, 会话 exp)`。理由：字幕鉴权必须走 URL query token（Safari 原生 HLS 无法带请求头，ADR-0006），而 token 必须绑定 `sid` 才可吊销 —— 只有会话上下文（play）能签发，故随 play 一并下发，播放端零额外往返 |
+| `GET /v1/media/{id}/subtitles/{trackId}.vtt` | token(v) | 取 VTT 文本（下述规则） |
+
+`.vtt` 端点执行规则（顺序即安全边界）：
+
+1. `trackId` 形状白名单（cuid 形状）→ 不符 404（路由层先拦）；
+2. `authorize(typ=v, mid={id})`：token 校验（query `t` 优先，其次 `X-Playback-Token`）+ `mid` 绑定 + 会话未过期未吊销 —— 未携带 / 非法 / 已吊销 → 403 `bad_token`（纳入 `assert-unsigned-403` 门禁）；
+3. DB 查轨道 `id=trackId AND media_id={id} AND status=READY`；不存在 → 404 `not_found`；
+4. 读对象以行内 `storage_key` 为准（**不按 URL 拼键**，保持键可迁移）；对象缺失 → 404；
+5. 输出：**两种驱动都由分发端代理输出**（`blob.Get` 读整对象写出）—— s3 若走预签名 302，对象响应头（`no-store`）与跨域策略都不受分发端控制，而 `no-store` 是「就地覆盖、下一次请求即生效」的前提；P0 的「分片字节不经过函数」只约束分片，字幕不适用（≤5 MiB，低于 6MB 响应体上限）；
+6. 响应头 `Content-Type: text/vtt; charset=utf-8`、`Cache-Control: no-store`（与清单 / 密钥同纪律：token 逐会话签发、文本可被就地覆盖，缓存会读到陈旧字幕）；ADR-0009 的「CDN 可缓存」列为**演进项**，前置条件是引入内容版本号 / 共享 token 形态；
+7. **不入 HLS 清单**：v1 由播放端外挂轨道（`<track>` / hls.js `addTextTrack`）引用 `play` 返回的 URL；`EXT-X-MEDIA TYPE=SUBTITLES` 需分段 playlist，列为演进项（ADR-0009）。
+
+分发端受限 DB 账号对 `media_subtitles` 只需**只读**（ADR-0011），本链路无 DB 写入。
+
+### 7.6 管理端页面
+
+字幕管理有**两个入口，共用同一轨道面板**（组件 `SubtitleTracksPanel`，避免两处实现漂移）：
+
+- **侧边栏「字幕管理」（`/subtitles`）**：顶部为可搜索的媒资选择器（选项形如 `ID · 展示名（N 条字幕）`），默认选中「已有字幕的第一个媒资」（没有则选最新媒资），下方渲染该媒资的轨道面板；
+- **媒资页「更多 → 字幕管理」**（`/media`）：抽屉（Drawer）内嵌同一面板。
+
+轨道面板（遵循 §3.0 表格滚动约定）：
+
+- 工具栏：**上传字幕**（弹窗：`.vtt` / `.srt` 文件（SRT 自动转 VTT，成功提示会标注「SRT 已自动转换为 VTT」）+ 语言（AutoComplete 预置 `zh-CN` / `zh-TW` / `en-US` / `ja-JP` / `ko-KR`，允许自由输入、服务端归一化）+ 展示名 + 「设为默认」开关）+ 刷新 + 轨道条数；
+- 表格列 = 语言标签（`lang`，默认轨打标）、展示名（`label`）、状态、体积、轨道 ID（等宽 + 复制）、对象存在性（`storage_ok` 为 `false` 时提示「缺失，请删除后重新上传」）、更新时间；
+- 行操作：
+  - **预览**：弹窗播放 **original 原视频**（同源 `GET /media/{id}/original`，支持 Range 拖动）并挂上该轨道的 WebVTT —— 与媒资预览**同一 Video.js 皮肤**，字幕走原生 `<track kind="subtitles" srclang=lang label=label default>`，可在播放器字幕菜单切换 / 关闭；字幕源为 `GET /media/{id}/subtitles/{trackId}/content`（`no-store`，编辑后重新打开即最新）；`storage_ok=false` 时按钮禁用（提示对象缺失）；
+  - **编辑**（展示名 / 语言 / 设为默认，不重传文件）、**替换内容**（重选 `.vtt` / `.srt` 就地覆盖，提示播放端下一次请求即取到新文本）、**删除**（确认弹窗：对象与 DB 行一并删除、不可恢复、不自动改派默认轨）；
+- 上传 / 编辑失败时把 §7.3 的校验原因直接展示在弹窗内。
+
+### 7.7 相关常量与环境变量
+
+| 名称 | 默认 | 说明 |
+|---|---|---|
+| `PLAYBACK_SUBTITLE_TTL_SEC` | `86400`（`@openvod/shared DEFAULTS.subtitleTtlSec`） | 字幕 token 有效期上限；实际 `exp` 取与会话 `exp` 的较小值 |
+| `SUBTITLE_MAX_BYTES` | `5 * 1024 * 1024` | 单字幕文件上限（常量，非环境变量） |
+| `SUBTITLE_LABEL_MAX` | `64` | 展示名长度上限（常量） |
+
+### 7.8 契约与生成物
+
+- `MediaSubtitleDTO`（详情用）保持不变；新增 `PlaybackSubtitleDTO` = `MediaSubtitleDTO + url`，`PlaybackResponse` 增加 `subtitles: PlaybackSubtitleDTO[]` —— 二者均在 `gen-json.ts` 清单内，需重跑 `task contracts` 并提交生成的 Go struct（CI `check:contracts-go` 门禁）；
+- 管理端字幕 DTO 仅管理端消费（分发端不消费），与模板 / 密钥 / 用户组同规则：**不进 `gen-json.ts` 清单、不生成 Go struct**；
+- quicktype 命名：`PlaybackResponse.subtitles` 的条目在契约里带内联 `title: "PlaybackSubtitle"`（zod `.meta({ title })`），生成 Go 类型 `PlaybackSubtitle` —— 否则会与 `MediaDetail` 内联出的 `Subtitle` 在同一个 Go 包内重名；
+- 双端已就位、无需新增：`TOKEN_TYPES.subtitle = "v"`（`@openvod/shared`）与 Go `token.TypeSubtitle`、`STORAGE_KEYS.proceedSubtitle`、`PROCEED_RESERVED_SEGMENTS`、`DEFAULTS.subtitleTtlSec`；
+- Go 侧新增：`store.SubtitleByID`（读 `storage_key`，限定 `status=READY`）与 `internal/server` 的 `.vtt` handler；
+- Prisma：`media_subtitles` 表已存在（ADR-0009 / ADR-0004）；本功能仅需补 `@@unique([media_id, lang])` 约束（迁移）。

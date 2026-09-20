@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "lang": {
+      "type": "string"
+    },
+    "label": {
+      "type": "string"
+    },
+    "is_default": {
+      "type": "boolean"
+    },
+    "url": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "lang",
+    "label",
+    "is_default",
+    "url"
+  ],
+  "$id": "PlaybackSubtitleDTO.json",
+  "title": "PlaybackSubtitleDTO"
+}

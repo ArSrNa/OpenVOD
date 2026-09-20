@@ -2,7 +2,11 @@
 // 覆盖：新布局（proceed/{id}/{模板id}/）、多模板并存、旧布局兼容、保留段（subtitles）排除、跨媒资不串组；
 // 以及按模板删除产物的目标键选择（selectProductObjectKeys，接口 /api/admin/media/[id]/products/[templateId]）。
 import { describe, expect, it } from "bun:test";
-import { groupProductsByMedia, selectProductObjectKeys } from "../src/lib/media-products";
+import {
+  countSubtitlesByMedia,
+  groupProductsByMedia,
+  selectProductObjectKeys,
+} from "../src/lib/media-products";
 
 const o = (key: string, size = 100) => ({ key, size });
 
@@ -108,5 +112,30 @@ describe("selectProductObjectKeys（按模板删除的键选择）", () => {
   it("模板不存在 / 无旧布局产物 → 空数组（接口据此返回 404）", () => {
     expect(selectProductObjectKeys(objs, media, "cnotexist0001mqe4uoyceqt3")).toEqual([]);
     expect(selectProductObjectKeys([o(`proceed/${media}/${tplA}/master.m3u8`)], media, "")).toEqual([]);
+  });
+});
+
+describe("countSubtitlesByMedia", () => {
+  it("按媒资统计字幕对象（subtitles/ 保留段下的 .vtt）", () => {
+    const counts = countSubtitlesByMedia([
+      o(`proceed/00000042/subtitles/caaa0001mqe4uoyceqt3.vtt`),
+      o(`proceed/00000042/subtitles/cbbb0002mqe4uoyceqt3.vtt`),
+      o(`proceed/00000042/cmu6tpla0001mqe4uoyceqt3/1080p/seg-00000.ts`), // 模板产物
+      o(`proceed/00000042/720p/seg-00000.ts`), // 旧布局产物
+      o(`proceed/00000999/subtitles/cccc0003mqe4uoyceqt3.vtt`),
+      o(`original/00000042.mp4`),
+    ]);
+    expect(counts.get("00000042")).toBe(2);
+    expect(counts.get("00000999")).toBe(1);
+  });
+
+  it("非 .vtt / 深层级 / 其它分区不计入", () => {
+    const counts = countSubtitlesByMedia([
+      o(`proceed/00000042/subtitles/notes.txt`),
+      o(`proceed/00000042/subtitles/nested/aaaa.vtt`),
+      o(`proceed/00000042/subtitles/`),
+      o(`metadata/00000042/subtitles/x.vtt`),
+    ]);
+    expect(counts.size).toBe(0);
   });
 });

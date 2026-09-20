@@ -215,6 +215,8 @@ model MediaSubtitle {
   media Media @relation(fields: [mediaId], references: [id], onDelete: Cascade)
 
   @@index([mediaId])
+  /// 同一媒资内语言唯一（spec.md §7.1）：播放端按语言选轨无歧义
+  @@unique([mediaId, lang])
   @@map("media_subtitles")
 }
 

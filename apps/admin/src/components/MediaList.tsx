@@ -5,7 +5,7 @@
 // 「更多 → 转码」已实现（M2：选转码模板入队 transcode_jobs，Worker 认领执行，进度见「转码任务」页）；
 // 转码产物：按模板的产物列表（抽屉）→ **解密播放**（走分发端签名链路，管理端不出密钥，spec.md §6）
 // 与**按模板删除**（只删该模板子树，spec.md §5.5）；
-// 「更多 → 字幕管理」仍为 TODO（M4，接口 501 占位）。
+// 「更多 → 字幕管理」打开字幕管理抽屉（M4，spec.md §7 / SubtitleManager）。
 import {
   CloudUploadOutlined,
   CopyOutlined,
@@ -47,6 +47,7 @@ import { useRouter } from "next/navigation";
 import { PRODUCT_LEGACY_ID } from "@/lib/media-products";
 import { CoverFrameCapture } from "./CoverFrameCapture";
 import { HlsPreviewPlayer } from "./HlsPreviewPlayer";
+import { SubtitleManager } from "./SubtitleManager";
 import { useTableBodyHeight } from "./tableScroll";
 import { VideoPreviewPlayer } from "./VideoPreviewPlayer";
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
@@ -72,6 +73,8 @@ interface MediaListItem {
   lastModified?: string;
   assets: { proceed: number; cover: number; metadata: number };
   products: MediaProduct[];
+  /** 该媒资的字幕对象数（proceed/{id}/subtitles/*.vtt，spec.md §7.2） */
+  subtitleCount: number;
 }
 
 interface MediaDetail {
@@ -193,7 +196,7 @@ function uploadTo(url: string, file: File, onProgress?: (pct: number) => void): 
 
 // 表格不随条目数无限增高：表体限高后内部纵向滚动、表头固定（列宽合计见下方 columns）。
 // 滚动实现抽至 tableScroll.ts（管理端所有表格共用约定，spec.md §3）。
-const TABLE_MIN_WIDTH = 1260; // 固定列 970（含首列封面缩略图） + 展示名最小可读宽度
+const TABLE_MIN_WIDTH = 1350; // 固定列 970（含首列封面缩略图）+ 字幕列 90 + 展示名最小可读宽度
 
 /** 码率（bps）→ 可读字符串 */
 function formatBitrate(bps: number | null | undefined): string {
@@ -338,6 +341,9 @@ export function MediaList() {
 
   const [metadataBusyId, setMetadataBusyId] = useState<string | null>(null);
 
+  // 字幕管理（M4，spec.md §7）：多轨 VTT 的增删改查（抽屉）
+  const [subtitleTarget, setSubtitleTarget] = useState<MediaListItem | null>(null);
+
   // 转码（M2）：**多选**模板发起 → 每个模板各入队一条 transcode_jobs，Worker 认领执行
   const [transcodeTarget, setTranscodeTarget] = useState<MediaListItem | null>(null);
   const [transcodeTemplates, setTranscodeTemplates] = useState<TemplateOption[]>([]);
@@ -468,10 +474,6 @@ export function MediaList() {
       },
     });
   };
-
-  // ---- 「更多」菜单：TODO 项点击提示里程碑归属 ----
-  const todoHint = (label: string, milestone: string) => () =>
-    message.info(`${label}功能尚未实现（随${milestone}里程碑落地），接口已预留 501 占位`);
 
   // ---- 生成元数据（ffprobe → metadata/{id}/probe.json + media.probe / duration_ms） ----
   const handleGenerateMetadata = async (record: MediaListItem) => {
@@ -725,7 +727,7 @@ export function MediaList() {
       domEvent.stopPropagation();
       if (key === "cover") setCoverTarget(record);
       else if (key === "transcode") void openTranscode(record);
-      else if (key === "subtitle") todoHint("字幕管理", "M4 字幕与元数据")();
+      else if (key === "subtitle") setSubtitleTarget(record);
       else if (key === "metadata") void handleGenerateMetadata(record);
     },
   });
@@ -870,6 +872,24 @@ export function MediaList() {
               {row.products.length} 组产物 · {row.assets.proceed} 个对象
             </Button>
           </Tooltip>
+        ) : (
+          <Tag color="default">无</Tag>
+        ),
+    },
+    {
+      title: "字幕",
+      dataIndex: "subtitleCount",
+      width: 90,
+      render: (count: number, row) =>
+        count ? (
+          <Button
+            type="link"
+            size="small"
+            style={{ padding: 0 }}
+            onClick={() => setSubtitleTarget(row)}
+          >
+            {count} 条
+          </Button>
         ) : (
           <Tag color="default">无</Tag>
         ),
@@ -1246,6 +1266,13 @@ export function MediaList() {
           删除：仅移除该模板子树的存储对象；加密密钥与转码任务历史保留。存在进行中的同模板任务时拒绝删除。
         </Typography.Paragraph>
       </Drawer>
+
+      {/* 字幕管理（M4，spec.md §7）：一媒资多轨 WebVTT 的上传 / 编辑 / 替换内容 / 删除 */}
+      <SubtitleManager
+        mediaId={subtitleTarget?.id ?? null}
+        mediaTitle={subtitleTarget?.title ?? null}
+        onClose={() => setSubtitleTarget(null)}
+      />
 
       {/* 解密播放：HLS 直连分发端（hls.js；Safari 走原生 HLS），密钥由分发端下发后浏览器本地解密 */}
       <Modal

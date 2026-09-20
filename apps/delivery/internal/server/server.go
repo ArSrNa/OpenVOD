@@ -20,6 +20,7 @@ import (
 	"path"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,6 +40,9 @@ import (
 
 // templateIDPattern 模板 ID（cuid 形状；spec.md §1.3），用于从产物前缀里识别模板子树
 var templateIDPattern = regexp.MustCompile(`^c[a-z0-9]{20,}$`)
+
+// subtitleTrackIDPattern 字幕轨道 ID（spec.md §7.1：与模板 ID 同形），路由层白名单（防路径注入）
+var subtitleTrackIDPattern = regexp.MustCompile(`^c[a-z0-9]{20,}$`)
 
 // reservedSubtitles `proceed/{id}/subtitles/` 保留段，不是模板产物
 const reservedSubtitles = "subtitles"
@@ -99,7 +103,8 @@ func New(o Options) http.Handler {
 		r.Get("/media/{id}/key", a.handleKey)
 		// local 驱动的分片流式输出（s3 驱动为预签名直出，字节不经过函数；ADR-0005）
 		r.Get("/media/{id}/local/*", a.handleLocalSegment)
-		r.Get("/media/{id}/subtitles/{trackId}.vtt", notImplemented("字幕链路属 M4（ADR-0009）"))
+		// 字幕 VTT（token(v)；spec.md §7.5）：未带 / 非法 / 已吊销 token 一律 403（P0 门禁）
+		r.Get("/media/{id}/subtitles/{trackId}.vtt", a.handleSubtitle)
 
 		// 兜底
 		r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
@@ -327,12 +332,63 @@ func (a *api) handlePlay(w http.ResponseWriter, r *http.Request) {
 	manifestURL := fmt.Sprintf("%s/v1/media/%s/manifest/master.m3u8?t=%s&tpl=%s",
 		a.o.Cfg.PublicBaseURL, url.PathEscape(mediaID), url.QueryEscape(tok), url.QueryEscape(tpl))
 
+	subtitles, err := a.signSubtitleURLs(ctx, mediaID, sid, now, expiresAt)
+	if err != nil {
+		a.o.Logger.Error("签发字幕凭证失败", "err", err, "media_id", mediaID)
+		writeError(w, http.StatusInternalServerError, contracts.Internal, "签发播放凭证失败")
+		return
+	}
+
 	writeJSON(w, http.StatusOK, contracts.PlaybackResponse{
 		Sid:         sid,
 		ManifestURL: manifestURL,
 		ExpiresAt:   expiresAt.UTC().Format(time.RFC3339),
 		TemplateID:  tpl,
+		Subtitles:   subtitles,
 	})
+}
+
+/**
+ * signSubtitleURLs 随 play 下发字幕轨道与签名 URL（spec.md §7.5）。
+ *
+ * 为什么字幕 URL 必须由 play 签发：字幕鉴权走 URL query token（Safari 原生 HLS 无法带请求头，
+ * ADR-0006），而 token 必须绑定 `sid` 才可吊销 —— 只有会话上下文能签发。
+ * 每条轨道共用同一枚 typ=v token（token 绑定 mid + sid，不绑定轨道），减少签名开销；
+ * exp = min(now + PLAYBACK_SUBTITLE_TTL_SEC, 会话 exp)。
+ * 查询失败不致命：返回空列表（字幕是附加能力，不应让播放失败）。
+ */
+func (a *api) signSubtitleURLs(
+	ctx context.Context, mediaID, sid string, now, sessionExp time.Time,
+) ([]contracts.PlaybackSubtitle, error) {
+	rows, err := a.o.DB.ReadySubtitles(ctx, mediaID)
+	if err != nil {
+		a.o.Logger.Warn("查询字幕轨道失败", "err", err, "media_id", mediaID)
+		return []contracts.PlaybackSubtitle{}, nil
+	}
+	out := make([]contracts.PlaybackSubtitle, 0, len(rows))
+	if len(rows) == 0 {
+		return out, nil
+	}
+	exp := now.Add(time.Duration(a.o.Cfg.SubtitleTTLSec) * time.Second)
+	if exp.After(sessionExp) {
+		exp = sessionExp
+	}
+	tok, err := a.signToken(token.TypeSubtitle, mediaID, sid, exp)
+	if err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		out = append(out, contracts.PlaybackSubtitle{
+			ID:        rows[i].ID,
+			Lang:      rows[i].Lang,
+			Label:     rows[i].Label,
+			IsDefault: rows[i].IsDefault,
+			URL: fmt.Sprintf("%s/v1/media/%s/subtitles/%s.vtt?t=%s",
+				a.o.Cfg.PublicBaseURL, url.PathEscape(mediaID),
+				url.PathEscape(rows[i].ID), url.QueryEscape(tok)),
+		})
+	}
+	return out, nil
 }
 
 /**
@@ -559,6 +615,54 @@ func (a *api) handleLocalSegment(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, path.Base(rest), info.ModTime(), f) // 支持 Range（拖动）
 }
 
+// ---- 字幕（token(v)；spec.md §7.5 / ADR-0009） ----
+
+/**
+ * handleSubtitle 输出某条字幕轨道的 WebVTT 文本。
+ *
+ * 校验顺序（顺序即安全边界）：
+ *   1. trackId 形状白名单（路由层，防路径注入）→ 不符 404；
+ *   2. token(v) + mid 绑定 + 会话未过期未吊销 → 未带 / 非法 / 已吊销 403（P0 门禁 assert-unsigned-403）；
+ *   3. DB 轨道（id + media_id + status=READY）→ 不存在 404；
+ *   4. 按行内 storage_key 读对象（不按 URL 拼键，键可迁移）→ 缺失 404。
+ *
+ * 输出：两种驱动都由分发端代理输出。s3 若改走预签名 302，对象响应头（Cache-Control）
+ * 与跨域策略都不受分发端控制 —— 而 `no-store` 是字幕「编辑后就地覆盖、下一次请求即生效」
+ * 与 P0 缓存纪律的前提。字幕 ≤5 MiB（管理端上限），低于 P0 的 6MB 响应体约束。
+ */
+func (a *api) handleSubtitle(w http.ResponseWriter, r *http.Request) {
+	mediaID := chi.URLParam(r, "id")
+	trackID := chi.URLParam(r, "trackId")
+	if !subtitleTrackIDPattern.MatchString(trackID) {
+		writeError(w, http.StatusNotFound, contracts.NotFound, "字幕轨道不存在")
+		return
+	}
+	if _, ok := a.authorize(w, r, token.TypeSubtitle, mediaID); !ok {
+		return
+	}
+	ctx := r.Context()
+	row, err := a.o.DB.SubtitleByTrackID(ctx, mediaID, trackID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, contracts.NotFound, "字幕轨道不存在（未就绪或已删除）")
+		return
+	}
+	if err != nil {
+		a.o.Logger.Error("查询字幕轨道失败", "err", err, "media_id", mediaID, "track_id", trackID)
+		writeError(w, http.StatusInternalServerError, contracts.Internal, "查询字幕失败")
+		return
+	}
+	body, err := a.o.Blob.Get(ctx, row.StorageKey)
+	if err != nil {
+		writeError(w, http.StatusNotFound, contracts.NotFound, "字幕文件不存在（可能已被清理）")
+		return
+	}
+	w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store") // 与清单 / 密钥同纪律（ADR-0006 §5）
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
 // ---- 鉴权 / 校验辅助 ----
 
 /**
@@ -687,12 +791,6 @@ func writePlaylist(w http.ResponseWriter, text string) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(text))
-}
-
-func notImplemented(message string) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
-		writeError(w, http.StatusNotImplemented, contracts.NotImplemented, message)
-	}
 }
 
 /**

@@ -1,6 +1,12 @@
-# 分支详情页手动触发按钮（event 对应 .cnb.yml 中 $ 下的 web_trigger 事件）
+# 分支详情页手动触发按钮（event 对应 .cnb.yml 中 $ 下的 web_trigger_* 事件键）
 branch:
   - buttons:
       - name: 构建开发环境镜像
         description: 构建 .ide/Dockerfile 并推送 docker.cnb.cool/arsrna/media/openvod/dev:latest
-        event: web_trigger
+        event: web_trigger_dev_image
+      - name: 构建delivery（Docker）
+        description: 构建 apps/delivery 镜像并推送到 CNB 制品库（ADR-0003 SCF 容器目标）
+        event: web_trigger_delivery_docker
+      - name: 构建delivery（Edgeone）
+        description: 交叉编译门禁 + edgeone makers deploy（需先配置 EDGEONE_PROJECT / EDGEONE_API_TOKEN）
+        event: web_trigger_delivery_edgeone

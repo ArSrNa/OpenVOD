@@ -32,6 +32,7 @@ OpenVOD：自建云点播系统（媒资 → 转码加密 → 元数据 / 字幕
 | `task build:admin` | 管理端生产构建（前置 `task db:generate`） |
 | `task build:delivery` | 分发端静态二进制 → `apps/delivery/bin/delivery` |
 | `task image:delivery` | 分发端镜像；SCF 仅 x86，必须显式 `--platform linux/amd64` |
+| `task build:edgeone` | 分发端 EdgeOne Cloud Functions 入口交叉编译门禁（与平台同款 GOOS/GOARCH） |
 | `bun apps/admin/scripts/create-admin.ts <email> <password≥8位> [名称]` | 创建本地管理员账号，要求目标库已建表 |
 | `bun run --cwd packages/db studio` | Prisma Studio 查看数据 |
 | `cd apps/delivery && golangci-lint run` | Go 静态检查（开发镜像已含，无 Task 封装） |
@@ -82,14 +83,14 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可轮换）
 
 ### 部署形态与硬约束（ADR-0003 / 0011）
 
-- delivery 同一份 Go 静态二进制的两个同级目标：EdgeOne Pages Cloud Functions（Go 1.26）或 SCF 容器；无内网依赖，数据库必须公网可达 + 强制 TLS。
+- delivery 同一份 Go 静态二进制的两个同级目标：EdgeOne Makers Cloud Functions（Go 1.26）或 SCF 容器；无内网依赖，数据库必须公网可达 + 强制 TLS。装配逻辑单点维护在 `apps/delivery/app`，两个入口只做 `app.Run()` 包装：`apps/delivery/main.go`（容器）与 `cloud-functions/index.go`（EdgeOne，文件名必须为 `index.go`，否则 URL 会多一层前缀）。部署细则见 `docs/vod/deploy-delivery.md`。
 - admin 为一个 Node 22 容器（`next build` + `next start`，UI/API 同源无 CORS）；worker 为 Bun 常驻容器。
 - P0 硬约束：转码禁止上任何函数；分片字节不经过函数；所有响应体 ≤6MB；SCF 镜像仅 x86。
 - 两应用共享一库一桶但独立发版；delivery 使用受限 DB 账号（约定表只读 + `playback_sessions` 读写），绝不能共用管理端全权账号；存储键前缀即隔离（`original/` 仅管理端写，布局见 `docs/vod/spec.md §1`）。
 
 ### 当前实现状态（scaffold 骨架）
 
-- `apps/delivery` 播放链路（M3）已实现：`internal/{config,contracts,server,token,auth,blob,mk,playback,store}`——login（bcrypt + ES256 JWT）、media 列表/详情、play（会话幂等 / 并发上限）、主 + 子清单改写、`/key`、local 驱动分片流式、字幕下发（`play` 附 typ=v 签名 URL；`.vtt` 按 `storage_key` 代理输出 `no-store`，spec.md §7.5）。未覆盖项见 `docs/vod/spec.md §6.6`。
+- `apps/delivery` 播放链路（M3）已实现：`internal/{config,contracts,server,token,auth,blob,mk,playback,store}` 与装配包 `app`——login（bcrypt + ES256 JWT）、media 列表/详情、play（会话幂等 / 并发上限）、主 + 子清单改写、`/key`、local 驱动分片流式、字幕下发（`play` 附 typ=v 签名 URL；`.vtt` 按 `storage_key` 代理输出 `no-store`，spec.md §7.5）。未覆盖项见 `docs/vod/spec.md §6.6`。
 - `apps/worker/src/index.ts` 的转码执行链已实现（ADR-0008：认领 → ffprobe → key_info → 转码 → 上传 → 写 `hls_keys`）。
 - `apps/admin` 的 `/api/auth/*`（better-auth）、`/healthz`、登录页与建号脚本可用；`/api/admin/*` 业务端点按里程碑逐条落地——已实现：媒资（上传 / 列表 / 详情 / 重命名 / 删除 / 预览 / 封面 / 元数据 / 产物 / 转码发起）、`/api/admin/templates`、`/api/admin/keys`（含 MK 轮换）、`/api/admin/jobs`（列表 + SSE + 停止 / 重启）、`/api/admin/stats`、`/api/admin/users`（播放端用户 CRUD + 重置口令 + 吊销会话，spec.md §2.1.1）、`/api/admin/media/{id}/subtitles`（字幕轨道 CRUD + 覆盖文本，spec.md §7）；其余路径仍由 `/api/admin/[...path]` 会话守卫后返回 501。
 

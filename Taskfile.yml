@@ -68,6 +68,12 @@ tasks:
     dir: apps/delivery
     cmds: [go build -trimpath -ldflags="-s -w" -o bin/delivery .]
 
+  build:edgeone:
+    desc: EdgeOne Cloud Functions 入口交叉编译门禁（ADR-0003，与平台构建同款 GOOS/GOARCH；含 replace ../apps/delivery 的解析）
+    dir: cloud-functions
+    cmds:
+      - GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null .
+
   image:delivery:
     desc: SCF 仅接受 x86，必须显式 --platform（ADR-0003）
     cmds:
@@ -88,4 +94,4 @@ tasks:
     cmds:
       - task: db:migrate
       - task: image:delivery
-      - echo 'TODO specification：推 TCR → admin/worker 滚动更新 → edgeone pages deploy → smoke'
+      - echo 'TODO specification：推 TCR → admin/worker 滚动更新 → edgeone makers deploy → smoke'

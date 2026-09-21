@@ -16,6 +16,53 @@
 
 读取位置：`apps/delivery/internal/config/config.go`（`config.Load()`，12-factor，ADR-0002）。
 
+### .env 格式（可直接复制）
+
+```dotenv
+# ==================== delivery（分发端） ====================
+# 监听地址（SCF Web 函数固定 :9000）
+DELIVERY_LISTEN=":9000"
+# 运行环境标识：dev | prod
+APP_ENV="dev"
+
+# 分发端接入库：仅支持 mysql://（受限账号：约定表只读 + playback_sessions 读写，ADR-0011）
+# 本地调试若为 127.0.0.1/localhost，./start-delivery.sh 会回退用 DATABASE_URL
+DELIVERY_DATABASE_URL="mysql://openvod_ro:changeit@127.0.0.1:3306/openvod"
+
+# 播放 URL 基址（清单 / 密钥 / 字幕 / local 分片）；生产填分发域名
+# 留空 = 回退 http://127.0.0.1:{DELIVERY_LISTEN 端口}；可被 system_settings.playback_base_url 运行时覆盖
+DELIVERY_PUBLIC_BASE_URL=""
+
+# 播放 token 的 HMAC 密钥（32 字节 hex，共 64 位；生成：openssl rand -hex 32）
+URL_SIGN_KEY_HEX="1111111111111111111111111111111111111111111111111111111111111111"
+# 播放 token 的 kid
+URL_SIGN_KEY_KID="urlsign-v1"
+
+# 主密钥 MK（格式 "版本:64位hex"，逗号分隔多版本轮换；生成：openssl rand -hex 32）
+# 必须与 admin / worker 完全一致，否则 CEK 无法解封（ADR-0006）
+MASTER_KEYS="1:0000000000000000000000000000000000000000000000000000000000000000"
+
+# 播放端 JWT（ES256）
+DELIVERY_JWT_ISSUER="openvod-delivery"
+DELIVERY_JWT_TTL_SEC="86400"          # JWT 有效期（秒），默认 24h
+PLAYBACK_SESSION_TTL_SEC="14400"      # 播放会话有效期（秒）
+PLAYBACK_MANIFEST_TTL_SEC="14400"     # 清单 token / 预签名有效期上限（token exp ≤ 会话 exp）
+PLAYBACK_SUBTITLE_TTL_SEC="86400"     # 字幕 token 有效期上限
+DELIVERY_CORS_ORIGINS="*"             # 允许跨域的源，逗号分隔；* = 全部
+
+# ---- 对象存储（与 admin / worker 同源命名，spec.md §1.5）----
+STORAGE_DRIVER="local"                # local | s3（函数形态必须 s3）
+STORAGE_ROOT_PREFIX=""                # 全局 root 前缀，空 = 桶 / 根目录顶层
+STORAGE_LOCAL_ROOT="./data/storage"   # local 驱动根目录
+S3_ENDPOINT=""                        # s3 时必填（COS: https://cos.<region>.myqcloud.com）
+S3_REGION=""                          # s3 时必填
+S3_BUCKET=""                          # s3 时必填
+S3_ACCESS_KEY_ID=""                   # s3 时必填
+S3_SECRET_ACCESS_KEY=""               # s3 时必填
+S3_FORCE_PATH_STYLE="true"            # MinIO 用 true；腾讯云 COS 必须显式 "false"
+STORAGE_CDN_BASE_URL=""               # 加速域名（仅替换 GET 预签名 URL 的 origin，可选）
+```
+
 | 变量 | 必填 | 默认 | 说明 |
 |---|---|---|---|
 | `DELIVERY_DATABASE_URL` | **是** | 无 | 分发端接入库。**仅支持 `mysql://`**（归一为 go-sql-driver DSN，自动补 `parseTime=true&loc=UTC&charset=utf8mb4`）。使用 ADR-0011 受限账号（约定表只读 + `playback_sessions` 读写）。本地调试 `./start-delivery.sh` 在该值为 127.0.0.1/localhost 时回退用 `DATABASE_URL` |
@@ -53,6 +100,41 @@
 `apps/worker/src/key-files.ts`（`DELIVERY_PUBLIC_BASE_URL`），DB 经 `@openvod/db`（`DATABASE_URL` / `DB_PROVIDER`），
 存储经 `@openvod/storage` 的 `createStorageFromEnv()`。
 
+### .env 格式（可直接复制）
+
+```dotenv
+# ==================== worker（转码 Worker） ====================
+# 数据库（Prisma）：生产 MySQL；开发 SQLite 写 "file:./dev.db"
+DATABASE_URL="mysql://openvod:changeit@127.0.0.1:3306/openvod"
+# Prisma 客户端方言：mysql | sqlite
+DB_PROVIDER="mysql"
+
+# 主密钥 MK（"版本:64位hex"，逗号分隔多版本）；加密任务前提，必须与 admin / delivery 一致
+MASTER_KEYS="1:0000000000000000000000000000000000000000000000000000000000000000"
+
+# 转码期写 key_info 的密钥 URI 占位基址（应与 delivery 同值；留空用内建占位）
+DELIVERY_PUBLIC_BASE_URL=""
+
+# ---- 队列认领（ADR-0008）----
+WORKER_POLL_INTERVAL_MS="2000"   # 轮询间隔（毫秒）
+WORKER_LEASE_MS="60000"          # 任务 lease 时长（执行期按 1/3 续期，崩溃后过期重派）
+WORKER_MAX_ATTEMPTS="3"          # 单任务最大尝试次数，超过判 FAILED
+
+# ---- 对象存储（与 admin / delivery 同源命名）----
+STORAGE_DRIVER="local"                # local | s3
+STORAGE_ROOT_PREFIX=""                # 全局 root 前缀，空 = 桶 / 根目录顶层
+STORAGE_LOCAL_ROOT="./data/storage"   # local 驱动根目录
+S3_ENDPOINT=""                        # s3 时必填
+S3_REGION=""                          # s3 时必填
+S3_BUCKET=""                          # s3 时必填
+S3_ACCESS_KEY_ID=""                   # s3 时必填
+S3_SECRET_ACCESS_KEY=""               # s3 时必填
+S3_FORCE_PATH_STYLE="true"            # MinIO 用 true；COS 必须显式 "false"
+STORAGE_CDN_BASE_URL=""               # 加速域名（可选）
+
+# 运行环境依赖（非环境变量）：必须安装 ffmpeg / ffprobe，缺失则 worker 启动即退出
+```
+
 | 变量 | 必填 | 默认 | 说明 |
 |---|---|---|---|
 | `DATABASE_URL` | **是** | 无 | Prisma 连接串（`packages/db/prisma` 的 `datasource.url = env("DATABASE_URL")`）。生产 MySQL，开发可 SQLite `file:./dev.db` |
@@ -84,6 +166,57 @@
 `apps/admin/src/lib/keys.ts` 与 `scripts/bootstrap-playback.ts`（`MASTER_KEYS`）、
 `apps/admin/src/lib/media.ts`（`MEDIA_ID_LENGTH`）、`apps/admin/src/lib/delivery-preview.ts`（分发端预览）、
 `apps/admin/src/lib/settings.ts`（`DELIVERY_PUBLIC_BASE_URL` 回退提示）；DB 经 `@openvod/db`。
+
+### .env 格式（可直接复制）
+
+```dotenv
+# ==================== admin（管理端） ====================
+# 数据库（Prisma）：生产 MySQL；开发 SQLite 写 "file:./dev.db"
+DATABASE_URL="mysql://openvod:changeit@127.0.0.1:3306/openvod"
+# Prisma 客户端方言：mysql | sqlite
+DB_PROVIDER="mysql"
+
+# better-auth 加密密钥（≥32 字符随机串；生成：openssl rand -base64 32）
+BETTER_AUTH_SECRET="please-generate-a-random-secret-min-32-chars"
+
+# 主密钥 MK（"版本:64位hex"，逗号分隔多版本）；/api/admin/keys 解封 CEK、MK 轮换、建 JWT 签名密钥
+# 必须与 delivery / worker 完全一致
+MASTER_KEYS="1:0000000000000000000000000000000000000000000000000000000000000000"
+
+# ---- 服务与鉴权 ----
+ADMIN_PORT="8787"                       # 监听端口（亦有 PORT 兜底）
+ADMIN_BASE_URL="http://localhost:8787"  # 对外基址（better-auth baseURL）；反代填外部地址，填错报 403 Invalid origin
+ADMIN_TRUSTED_ORIGINS=""                # 额外信任来源，逗号分隔（可选；裸域名展开为 http+https，支持通配符）
+ADMIN_SESSION_TTL_SEC="28800"           # 会话有效期（秒），默认 8h
+# CNB_VSCODE_PROXY_URI 由平台自动注入，检测到会覆盖上面两项，通常无需手配
+
+# ---- OIDC（可选；留空则仅本地邮箱密码登录）----
+OIDC_ISSUER="https://sso.example.com"   # discovery: {OIDC_ISSUER}/.well-known/openid-configuration
+OIDC_CLIENT_ID=""
+OIDC_CLIENT_SECRET=""
+# 回调固定为 /api/auth/callback/generic-oidc（在 IdP 处登记）
+
+# ---- 对象存储（与 delivery / worker 同源命名）----
+STORAGE_DRIVER="local"                # local | s3
+STORAGE_ROOT_PREFIX=""                # 全局 root 前缀，空 = 桶 / 根目录顶层
+STORAGE_LOCAL_ROOT="./data/storage"   # local 驱动根目录
+S3_ENDPOINT=""                        # s3 时必填
+S3_REGION=""                          # s3 时必填
+S3_BUCKET=""                          # s3 时必填
+S3_ACCESS_KEY_ID=""                   # s3 时必填
+S3_SECRET_ACCESS_KEY=""               # s3 时必填
+S3_FORCE_PATH_STYLE="true"            # MinIO 用 true；COS 必须显式 "false"
+STORAGE_CDN_BASE_URL=""               # 加速域名（原视频 / 封面 302、presign 分片 origin 替换，可选）
+
+# ---- 媒资与播放预览 ----
+MEDIA_ID_LENGTH="8"                              # 媒资数字 ID 位数（4–16，保留前导零）
+DELIVERY_BASE_URL="http://127.0.0.1:9000"        # 「产物 → 播放」预览调用的分发端地址
+DELIVERY_PREVIEW_USERNAME=""                     # 预览账号用户名（bootstrap-playback.ts 创建）；缺失则预览接口 501
+DELIVERY_PREVIEW_PASSWORD=""                     # 预览账号口令
+DELIVERY_PUBLIC_BASE_URL=""                      # /api/admin/settings 回退提示展示用（应与 delivery 同值）
+
+# 运行环境依赖（非环境变量）：生成元数据 /api/admin/media/{id}/metadata 需安装 ffprobe
+```
 
 | 变量 | 必填 | 默认 | 说明 |
 |---|---|---|---|

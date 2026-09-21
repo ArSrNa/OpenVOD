@@ -12,12 +12,46 @@
 
 .build-dev-image: &build-dev-image
   name: 构建并推送开发环境镜像
+  runner:
+    cpus: 32
   services:
     - docker
   stages:
     - name: buildx 构建并推送 dev 镜像
       script:
-        - docker buildx build --platform linux/amd64 --push -f .ide/Dockerfile -t docker.cnb.cool/arsrna/media/openvod/dev:latest .
+        - docker build -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/dev:latest -f .ide/Dockerfile . --push
+
+# 分发端镜像（ADR-0003：SCF 容器目标）
+# 构建上下文必须是 apps/delivery —— Dockerfile 的 COPY 路径相对该目录，用仓库根会找不到 go.mod。
+# 注意：SCF 仅接受 x86。构建机若为 arm64（或需强制对齐架构），把最后两条改成：
+#   docker buildx build --platform linux/amd64 --push -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:latest apps/delivery
+.build-delivery-image: &build-delivery-image
+  name: 构建并推送 delivery 镜像
+  runner:
+    cpus: 32
+  services:
+    - docker
+  stages:
+    - name: docker build delivery
+      script:
+        - cd apps/delivery
+        - docker build -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:latest . --push
+
+# 分发端 EdgeOne Cloud Functions（ADR-0003：与 SCF 容器同级的另一个目标）
+# 用开发镜像：已内置 Go 1.26 + Node + edgeone CLI —— edgeone makers deploy 会在本地交叉编译 Go 函数。
+# 变量值先留空：正式值走 CNB 密钥仓库 imports（或平台环境变量），不要写进仓库。
+.deploy-delivery-edgeone: &deploy-delivery-edgeone
+  name: 构建并部署 delivery 到 EdgeOne
+  runner:
+    cpus: 32
+  docker:
+    image: docker.cnb.cool/arsrna/media/openvod/dev:latest
+  stages:
+    - name: EdgeOne 入口交叉编译门禁
+      script: task build:edgeone
+    - name: edgeone makers deploy
+      imports: https://cnb.cool/arsrna/env/-/blob/main/tencent.yml
+      script: npx -y edgeone@latest makers deploy -n "openvod-delivery" -t "$EO_SECRET"
 
 # .env 注入：内容来自密钥仓库（.env 被 .gitignore，故不在代码仓内落盘）
 # 密钥仓库中存放 env.dev.yml，内含 OPENVOD_ENV_B64 = base64 -w 0 < .env
@@ -42,5 +76,10 @@ $:
       stages:
         - <<: *environ
         - <<: *install
-  web_trigger:
+  # 每个 web_trigger_* 键对应 .cnb/web_trigger.yml 里 event 同名的按钮
+  web_trigger_dev_image:
     - <<: *build-dev-image
+  web_trigger_delivery_docker:
+    - <<: *build-delivery-image
+  web_trigger_delivery_edgeone:
+    - <<: *deploy-delivery-edgeone

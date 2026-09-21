@@ -1,0 +1,12 @@
+{
+  "installCommand": "echo 'EdgeOne 侧只有 Go 函数，无需 npm 依赖（TS 侧构建由 CNB 负责）'",
+  "buildCommand": "echo 'Go 函数由 Makers 交叉编译，项目级无需额外构建命令'",
+  "outputDirectory": "public",
+  "cloudFunctions": {
+    "maxDuration": 120,
+    "regions": {
+      "mainland": ["ap-guangzhou"],
+      "overseas": ["ap-singapore"]
+    }
+  }
+}

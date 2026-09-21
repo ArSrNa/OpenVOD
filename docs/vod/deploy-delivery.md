@@ -64,27 +64,36 @@ npx edgeone makers deploy -n <project> -t $EDGEONE_API_TOKEN
 
 ## CNB 一键构建（web_trigger 按钮）
 
-分支详情页有三个按钮，`.cnb/web_trigger.yml` 的 `event` 与 `.cnb.yml` 中 `$` 下的 `web_trigger_*` 键同名对应：
+分支详情页共五个按钮，`.cnb/web_trigger.yml` 的 `event` 与 `.cnb.yml` 中 `$` 下的 `web_trigger_*` 键**同名**对应。
+分发端相关两个：
 
 | 按钮 | 事件键 | 动作 |
 |---|---|---|
-| 构建开发环境镜像 | `web_trigger_dev_image` | `buildx` 构建并推送 `.ide/Dockerfile` |
-| **构建delivery（Docker）** | `web_trigger_delivery_docker` | `cd apps/delivery && docker build` → `docker push` `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:latest` |
+| **构建delivery（Docker）** | `web_trigger_delivery_docker` | `cd apps/delivery && docker build -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:latest . --push` |
 | **构建delivery（Edgeone）** | `web_trigger_delivery_edgeone` | `task build:edgeone` 门禁 → `npx edgeone@latest makers deploy` |
+
+（其余三个：开发环境镜像、admin、worker —— 见 [deploy-apps.md](./deploy-apps.md)。）
 
 两处容易踩的点：
 
 - **Docker 构建的上下文必须是 `apps/delivery`**（Dockerfile 的 `COPY go.mod go.sum* ./` 相对该目录）。
   用仓库根作上下文会找不到 `go.mod`——所以脚本里先 `cd apps/delivery`，不能用 `docker build ... .` 直接打仓库根。
+  （admin / worker 相反，上下文就是仓库根，用 `-f` 指 Dockerfile。）
 - **架构**：SCF 仅接受 x86。流水线用的是默认 amd64 构建机，`docker build` 产出的就是 amd64；
   若换到 arm64 构建机，改用 `docker buildx build --platform linux/amd64 --push`（`.cnb.yml` 里已留注释）。
 
-EdgeOne 按钮的两个变量**值先留空**，正式值走 CNB 密钥仓库 `imports`（与现有 `env.dev.yml` 同机制）或平台环境变量，不要写进仓库：
+### EdgeOne 按钮的凭据与项目名
 
-| 变量 | 说明 |
-|---|---|
-| `EDGEONE_PROJECT` | Makers 控制台的项目名 |
-| `EDGEONE_API_TOKEN` | Makers 控制台生成的 API Token |
+API Token 走 **stage 级 `imports`** 引密钥仓库（只对该 stage 生效，作用域最小）：
+
+```yaml
+- name: edgeone makers deploy
+  imports: https://cnb.cool/arsrna/env/-/blob/main/tencent.yml   # 提供 EO_SECRET
+  script: npx -y edgeone@latest makers deploy -n "openvod-delivery" -t "$EO_SECRET"
+```
+
+项目名在脚本里写死为 `openvod-delivery`（首次部署时由 CLI 在 global 区自动创建）。
+**密钥一律不进仓库**：改凭据只改密钥仓库的 `tencent.yml`。
 
 ## 平台实测结论（2026-09-22 首次部署）
 

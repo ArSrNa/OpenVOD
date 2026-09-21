@@ -1,0 +1,39 @@
+# 构建上下文裁剪（admin / worker 镜像的上下文是仓库根，见 docs/vod/deploy-apps.md）
+# delivery 镜像上下文是 apps/delivery，不读本文件。
+
+# 依赖与构建产物一律在镜像内重建
+**/node_modules
+**/.next
+**/dist
+**/*.tsbuildinfo
+
+# Prisma 生成物：镜像内跑 generate（两份客户端缺一不可）
+packages/db/generated
+packages/db/prisma/*.db
+packages/db/prisma/*.db-journal
+
+# EdgeOne 构建用的自包含源码副本（task edgeone:prepare 生成）
+cloud-functions/openvod
+
+# 密钥与运行时数据：绝不进镜像
+.env
+.env.*
+!.env.example
+.run
+data
+tmp
+*.log
+
+# 与镜像无关的内容
+.git
+.ide
+.vscode
+.trae
+.claude
+.agents
+.codebuddy
+docs
+videos
+cloud-functions
+public
+edgeone.json

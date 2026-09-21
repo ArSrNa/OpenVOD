@@ -88,6 +88,16 @@ tasks:
     cmds:
       - docker buildx build --platform linux/amd64 -t openvod-delivery:latest apps/delivery
 
+  image:admin:
+    desc: 管理端镜像（Next.js 全栈单容器，ADR-0013；构建上下文=仓库根）
+    cmds:
+      - docker build -f apps/admin/Dockerfile -t openvod-admin:latest .
+
+  image:worker:
+    desc: 转码 Worker 镜像（Bun 常驻 + ffmpeg/ffprobe，ADR-0008；构建上下文=仓库根）
+    cmds:
+      - docker build -f apps/worker/Dockerfile -t openvod-worker:latest .
+
   test:
     cmds:
       - bun test

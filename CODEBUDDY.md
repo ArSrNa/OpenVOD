@@ -32,6 +32,7 @@ OpenVOD：自建云点播系统（媒资 → 转码加密 → 元数据 / 字幕
 | `task build:admin` | 管理端生产构建（前置 `task db:generate`） |
 | `task build:delivery` | 分发端静态二进制 → `apps/delivery/bin/delivery` |
 | `task image:delivery` | 分发端镜像；SCF 仅 x86，必须显式 `--platform linux/amd64` |
+| `task image:admin` / `task image:worker` | 管理端 / Worker 镜像；构建上下文是**仓库根**（workspace 包 + Prisma 生成物在镜像内重建） |
 | `task build:edgeone` | 分发端 EdgeOne Cloud Functions 入口交叉编译门禁（与平台同款 GOOS/GOARCH） |
 | `bun apps/admin/scripts/create-admin.ts <email> <password≥8位> [名称]` | 创建本地管理员账号，要求目标库已建表 |
 | `bun run --cwd packages/db studio` | Prisma Studio 查看数据 |

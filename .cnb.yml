@@ -53,6 +53,32 @@
       imports: https://cnb.cool/arsrna/env/-/blob/main/tencent.yml
       script: npx -y edgeone@latest makers deploy -n "openvod-delivery" -t "$EO_SECRET"
 
+# 管理端 admin 镜像（ADR-0003 / ADR-0013：Next.js 全栈单容器，UI + API 同源）
+# 构建上下文是**仓库根**：admin 经 transpilePackages 直接消费 workspace 的 TS 源码包。
+.build-admin-image: &build-admin-image
+  name: 构建并推送 admin 镜像
+  runner:
+    cpus: 32
+  services:
+    - docker
+  stages:
+    - name: docker build admin
+      script:
+        - docker build -f apps/admin/Dockerfile -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/admin:latest . --push
+
+# 转码 Worker 镜像（ADR-0003 / ADR-0008：Bun 常驻容器；P0 转码禁止上函数）
+# 构建上下文同为仓库根；镜像内含 ffmpeg/ffprobe（worker 启动自检的必需项）。
+.build-worker-image: &build-worker-image
+  name: 构建并推送 worker 镜像
+  runner:
+    cpus: 32
+  services:
+    - docker
+  stages:
+    - name: docker build worker
+      script:
+        - docker build -f apps/worker/Dockerfile -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/worker:latest . --push
+
 # .env 注入：内容来自密钥仓库（.env 被 .gitignore，故不在代码仓内落盘）
 # 密钥仓库中存放 env.dev.yml，内含 OPENVOD_ENV_B64 = base64 -w 0 < .env
 .environ: &environ
@@ -83,3 +109,7 @@ $:
     - <<: *build-delivery-image
   web_trigger_delivery_edgeone:
     - <<: *deploy-delivery-edgeone
+  web_trigger_admin_docker:
+    - <<: *build-admin-image
+  web_trigger_worker_docker:
+    - <<: *build-worker-image

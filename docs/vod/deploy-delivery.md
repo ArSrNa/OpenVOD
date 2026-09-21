@@ -86,16 +86,41 @@ EdgeOne 按钮的两个变量**值先留空**，正式值走 CNB 密钥仓库 `i
 | `EDGEONE_PROJECT` | Makers 控制台的项目名 |
 | `EDGEONE_API_TOKEN` | Makers 控制台生成的 API Token |
 
-## 首次部署待实测项
+## 平台实测结论（2026-09-22 首次部署）
 
-以下三点官方文档没有明确，属本项目首次上线时必须实测确认的项：
+| 假设 | 实测结论 |
+|---|---|
+| 构建是否**原地**编译 | **否**。Go builder 把 `cloud-functions/` 拷到隔离目录后再 `go mod tidy` + `go build`（只带该目录内容）。`replace ../apps/delivery` 直接报 `replacement directory ../apps/delivery does not exist` |
+| `installCommand` / `buildCommand` 置 no-op | 无影响：两条命令都按配置执行，之后 Go builder 正常启动；根 `package.json` 无 `build` 脚本也不会被误触发 |
+| `outputDirectory: public` | 正常：静态产物走 `.edgeone/assets`，不会把 monorepo 当静态资源发布 |
+| `edgeone.json` 字段 | 首次部署报三个 DEPRECATED，已迁移：`cloudFunctions.go.maxDuration` → `cloudFunctions.maxDuration`；`mainlandRegions` / `overseasRegions` → `cloudFunctions.regions.{mainland,overseas}` |
 
-1. **构建沙箱是否原地编译**。`cloud-functions/go.mod` 通过 `replace openvod/apps/delivery => ../apps/delivery`
-   复用 `apps/delivery` 源码（Go 的 `internal` 规则 + N 个包要单点维护，这是唯一不自相矛盾的布局）。
-   若平台只把 `cloud-functions/` 拷进隔离目录构建，`../` 会失效——退路是在该目录执行
-   `go mod vendor`（会把 replace 目标源码一并收进 `vendor/`），代价是仓库体积。
-2. **`installCommand` / `buildCommand` 置 no-op 是否影响函数构建**。若平台未构建 Go 函数，删掉这两个字段再试
-   （风险是根 `package.json` 无 `build` 脚本 → 默认 `npm run build` 失败）。
-3. **`no-store` 在边缘的行为**。函数响应正常不应被缓存，但 P0 纪律要求以真实域名验证：
-   清单与密钥响应必须 `Cache-Control: no-store` 且不进任何边缘缓存（对应 CI 门禁 `assert-no-store`）。
-   同时用无签名请求打加速域名，断言 403（`assert-unsigned-403`）。
+### 由此确定的布局：cloud-functions 必须自包含
+
+因为构建在隔离目录进行，EdgeOne 侧需要的 Go 源码**必须全部位于 `cloud-functions/` 内部**。
+`internal` 规则 + 单点维护源码这两条约束下，做法是构建前把 `apps/delivery` 同步进去：
+
+```bash
+task edgeone:prepare     # apps/delivery → cloud-functions/openvod/apps/delivery（生成物，.gitignore 忽略）
+```
+
+`cloud-functions/go.mod` 的 `replace openvod/apps/delivery => ./openvod/apps/delivery` 指向该副本，
+所以**本地或 CI 里直接 `edgeone makers deploy` 之前必须先跑 `edgeone:prepare`**。
+`task build:edgeone` 已把它设为 `deps`（CNB 按钮里的门禁 stage 就是这个 task，同一 job 内产物延续到 deploy stage）。
+
+> **推论：不要给 Makers 项目配 Git 自动部署。** 副本是生成物、不入库，Makers 拉 Git 仓库构建时
+> `cloud-functions/openvod/` 不存在，必然复现 `replacement directory ... does not exist`。
+> 发布入口统一走 CNB 的 edgeone 按钮（或任何先执行 `task edgeone:prepare` 的流水线）。
+
+### 仍未验证
+
+**`no-store` 在边缘的行为**。函数响应正常不应被缓存，但 P0 纪律要求以真实域名验证：
+清单与密钥响应必须 `Cache-Control: no-store` 且不进任何边缘缓存（对应 CI 门禁 `assert-no-store`）；
+同时用无签名请求打加速域名，断言 403（`assert-unsigned-403`）。
+
+### 另一个部署前置：函数环境变量
+
+`edgeone makers deploy` 会从控制台拉取环境变量（首次部署日志里的 `No environment variables found`）。
+delivery 运行所需的 `DELIVERY_DATABASE_URL` / `DELIVERY_PUBLIC_BASE_URL` / `URL_SIGN_KEY_HEX` /
+`MASTER_KEYS` / `STORAGE_DRIVER` + `S3_*` 等，必须在 **Makers 控制台按环境（生产 / 预览）配置**，
+否则函数实例启动即 `config` 校验失败。

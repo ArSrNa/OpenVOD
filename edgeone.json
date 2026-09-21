@@ -3,10 +3,10 @@
   "buildCommand": "echo 'Go 函数由 Makers 交叉编译，项目级无需额外构建命令'",
   "outputDirectory": "public",
   "cloudFunctions": {
-    "go": {
-      "maxDuration": 120
-    },
-    "mainlandRegions": ["ap-guangzhou"],
-    "overseasRegions": ["ap-singapore"]
+    "maxDuration": 120,
+    "regions": {
+      "mainland": ["ap-guangzhou"],
+      "overseas": ["ap-singapore"]
+    }
   }
 }

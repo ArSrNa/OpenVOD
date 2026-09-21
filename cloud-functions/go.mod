@@ -30,4 +30,8 @@ require (
 	golang.org/x/crypto v0.55.0 // indirect
 )
 
-replace openvod/apps/delivery => ../apps/delivery
+// 必须指向本目录内部：EdgeOne 的 Go builder 会把 cloud-functions/ 拷到隔离目录后再执行
+// go mod tidy + go build，任何指向上级的 replace（如 ../apps/delivery）都会报
+// "replacement directory ../apps/delivery does not exist"（2026-09-22 实测）。
+// ./openvod/apps/delivery 由 task edgeone:prepare 从 apps/delivery 同步而来（生成物，不入库）。
+replace openvod/apps/delivery => ./openvod/apps/delivery

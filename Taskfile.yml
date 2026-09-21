@@ -68,8 +68,17 @@ tasks:
     dir: apps/delivery
     cmds: [go build -trimpath -ldflags="-s -w" -o bin/delivery .]
 
+  edgeone:prepare:
+    desc: 把 apps/delivery 同步进 cloud-functions/（EdgeOne 在隔离目录构建，replace 只能指向目录内部）
+    cmds:
+      - rm -rf cloud-functions/openvod
+      - mkdir -p cloud-functions/openvod/apps
+      - cp -a apps/delivery cloud-functions/openvod/apps/delivery
+      - rm -rf cloud-functions/openvod/apps/delivery/bin
+
   build:edgeone:
-    desc: EdgeOne Cloud Functions 入口交叉编译门禁（ADR-0003，与平台构建同款 GOOS/GOARCH；含 replace ../apps/delivery 的解析）
+    desc: EdgeOne Cloud Functions 入口交叉编译门禁（ADR-0003，与平台构建同款 GOOS/GOARCH；先做 edgeone:prepare）
+    deps: [edgeone:prepare]
     dir: cloud-functions
     cmds:
       - GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null .

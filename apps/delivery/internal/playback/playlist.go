@@ -3,7 +3,7 @@
 // 分发时必须整体替换为：
 //   - 子清单：分发端 /manifest/... URL（typ=m token + tpl）
 //   - 密钥：分发端 /key URL（typ=k token）——播放器据此拿到 16B CEK 本地解密
-//   - 分片：local 驱动=分发端 /local/... URL（typ=s token）；s3 驱动=预签名直出 URL（字节不经过函数）
+//   - 分片：S3 预签名直出 URL（字节不经过分发端，ADR-0005）
 //
 // 本包为纯函数（无 IO），URL 构造由调用方注入，便于单测。
 package playback

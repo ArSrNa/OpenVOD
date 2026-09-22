@@ -64,7 +64,7 @@ export function SettingsManager() {
                 <Form.Item
                     label="播放域名"
                     name="playback_base_url"
-                    extra={`清单 / 密钥 / 字幕 / local 分片 URL 的基址，覆盖环境变量 DELIVERY_PUBLIC_BASE_URL${envBase ? `（当前：${envBase}）` : ""}；分发端 60s 缓存读取，保存后约 1 分钟内生效（s3 分片为预签名直出，走存储端点 / 加速域名）`}
+                    extra={`清单 / 密钥 / 字幕 URL 的基址，覆盖环境变量 DELIVERY_PUBLIC_BASE_URL${envBase ? `（当前：${envBase}）` : ""}；分发端 60s 缓存读取，保存后约 1 分钟内生效（分片为预签名直出，走存储端点 / 加速域名）`}
                     rules={[
                         {
                             validator: (_, value: string) =>
@@ -88,7 +88,7 @@ export function SettingsManager() {
                 message="播放链路说明"
                 description={
                     <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-                        s3 形态分片由分发端按对象存储端点直接预签名（可配 STORAGE_CDN_BASE_URL 换加速域名），浏览器直连拉取、字节不经过分发端（ADR-0005 修订）；本域名作用于清单（typ=m）、密钥（typ=k）、字幕与 local 分片。播放鉴权全走 URL 签名 token，改域名不影响令牌有效性。
+                        分片由分发端按对象存储端点直接预签名（可配 STORAGE_CDN_BASE_URL 换加速域名），浏览器直连拉取、字节不经过分发端（ADR-0005 修订）；本域名作用于清单（typ=m）、密钥（typ=k）与字幕。播放鉴权全走 URL 签名 token，改域名不影响令牌有效性。
                     </Typography.Text>
                 }
             />

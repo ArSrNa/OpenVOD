@@ -11,10 +11,9 @@ import (
 )
 
 // StorageConfig 对象存储配置（env 命名与 packages/storage 的 from-env 对齐，spec.md §1.5）
+// 2026-09-22 修订（ADR-0005）：仅 S3 兼容存储，local 驱动已移除。
 type StorageConfig struct {
-	Driver          string // local | s3
-	RootPrefix      string // STORAGE_ROOT_PREFIX（空 = 桶/根目录顶层）
-	LocalRoot       string // local 驱动根目录
+	RootPrefix      string // STORAGE_ROOT_PREFIX（空 = 桶顶层）
 	Endpoint        string
 	Region          string
 	Bucket          string
@@ -31,7 +30,7 @@ type Config struct {
 	Listen      string
 	DatabaseURL string // go-sql-driver DSN（由 DELIVERY_DATABASE_URL 归一，见 ParseDatabaseURL）
 
-	// 资源 URL 基址：拼清单 / 密钥 / 字幕 / local 分片 URL（ADR-0006 §3）。
+	// 资源 URL 基址：拼清单 / 密钥 / 字幕 URL（ADR-0006 §3）。
 	// 运行时可被 system_settings.playback_base_url 覆盖（分发端 60s 缓存读取，env 兜底）。
 	PublicBaseURL string
 
@@ -116,9 +115,7 @@ func Load() (*Config, error) {
 	}
 
 	cfg.Storage = StorageConfig{
-		Driver:          getEnv("STORAGE_DRIVER", "local"),
 		RootPrefix:      os.Getenv("STORAGE_ROOT_PREFIX"),
-		LocalRoot:       getEnv("STORAGE_LOCAL_ROOT", "./data/storage"),
 		Endpoint:        os.Getenv("S3_ENDPOINT"),
 		Region:          os.Getenv("S3_REGION"),
 		Bucket:          os.Getenv("S3_BUCKET"),
@@ -128,10 +125,8 @@ func Load() (*Config, error) {
 		ForcePathStyle: strings.ToLower(getEnv("S3_FORCE_PATH_STYLE", "true")) != "false",
 		CDNBaseURL:     strings.TrimRight(strings.TrimSpace(os.Getenv("STORAGE_CDN_BASE_URL")), "/"),
 	}
-	if cfg.Storage.Driver == "s3" {
-		if cfg.Storage.Bucket == "" || cfg.Storage.AccessKeyID == "" || cfg.Storage.SecretAccessKey == "" {
-			return nil, fmt.Errorf("STORAGE_DRIVER=s3 需要 S3_BUCKET / S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY")
-		}
+	if cfg.Storage.Bucket == "" || cfg.Storage.AccessKeyID == "" || cfg.Storage.SecretAccessKey == "" {
+		return nil, fmt.Errorf("S3 存储未配置完整（需要 S3_BUCKET / S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY）")
 	}
 
 	return cfg, nil

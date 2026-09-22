@@ -29,7 +29,7 @@ APP_ENV="dev"
 # 本地调试若为 127.0.0.1/localhost，./start-delivery.sh 会回退用 DATABASE_URL
 DELIVERY_DATABASE_URL="mysql://openvod_ro:changeit@127.0.0.1:3306/openvod"
 
-# 播放 URL 基址（清单 / 密钥 / 字幕 / local 分片）；生产填分发域名
+# 播放 URL 基址（清单 / 密钥 / 字幕）；生产填分发域名
 # 留空 = 回退 http://127.0.0.1:{DELIVERY_LISTEN 端口}；可被 system_settings.playback_base_url 运行时覆盖
 DELIVERY_PUBLIC_BASE_URL=""
 
@@ -50,15 +50,13 @@ PLAYBACK_MANIFEST_TTL_SEC="14400"     # 清单 token / 预签名有效期上限�
 PLAYBACK_SUBTITLE_TTL_SEC="86400"     # 字幕 token 有效期上限
 DELIVERY_CORS_ORIGINS="*"             # 允许跨域的源，逗号分隔；* = 全部
 
-# ---- 对象存储（与 admin / worker 同源命名，spec.md §1.5）----
-STORAGE_DRIVER="local"                # local | s3（函数形态必须 s3）
-STORAGE_ROOT_PREFIX=""                # 全局 root 前缀，空 = 桶 / 根目录顶层
-STORAGE_LOCAL_ROOT="./data/storage"   # local 驱动根目录
-S3_ENDPOINT=""                        # s3 时必填（COS: https://cos.<region>.myqcloud.com）
-S3_REGION=""                          # s3 时必填
-S3_BUCKET=""                          # s3 时必填
-S3_ACCESS_KEY_ID=""                   # s3 时必填
-S3_SECRET_ACCESS_KEY=""               # s3 时必填
+# ---- 对象存储（S3 兼容：COS / MinIO 等；ADR-0005 2026-09-22 修订：仅 S3，local 驱动已移除）----
+STORAGE_ROOT_PREFIX=""                # 全局 root 前缀，空 = 桶顶层
+S3_ENDPOINT=""                        # 必填（COS: https://cos.<region>.myqcloud.com）
+S3_REGION=""                          # 必填
+S3_BUCKET=""                          # 必填
+S3_ACCESS_KEY_ID=""                   # 必填
+S3_SECRET_ACCESS_KEY=""               # 必填
 S3_FORCE_PATH_STYLE="true"            # MinIO 用 true；腾讯云 COS 必须显式 "false"
 STORAGE_CDN_BASE_URL=""               # 加速域名（仅替换 GET 预签名 URL 的 origin，可选）
 ```
@@ -69,7 +67,7 @@ STORAGE_CDN_BASE_URL=""               # 加速域名（仅替换 GET 预签名 U
 | `URL_SIGN_KEY_HEX` | **是** | 无 | 播放 token 的 HMAC 密钥，64 位 hex（32B）。非法 / 缺失直接启动失败 |
 | `MASTER_KEYS` | **是** | 无 | `"版本:64位hex"`，逗号分隔多版本。用于解封 CEK 与 JWT 私钥（ADR-0006） |
 | `DELIVERY_LISTEN` | 否 | `:9000` | 监听地址（SCF Web 函数固定 9000） |
-| `DELIVERY_PUBLIC_BASE_URL` | 否 | 空 → `http://127.0.0.1:{端口}` | 播放 URL 基址（清单 / 密钥 / 字幕 / local 分片）。生产填分发域名；运行时可被 `system_settings.playback_base_url` 覆盖（60s 缓存） |
+| `DELIVERY_PUBLIC_BASE_URL` | 否 | 空 → `http://127.0.0.1:{端口}` | 播放 URL 基址（清单 / 密钥 / 字幕）。生产填分发域名；运行时可被 `system_settings.playback_base_url` 覆盖（60s 缓存） |
 | `URL_SIGN_KEY_KID` | 否 | `urlsign-v1` | 播放 token 的 `kid` |
 | `DELIVERY_JWT_ISSUER` | 否 | `openvod-delivery` | 播放端 JWT 的 `iss` |
 | `DELIVERY_JWT_TTL_SEC` | 否 | `86400` | JWT 有效期（ADR-0007：默认 24h，无 refresh） |
@@ -78,14 +76,12 @@ STORAGE_CDN_BASE_URL=""               # 加速域名（仅替换 GET 预签名 U
 | `PLAYBACK_SUBTITLE_TTL_SEC` | 否 | `86400` | 字幕 token 有效期上限（实际 exp 取与会话 exp 较小值） |
 | `DELIVERY_CORS_ORIGINS` | 否 | `*` | 允许跨域的源（管理端预览用；逗号分隔） |
 | `APP_ENV` | 否 | `dev` | 运行环境标识 |
-| `STORAGE_DRIVER` | 否 | `local` | `local` \| `s3`。**函数形态不能用 `local`**（无共享卷 + 6MB 响应体上限） |
-| `STORAGE_ROOT_PREFIX` | 否 | 空 | 全局 root 前缀（spec.md §1.1），空 = 桶 / 根目录顶层 |
-| `STORAGE_LOCAL_ROOT` | 否 | `./data/storage` | local 驱动根目录 |
-| `S3_ENDPOINT` | `s3` 时必填 | 空 | S3 兼容端点（COS / MinIO） |
-| `S3_REGION` | `s3` 时必填 | 空 | 区域 |
-| `S3_BUCKET` | `s3` 时必填 | 空 | 桶名 |
-| `S3_ACCESS_KEY_ID` | `s3` 时必填 | 空 | 访问密钥 ID |
-| `S3_SECRET_ACCESS_KEY` | `s3` 时必填 | 空 | 访问密钥 |
+| `STORAGE_ROOT_PREFIX` | 否 | 空 | 全局 root 前缀（spec.md §1.1），空 = 桶顶层 |
+| `S3_ENDPOINT` | **是** | 空 | S3 兼容端点（COS / MinIO） |
+| `S3_REGION` | **是** | 空 | 区域 |
+| `S3_BUCKET` | **是** | 空 | 桶名 |
+| `S3_ACCESS_KEY_ID` | **是** | 空 | 访问密钥 ID |
+| `S3_SECRET_ACCESS_KEY` | **是** | 空 | 访问密钥 |
 | `S3_FORCE_PATH_STYLE` | 否 | `true` | 寻址风格。**腾讯云 COS 必须显式 `false`**（virtual-hosted-style）；MinIO 保持 `true` |
 | `STORAGE_CDN_BASE_URL` | 否 | 空 | 对象存储加速域名（ADR-0005），仅替换 GET 预签名 URL 的 origin |
 
@@ -120,15 +116,13 @@ WORKER_POLL_INTERVAL_MS="2000"   # 轮询间隔（毫秒）
 WORKER_LEASE_MS="60000"          # 任务 lease 时长（执行期按 1/3 续期，崩溃后过期重派）
 WORKER_MAX_ATTEMPTS="3"          # 单任务最大尝试次数，超过判 FAILED
 
-# ---- 对象存储（与 admin / delivery 同源命名）----
-STORAGE_DRIVER="local"                # local | s3
-STORAGE_ROOT_PREFIX=""                # 全局 root 前缀，空 = 桶 / 根目录顶层
-STORAGE_LOCAL_ROOT="./data/storage"   # local 驱动根目录
-S3_ENDPOINT=""                        # s3 时必填
-S3_REGION=""                          # s3 时必填
-S3_BUCKET=""                          # s3 时必填
-S3_ACCESS_KEY_ID=""                   # s3 时必填
-S3_SECRET_ACCESS_KEY=""               # s3 时必填
+# ---- 对象存储（S3 兼容：COS / MinIO 等；仅 S3，local 驱动已移除）----
+STORAGE_ROOT_PREFIX=""                # 全局 root 前缀，空 = 桶顶层
+S3_ENDPOINT=""                        # 必填
+S3_REGION=""                          # 必填
+S3_BUCKET=""                          # 必填
+S3_ACCESS_KEY_ID=""                   # 必填
+S3_SECRET_ACCESS_KEY=""               # 必填
 S3_FORCE_PATH_STYLE="true"            # MinIO 用 true；COS 必须显式 "false"
 STORAGE_CDN_BASE_URL=""               # 加速域名（可选）
 
@@ -144,14 +138,12 @@ STORAGE_CDN_BASE_URL=""               # 加速域名（可选）
 | `WORKER_POLL_INTERVAL_MS` | 否 | `2000` | 轮询认领间隔（毫秒） |
 | `WORKER_LEASE_MS` | 否 | `60000` | 任务 lease 时长；执行期按 1/3 续期，崩溃后 lease 过期即重派（ADR-0008） |
 | `WORKER_MAX_ATTEMPTS` | 否 | `3` | 单任务最大尝试次数，超过判 `FAILED`，防崩溃循环 |
-| `STORAGE_DRIVER` | 否 | `local` | `local` \| `s3`（`createStorageFromEnv`） |
 | `STORAGE_ROOT_PREFIX` | 否 | 空 | 全局 root 前缀（spec.md §1.1） |
-| `STORAGE_LOCAL_ROOT` | 否 | `./data/storage` | local 驱动根目录 |
-| `S3_ENDPOINT` | `s3` 时必填 | 空 | S3 兼容端点 |
-| `S3_REGION` | `s3` 时必填 | 空 | 区域 |
-| `S3_BUCKET` | `s3` 时必填 | 空 | 桶名 |
-| `S3_ACCESS_KEY_ID` | `s3` 时必填 | 空 | 访问密钥 ID |
-| `S3_SECRET_ACCESS_KEY` | `s3` 时必填 | 空 | 访问密钥 |
+| `S3_ENDPOINT` | **是** | 空 | S3 兼容端点 |
+| `S3_REGION` | **是** | 空 | 区域 |
+| `S3_BUCKET` | **是** | 空 | 桶名 |
+| `S3_ACCESS_KEY_ID` | **是** | 空 | 访问密钥 ID |
+| `S3_SECRET_ACCESS_KEY` | **是** | 空 | 访问密钥 |
 | `S3_FORCE_PATH_STYLE` | 否 | `true` | 同 delivery；COS 需 `false` |
 | `STORAGE_CDN_BASE_URL` | 否 | 空 | 加速域名（GET 预签名 origin 替换） |
 
@@ -196,15 +188,13 @@ OIDC_CLIENT_ID=""
 OIDC_CLIENT_SECRET=""
 # 回调固定为 /api/auth/callback/generic-oidc（在 IdP 处登记）
 
-# ---- 对象存储（与 delivery / worker 同源命名）----
-STORAGE_DRIVER="local"                # local | s3
-STORAGE_ROOT_PREFIX=""                # 全局 root 前缀，空 = 桶 / 根目录顶层
-STORAGE_LOCAL_ROOT="./data/storage"   # local 驱动根目录
-S3_ENDPOINT=""                        # s3 时必填
-S3_REGION=""                          # s3 时必填
-S3_BUCKET=""                          # s3 时必填
-S3_ACCESS_KEY_ID=""                   # s3 时必填
-S3_SECRET_ACCESS_KEY=""               # s3 时必填
+# ---- 对象存储（S3 兼容：COS / MinIO 等；仅 S3，local 驱动已移除）----
+STORAGE_ROOT_PREFIX=""                # 全局 root 前缀，空 = 桶顶层
+S3_ENDPOINT=""                        # 必填
+S3_REGION=""                          # 必填
+S3_BUCKET=""                          # 必填
+S3_ACCESS_KEY_ID=""                   # 必填
+S3_SECRET_ACCESS_KEY=""               # 必填
 S3_FORCE_PATH_STYLE="true"            # MinIO 用 true；COS 必须显式 "false"
 STORAGE_CDN_BASE_URL=""               # 加速域名（原视频 / 封面 302、presign 分片 origin 替换，可选）
 
@@ -232,14 +222,12 @@ DELIVERY_PUBLIC_BASE_URL=""                      # /api/admin/settings 回退提
 | `OIDC_CLIENT_ID` | OIDC 时必填 | 空 | OIDC 客户端 ID |
 | `OIDC_CLIENT_SECRET` | OIDC 时必填 | 空 | OIDC 客户端密钥 |
 | `CNB_VSCODE_PROXY_URI` | 否 | 由平台注入 | CNB 云原生开发环境变量；检测到即以它覆盖 `ADMIN_BASE_URL` / `ADMIN_TRUSTED_ORIGINS`（**无需手工配置**） |
-| `STORAGE_DRIVER` | 否 | `local` | `local` \| `s3` |
 | `STORAGE_ROOT_PREFIX` | 否 | 空 | 全局 root 前缀 |
-| `STORAGE_LOCAL_ROOT` | 否 | `./data/storage` | local 驱动根目录 |
-| `S3_ENDPOINT` | `s3` 时必填 | 空 | S3 兼容端点 |
-| `S3_REGION` | `s3` 时必填 | 空 | 区域 |
-| `S3_BUCKET` | `s3` 时必填 | 空 | 桶名 |
-| `S3_ACCESS_KEY_ID` | `s3` 时必填 | 空 | 访问密钥 ID |
-| `S3_SECRET_ACCESS_KEY` | `s3` 时必填 | 空 | 访问密钥 |
+| `S3_ENDPOINT` | **是** | 空 | S3 兼容端点 |
+| `S3_REGION` | **是** | 空 | 区域 |
+| `S3_BUCKET` | **是** | 空 | 桶名 |
+| `S3_ACCESS_KEY_ID` | **是** | 空 | 访问密钥 ID |
+| `S3_SECRET_ACCESS_KEY` | **是** | 空 | 访问密钥 |
 | `S3_FORCE_PATH_STYLE` | 否 | `true` | 同 delivery；COS 需 `false` |
 | `STORAGE_CDN_BASE_URL` | 否 | 空 | 加速域名（原视频 / 封面预览 302、presign 分片 origin 替换） |
 | `MEDIA_ID_LENGTH` | 否 | `8` | 媒资数字 ID 位数（4–16，保留前导零，spec.md §1.3） |

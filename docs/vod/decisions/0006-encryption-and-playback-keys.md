@@ -79,7 +79,7 @@ payload = ver | typ(m清单 / s分片 / k密钥 / v字幕) | mid | sid | exp | k
 
 - **自包含无状态**：热路径验签零 DB 往返；`exp` 默认与所属播放会话对齐（≤4h，可配）；
 - `typ + mid` 绑定防跨媒资重放；`sid` 绑定实现一键吊销；
-- 分发端自身资源（清单 / 密钥 / 字幕 / local 分片）用此 token；CDN / 存储侧分片 URL 用 **S3 预签名**（2026-09-20 修订：原定的 EdgeOne TypeA 私有回源已放弃——COS 私有桶，分发端以受限只读凭据生成预签名 GET URL，详见 ADR-0005 修订记录）。播放 URL 基址可被 `system_settings.playback_base_url` 运行时覆盖（spec.md §2.1.2）。
+- 分发端自身资源（清单 / 密钥 / 字幕）用此 token；存储侧分片 URL 用 **S3 预签名**（2026-09-20 修订：原定的 EdgeOne TypeA 私有回源已放弃——COS 私有桶，分发端以受限只读凭据生成预签名 GET URL，详见 ADR-0005 修订记录）。播放 URL 基址可被 `system_settings.playback_base_url` 运行时覆盖（spec.md §2.1.2）。
 
 ### 5. 缓存纪律（P0）
 

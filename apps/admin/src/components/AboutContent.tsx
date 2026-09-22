@@ -36,7 +36,7 @@ const GROUPS: { key: string; title: string; items: OssItem[] }[] = [
     items: [
       { name: "Prisma / @prisma/client", homepage: "https://github.com/prisma/prisma", version: "^6.10.0", license: "Apache-2.0", usage: "ORM / 迁移 / 双方言 schema" },
       { name: "Zod", homepage: "https://github.com/colinhacks/zod", version: "^4.0.0", license: "MIT", usage: "API 契约 schema 唯一真相源" },
-      { name: "AWS SDK for JavaScript v3", homepage: "https://github.com/aws/aws-sdk-js-v3", version: "^3.700.0", license: "Apache-2.0", usage: "S3 兼容存储客户端（COS / MinIO / local）" },
+      { name: "AWS SDK for JavaScript v3", homepage: "https://github.com/aws/aws-sdk-js-v3", version: "^3.700.0", license: "Apache-2.0", usage: "S3 兼容存储客户端（COS / MinIO）" },
       { name: "SQLite", homepage: "https://www.sqlite.org/", version: "3.x", license: "Public Domain", usage: "本地开发库引擎" },
     ],
   },

@@ -169,15 +169,8 @@ function buildPlans(
   return { plans, entries, sourceFallback };
 }
 
-/** local 直读文件路径；s3 走预签名 GET（字节不经 Worker 落盘，ffmpeg 原生支持 http 输入） */
-async function resolveInput(storage: StorageAdapter, key: string): Promise<string> {
-  if (typeof storage.getFilePath === "function") {
-    try {
-      return storage.getFilePath(key);
-    } catch {
-      // 落到预签名分支（例如 local 适配器未配置本地根）
-    }
-  }
+/** 源片输入：S3 预签名 GET URL（字节不经 Worker 落盘，ffmpeg 原生支持 http 输入） */
+function resolveInput(storage: StorageAdapter, key: string): Promise<string> {
   return storage.presignGet(key, 6 * 3600);
 }
 

@@ -2,12 +2,12 @@
 // 落键 cover/{id}/poster.{ext}（spec.md §1.3）并回写 DB posterKey。
 // 请求体：原始图片字节流（与原视频上传同协议，见 upload/route.ts）。
 // GET：封面图片读取（媒资列表首列缩略图 / 详情展示，spec.md §3.1）——
-// local 模式整对象流式输出；s3 模式预签名 GET 302 重定向（字节不经管理端，同 original/route.ts）。
+// S3 预签名 GET 302 重定向（字节不经管理端，同 original/route.ts）。
 // 管理端私有内容：no-store，仅供 better-auth 会话（img 标签同源自动带 Cookie）。
 import { NextRequest, NextResponse } from "next/server";
 import { apiJson, auditAction, getAdminSession, unauthorized } from "@/lib/api";
-import { contentTypeFor, mediaErrorResponse, resolvePosterKey, uploadCover } from "@/lib/media";
-import { getStorage, getStorageDriver } from "@/lib/storage";
+import { mediaErrorResponse, resolvePosterKey, uploadCover } from "@/lib/media";
+import { getStorage } from "@/lib/storage";
 
 export const dynamic = "force-dynamic";
 
@@ -27,31 +27,10 @@ export async function GET(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
         { status: 404 },
       );
     }
-    const storage = getStorage();
-
-    if (getStorageDriver() === "s3") {
-      const url = await storage.presignGet(key, PRESIGN_TTL_SEC);
-      return NextResponse.redirect(url, {
-        status: 302,
-        headers: { "Cache-Control": "no-store" },
-      });
-    }
-
-    const stat = await storage.stat(key);
-    if (!stat) {
-      return NextResponse.json(
-        { error: { code: "not_found", message: "封面图片不存在" } },
-        { status: 404 },
-      );
-    }
-    const stream = storage.streamRange!(key, 0, stat.size - 1);
-    return new NextResponse(stream, {
-      status: 200,
-      headers: {
-        "Content-Type": contentTypeFor(key.split(".").pop()?.toLowerCase() ?? ""),
-        "Content-Length": String(stat.size),
-        "Cache-Control": "no-store",
-      },
+    const url = await getStorage().presignGet(key, PRESIGN_TTL_SEC);
+    return NextResponse.redirect(url, {
+      status: 302,
+      headers: { "Cache-Control": "no-store" },
     });
   } catch (e) {
     return mediaErrorResponse(e);

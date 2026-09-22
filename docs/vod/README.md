@@ -20,7 +20,7 @@ flowchart LR
   end
 
   DB[("共享数据库 · Prisma：MySQL(TDSQL-C) / SQLite")]
-  ST[("对象存储 · COS / MinIO / 本地卷：源片、HLS 分片、字幕")]
+  ST[("对象存储 · COS / MinIO（S3 兼容）：源片、HLS 分片、字幕")]
   CDN["EdgeOne CDN 加速域名（分片带签名直出）"]
 
   APP -->|"① 登录 / 元数据 / play（JWT）"| DAPI
@@ -63,6 +63,7 @@ flowchart LR
 | [ADR-0012](./decisions/0012-admin-oauth-login.md) | 管理端 OAuth 登录（OIDC + PKCE，双轨账号） | 已接受 |
 | [ADR-0013](./decisions/0013-admin-nextjs-betterauth.md) | 管理端迁移 Next.js 全栈 + better-auth | 已接受 |
 | [ADR-0014](./decisions/0014-transcode-template-storage.md) | 转码模板的存储位置（DB 表 + 任务快照） | 已接受 |
+| [ADR-0015](./decisions/0015-env-vs-admin-settings.md) | 环境变量与系统设置的边界（env 最小集 + 启动向导 + MK 封装入库） | 已接受（同日修订） |
 
 状态语义：**已接受** = 用户已拍板，或沿用仓库既有决策（开发镜像 / 前期文档）；**提议（待复核）** = 本文档给出的推荐方案，specification 前需确认。
 

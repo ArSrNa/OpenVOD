@@ -48,7 +48,7 @@ OpenVOD：自建云点播系统（媒资 → 转码加密 → 元数据 / 字幕
 播放端 App ──JWT──▶ apps/delivery（Go 1.26 + Chi，:9000）   热路径 / Data Plane
 管理台    ──Cookie▶ apps/admin（Next.js 全栈，:8787）        控制面 / Control Plane
                     └─ apps/worker（Bun 常驻）ffmpeg/ffprobe 转码
-共享：MySQL(TDSQL-C)/SQLite + 对象存储（local / S3 兼容 COS/MinIO）
+共享：MySQL(TDSQL-C)/SQLite + 对象存储（仅 S3 兼容：COS/MinIO，ADR-0005 2026-09-22 修订移除 local 驱动）
 ```
 
 核心播放流程（ADR-0006，全系统最重要）：App `POST /v1/auth/login` 取 ES256 JWT → `POST /v1/media/{id}/play` 创建可吊销 `playback_sessions` 并返回签名主清单 URL → delivery 从存储读原始 m3u8 做行级改写，将分片 / 密钥 / 字幕 URL 全部注入签名 token → 分片经 S3 预签名直出（COS 私有桶，可配 `STORAGE_CDN_BASE_URL` 加速域名替换预签名 origin；2026-09-20 修订关闭 EO TypeA），**视频字节永远不经过函数** → 播放器调 key 接口取 16B CEK 本地解密。
@@ -91,7 +91,7 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可轮换）
 
 ### 当前实现状态（scaffold 骨架）
 
-- `apps/delivery` 播放链路（M3）已实现：`internal/{config,contracts,server,token,auth,blob,mk,playback,store}` 与装配包 `app`——login（bcrypt + ES256 JWT）、media 列表/详情、play（会话幂等 / 并发上限）、主 + 子清单改写、`/key`、local 驱动分片流式、字幕下发（`play` 附 typ=v 签名 URL；`.vtt` 按 `storage_key` 代理输出 `no-store`，spec.md §7.5）。未覆盖项见 `docs/vod/spec.md §6.6`。
+- `apps/delivery` 播放链路（M3）已实现：`internal/{config,contracts,server,token,auth,blob,mk,playback,store}` 与装配包 `app`——login（bcrypt + ES256 JWT）、media 列表/详情、play（会话幂等 / 并发上限）、主 + 子清单改写、`/key`、分片 S3 预签名直出、字幕下发（`play` 附 typ=v 签名 URL；`.vtt` 按 `storage_key` 代理输出 `no-store`，spec.md §7.5）。未覆盖项见 `docs/vod/spec.md §6.6`。
 - `apps/worker/src/index.ts` 的转码执行链已实现（ADR-0008：认领 → ffprobe → key_info → 转码 → 上传 → 写 `hls_keys`）。
 - `apps/admin` 的 `/api/auth/*`（better-auth）、`/healthz`、登录页与建号脚本可用；`/api/admin/*` 业务端点按里程碑逐条落地——已实现：媒资（上传 / 列表 / 详情 / 重命名 / 删除 / 预览 / 封面 / 元数据 / 产物 / 转码发起）、`/api/admin/templates`、`/api/admin/keys`（含 MK 轮换）、`/api/admin/jobs`（列表 + SSE + 停止 / 重启）、`/api/admin/stats`、`/api/admin/users`（播放端用户 CRUD + 重置口令 + 吊销会话，spec.md §2.1.1）、`/api/admin/media/{id}/subtitles`（字幕轨道 CRUD + 覆盖文本，spec.md §7）；其余路径仍由 `/api/admin/[...path]` 会话守卫后返回 501。
 

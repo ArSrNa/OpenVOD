@@ -17,7 +17,7 @@ task image:delivery     # docker buildx build --platform linux/amd64（SCF 仅 x
 # 推同地域 TCR 私有仓库 → SCF 更新函数（镜像 + 环境变量）
 ```
 
-无内网依赖，DB 可走 VPC 或公网；容器形态下 `STORAGE_DRIVER=local` 亦可用（挂 CFS 卷）。
+无内网依赖，DB 可走 VPC 或公网。
 
 ## 目标 B：EdgeOne Makers Cloud Functions
 
@@ -38,7 +38,7 @@ task image:delivery     # docker buildx build --platform linux/amd64（SCF 仅 x
 | `DELIVERY_DATABASE_URL` | **必须公网可达 + TLS**：Cloud Functions 无 VPC（ADR-0003 P0 结论）。`ParseDatabaseURL` 不做 TLS 兜底，公网库要自带 `?tls=true`（或自签场景 `tls=skip-verify`）。账号用 ADR-0011 的受限只读账号 |
 | `DELIVERY_PUBLIC_BASE_URL` | 最终分发域名（清单 / 密钥 / 字幕 URL 基址）；运行时可被 `system_settings.playback_base_url` 覆盖 |
 | `URL_SIGN_KEY_HEX` / `MASTER_KEYS` | 必填。**环境变量值上限 500 字节**，MK 轮换保留旧版本时注意总量 |
-| `STORAGE_DRIVER=s3` + `S3_ENDPOINT` / `S3_REGION` / `S3_BUCKET` / `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY`（+ `S3_FORCE_PATH_STYLE=false`、可选 `STORAGE_CDN_BASE_URL`） | **函数形态不能用 `local` 驱动**：无共享卷，且 `/v1/media/{id}/segment/*` 流式代理会撞 6MB 响应体上限。s3 形态走预签名直出，字节不经过函数 |
+| `S3_ENDPOINT` / `S3_REGION` / `S3_BUCKET` / `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY`（+ `S3_FORCE_PATH_STYLE=false`、可选 `STORAGE_CDN_BASE_URL`） | **必填**（ADR-0005 2026-09-22 修订：仅 S3 兼容存储，local 驱动已移除）。分片走预签名直出，字节不经过函数 |
 | `DELIVERY_CORS_ORIGINS` | 默认 `*`；收敛为管理端源站即可 |
 | `APP_ENV` / `DELIVERY_JWT_*` / `PLAYBACK_*_TTL_SEC` | 按需覆盖默认值。`DELIVERY_LISTEN` 保持默认 `:9000` |
 
@@ -131,5 +131,5 @@ task edgeone:prepare     # apps/delivery → cloud-functions/openvod/apps/delive
 
 `edgeone makers deploy` 会从控制台拉取环境变量（首次部署日志里的 `No environment variables found`）。
 delivery 运行所需的 `DELIVERY_DATABASE_URL` / `DELIVERY_PUBLIC_BASE_URL` / `URL_SIGN_KEY_HEX` /
-`MASTER_KEYS` / `STORAGE_DRIVER` + `S3_*` 等，必须在 **Makers 控制台按环境（生产 / 预览）配置**，
+`MASTER_KEYS` / `S3_*` 等，必须在 **Makers 控制台按环境（生产 / 预览）配置**，
 否则函数实例启动即 `config` 校验失败。

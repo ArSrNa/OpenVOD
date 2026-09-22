@@ -64,7 +64,7 @@ func Run() error {
 	go func() {
 		logger.Info("delivery listening",
 			"addr", cfg.Listen, "env", cfg.Env,
-			"storage", bl.Driver(), "public_base_url", cfg.PublicBaseURL,
+			"storage", "s3", "public_base_url", cfg.PublicBaseURL,
 			"jwt_keys", len(signers), "mk_versions", len(cfg.MasterKeys))
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			listenErr <- err

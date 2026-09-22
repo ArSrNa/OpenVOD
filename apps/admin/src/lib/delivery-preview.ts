@@ -148,7 +148,7 @@ export async function previewPlay(
     .catch(() => null);
 
   // 播放域名（系统设置）兜底改写：分发端自己会读同一设置生成播放 URL（spec §2.1.2，
-  // 清单 / 密钥 / 字幕 / local 分片基址）；此处仅防旧版分发端未升级时控制台预览仍指向错误域名。
+  // 清单 / 密钥 / 字幕基址）；此处仅防旧版分发端未升级时控制台预览仍指向错误域名。
   // 读取失败时回退分发端原样 URL，不阻塞播放。
   let manifestUrl = body.manifest_url;
   const playbackBase = await getPlaybackBaseUrl().catch(() => "");

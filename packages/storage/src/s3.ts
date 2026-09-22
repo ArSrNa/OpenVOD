@@ -1,5 +1,5 @@
-// S3 兼容实现（COS / MinIO，ADR-0005）：生产 COS + EO 私有回源；播放 URL 走 EO TypeA，
-// 本实现 presign 仅服务于「管理端直传 / 侧信道取回」，不在播放热路径上。
+// S3 兼容实现（COS / MinIO 等，ADR-0005）：唯一的存储驱动。
+// presign 服务于管理端直传 / 预览 302、Worker 取源片与播放分片预签名直出（字节不经过分发端）。
 import {
   DeleteObjectCommand,
   GetObjectCommand,

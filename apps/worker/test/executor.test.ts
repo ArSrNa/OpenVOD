@@ -1,14 +1,14 @@
 // M2 转码执行器端到端测试（ADR-0008 / spec.md §4.2）
-// 真 ffmpeg + 真本地存储 + 假 DB（依赖注入）：验证「探测 → 逐档转码 → 上传 → 密钥落库 → 状态联动 → 清理」全链路。
+// 真 ffmpeg + 磁盘假存储 + 假 DB（依赖注入）：验证「探测 → 逐档转码 → 上传 → 密钥落库 → 状态联动 → 清理」全链路。
 // 缺 ffmpeg 时整体跳过（与 Worker 启动自检的口径一致）。
 import { describe, expect, it } from "bun:test";
 import { createDecipheriv } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { openMediaKey, parseMasterKeys, pickWrappingMasterKey } from "@openvod/crypto";
 import { STORAGE_KEYS } from "@openvod/shared";
-import { createStorage, type StorageAdapter } from "@openvod/storage";
+import type { StorageAdapter, StorageObject } from "@openvod/storage";
 import { executeClaimedJob, type JobExecutorDeps } from "../src/executor";
 import type { JobStatusName, TranscodeJobRow, TranscodeJobStore } from "../src/job-store";
 import type { MediaKeyRecord, MediaKeyStore } from "../src/media-key-store";
@@ -76,6 +76,97 @@ class FakeKeyStore implements MediaKeyStore {
   }
 }
 
+// ---- 假存储适配器（local 驱动已移除，ADR-0005；测试用磁盘实现替代真实 S3） ----
+
+/** 磁盘版 StorageAdapter：put/get 落本地临时目录；presignGet 返回本地文件路径（ffprobe/ffmpeg 可直读） */
+class DiskStorage implements StorageAdapter {
+  constructor(private root: string) {}
+
+  private path(key: string): string {
+    if (key.includes("..")) throw new Error(`非法存储键：${key}`);
+    return join(this.root, key);
+  }
+
+  async put(key: string, data: Uint8Array | string): Promise<void> {
+    const p = this.path(key);
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, data);
+  }
+
+  async putStream(key: string, body: ReadableStream): Promise<void> {
+    const chunks: Uint8Array[] = [];
+    const reader = body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+    }
+    await this.put(key, concat(chunks));
+  }
+
+  async get(key: string): Promise<Uint8Array> {
+    return new Uint8Array(readFileSync(this.path(key)));
+  }
+
+  async stat(key: string): Promise<{ size: number } | null> {
+    try {
+      const s = statSync(this.path(key));
+      return s.isFile() ? { size: s.size } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async delete(key: string): Promise<void> {
+    rmSync(this.path(key), { force: true });
+  }
+
+  async listObjects(prefix: string): Promise<StorageObject[]> {
+    const base = this.path(prefix.replace(/\/+$/, ""));
+    const walk = (dir: string, rel: string): StorageObject[] => {
+      let entries: string[];
+      try {
+        entries = readdirSync(dir, { withFileTypes: true }).map((e) => e.name);
+      } catch {
+        return [];
+      }
+      const out: StorageObject[] = [];
+      for (const name of entries) {
+        const childRel = rel ? `${rel}/${name}` : name;
+        const abs = join(dir, name);
+        if (statSync(abs).isDirectory()) out.push(...walk(abs, childRel));
+        else out.push({ key: childRel, size: statSync(abs).size, lastModified: statSync(abs).mtime });
+      }
+      return out;
+    };
+    return walk(base, prefix.replace(/\/+$/, ""));
+  }
+
+  async list(prefix: string): Promise<string[]> {
+    return (await this.listObjects(prefix)).map((o) => o.key);
+  }
+
+  async presignPut(): Promise<string> {
+    throw new Error("测试适配器不支持上传预签名");
+  }
+
+  /** 测试内直读本地文件路径（等价 s3 预签名 GET 的角色：ffprobe / ffmpeg 的输入） */
+  async presignGet(key: string): Promise<string> {
+    return this.path(key);
+  }
+}
+
+function concat(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((n, c) => n + c.byteLength, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.byteLength;
+  }
+  return out;
+}
+
 // ---- 环境搭建：临时本地存储 + 320×240@15 的 2 秒源片 ----
 
 interface TestEnv {
@@ -109,7 +200,7 @@ function setup(mediaStatus: MediaStatusName = "UPLOADED"): TestEnv {
     throw new Error(`测试源片生成失败：${new TextDecoder().decode(gen.stderr)}`);
   }
 
-  const storage = createStorage({ driver: "local", root: storageRoot, rootPrefix: "" });
+  const storage = new DiskStorage(storageRoot);
   const jobStore = new FakeJobStore();
   const mediaStore = new FakeMediaStore(mediaStatus);
   const keyStore = new FakeKeyStore();

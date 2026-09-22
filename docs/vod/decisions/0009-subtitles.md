@@ -43,6 +43,6 @@
 - **默认轨**：每媒资至多一条（MySQL / SQLite 无部分唯一索引 → 应用层事务保证）；首条上传自动置默认；删默认轨不自动改派；
 - **上传语义**：v1 **同步校验**（UTF-8 / `WEBVTT` 头 / cue 时间轴合法），通过即 `status=READY`，失败直接拒绝且不落库不落存储；`PROCESSING` / `FAILED` 保留给未来异步链路（转写 / 翻译）；
 - **输入格式（2026-09-20 补充）**：存储**恒为 WebVTT**；`.srt` 只作为**输入**格式，由管理端服务端按内容识别并自动转换（时间轴逗号改点、小时补两位、前置 `WEBVTT` 头、序号行保留、丢弃 SRT 定位参数），不并存 SRT 对象、不保存 SRT 原文。转换唯一实现在 `apps/admin/src/lib/vtt.ts` 的 `toVttText`（UI 上传与 API 直传共用），分发端不做任何格式处理；
-- **下发方式**：字幕 URL 随 `POST /v1/media/{id}/play` 与清单一并返回（每条轨道一个 `typ=v` 签名 token，`exp = min(now + PLAYBACK_SUBTITLE_TTL_SEC, 会话 exp)`）—— token 需绑定可吊销会话，只有会话上下文能签发；`GET /v1/media/{id}` 仅返回轨道元信息，`GET /v1/media/{id}/subtitles/{trackId}.vtt` 取文本（local 直出 / s3 预签名 302）；
+- **下发方式**：字幕 URL 随 `POST /v1/media/{id}/play` 与清单一并返回（每条轨道一个 `typ=v` 签名 token，`exp = min(now + PLAYBACK_SUBTITLE_TTL_SEC, 会话 exp)`）—— token 需绑定可吊销会话，只有会话上下文能签发；`GET /v1/media/{id}` 仅返回轨道元信息，`GET /v1/media/{id}/subtitles/{trackId}.vtt` 取文本（分发端代理输出）；
 - **修订（缓存纪律）**：本文档原写「CDN 可缓存」，实现改为响应 **`Cache-Control: no-store`**（与清单 / 密钥同纪律）：字幕 token 逐会话签发、文本可就地覆盖，缓存会读到陈旧字幕；引入内容版本号 / 共享 token 形态后可作为演进项恢复；
 - **非目标（v1）**：同语言多轨（简繁并存）、自动翻译 / 语音转写、烧录进画面、HLS 内嵌字幕轨（`EXT-X-MEDIA` + 分段 playlist）。

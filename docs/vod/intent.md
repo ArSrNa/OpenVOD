@@ -91,7 +91,7 @@
 - ✅ 已完成：**login**（bcrypt 校验 + ES256 JWT；签名私钥 `signing_keys.private_enc` = hex(MK(P-256 标量))，启动全量解封加载，双 kid 宽限）；**media 列表 / 详情**（JWT）；**play**（会话建 / 复用幂等、`force_new`、并发上限 409 `session_limit`、多模板产物自动或显式选择 `template_id`）；**清单改写**（主清单注入 typ=m；子清单 `EXT-X-KEY` URI → typ=k、分片 → typ=s（local 流式）或 S3 **预签名直出**；`no-store`）；**key 接口**（typ=k + mid 绑定 + 会话有效性校验 → MK 解封 16B CEK，`no-store`）；**无签名请求 403**；`bootstrap-playback.ts` 引导脚本（签名密钥 + 播放端用户，幂等）。
 - ✅ 已完成（管理端产物操作，2026-09-18）：**产物列表（按模板抽屉）**——模板名 / 存储前缀 / 变体 / 对象数 / 体积；**解密播放**（`POST /api/admin/media/{id}/preview-play`：服务端以预览账号换签名主清单 URL，浏览器用 Video.js v10（`@videojs/hlsjs-video`，Safari 原生 HLS 回退）直连分发端播放，管理端不出密钥）与**按模板删除**（`DELETE /api/admin/media/{id}/products/{templateId}`：只删该模板子树、进行中任务 409、落 `audit_logs`）；分发端新增 CORS（`DELIVERY_CORS_ORIGINS`）。
 - ✅ 端到端已验证（真实 MySQL + 真实 COS 产物）：ffprobe / ffmpeg 以 HLS 播放加密媒资成功（h264 1080p + aac，本地解密）；会话吊销后清单请求立即 403。
-- ⏳ 未完成（spec.md §6.6）：登录 / play 限频、严格模式（key nonce / IP 绑定）、会话吊销 60s 缓存、SQLite 自托管驱动、`poster_url` local 直出与 `custom_data` 公开白名单。（~~CDN + EO TypeA 分片鉴权~~ 已于 2026-09-20 关闭：不再使用 EdgeOne，S3 预签名直出定为最终方案，ADR-0005 修订）
+- ⏳ 未完成（spec.md §6.6）：登录 / play 限频、严格模式（key nonce / IP 绑定）、会话吊销 60s 缓存、SQLite 自托管驱动、`custom_data` 公开白名单。（~~CDN + EO TypeA 分片鉴权~~ 已于 2026-09-20 关闭：不再使用 EdgeOne，S3 预签名直出定为最终方案；~~本地文件系统存储~~ 已于 2026-09-22 移除：仅 S3 兼容存储，ADR-0005 修订）
 
 **实现状态（2026-09-20，M4 字幕竖切；规则见 spec.md §7）**
 
@@ -145,7 +145,7 @@
 分层原则（用户定）：**启动必需、敏感材料、分发端热路径三类保留环境变量**，其余运行时非敏感业务项逐步落库：
 
 - **env 保留**：数据库连接、密钥材料（MK / URL 签名）、S3 凭据、分发端参数（ADR-0006 / 0011）；
-- **落库**：播放域名 `playback_base_url`（已实现——覆盖 `DELIVERY_PUBLIC_BASE_URL`，清单 / 密钥 / 字幕 / local 分片基址，分发端 60s 缓存读取）等非敏感控制面项；
+- **落库**：播放域名 `playback_base_url`（已实现——覆盖 `DELIVERY_PUBLIC_BASE_URL`，清单 / 密钥 / 字幕基址，分发端 60s 缓存读取）等非敏感控制面项；
 - **兜底**：设置读取失败一律回退 env / 内置默认，DB 故障不阻塞播放链路；
 - **文件形态（2026-09-20 用户定）**：文件配置统一用 **env**（平台 Secret 注入 / Compose `env_file` / serverless 控制台全是 env 语义），**不引入 yaml 等结构化配置文件**——避免双语言两份解析、容器文件挂载与密钥注入模板化成本。
 

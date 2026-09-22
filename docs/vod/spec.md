@@ -87,7 +87,7 @@ root 下按资产类别分四个分区，互不嵌套：
 | `/api/admin/media/{id}` | GET | 详情：存储资产计数 + DB 元数据合并 + `products[]`（每套模板产物的模板名 / 变体 / 对象数 / 体积，模板 ID 可追溯到 `proceed/{id}/{模板id}/`） |
 | `/api/admin/media/{id}` | PATCH | 重命名：仅修改 `media.title`，绝不改动 original 文件名与媒资 ID |
 | `/api/admin/media/{id}` | DELETE | 删除：original 对象 + proceed/cover/metadata 三分区该 id 全部对象 + DB 行（级联 subtitles / transcode_jobs / hls_keys / playback_sessions）；幂等可重试。**级联范围说明**：open-questions #13 决议（软删 + 保留期 GC）之前的 v1 临时策略为**硬删除全级联** |
-| `/api/admin/media/{id}/original` | GET | 原视频预览：local 模式 Range 字节区间流式代理（206）；s3 模式预签名 GET 302 重定向（字节不经管理端；配置 `STORAGE_CDN_BASE_URL` 时 302 目标 origin 替换为加速域名，ADR-0005）；no-store |
+| `/api/admin/media/{id}/original` | GET | 原视频预览：预签名 GET 302 重定向（字节不经管理端；配置 `STORAGE_CDN_BASE_URL` 时 302 目标 origin 替换为加速域名，ADR-0005）；no-store |
 | `/api/admin/media/{id}/cover` | POST | 上传封面：`cover/{id}/poster.{ext}`（jpg/png/webp/gif/avif）+ 回写 `media.poster_key`；手动上传 / 视频截帧双模式共用此端点（§2.3） |
 | `/api/admin/media/{id}/cover` | GET | 封面图片读取（列表首列缩略图 / 详情展示，§3.1）：local 整对象流式输出；s3 预签名 GET 302（字节不经管理端，`STORAGE_CDN_BASE_URL` origin 替换同 original）；no-store |
 | `/api/admin/media/{id}/metadata` | POST | 生成元数据：ffprobe 探测 original（local 直读文件路径 / s3 预签名 GET URL 供流）→ 原始输出落 `metadata/{id}/probe.json`，归一化摘要（宽高 / 帧率 / 色彩空间 / 编码 / 码率 / 音轨等，`@openvod/transcode summarizeProbe`）回写 `media.probe` + `media.duration_ms`；幂等覆盖式更新；落 `audit_logs`（`media.metadata_generate`）。要求运行环境安装 ffprobe |
@@ -133,7 +133,7 @@ root 下按资产类别分四个分区，互不嵌套：
 | 归属 | 内容 | 理由 |
 |---|---|---|
 | **env（永不落库）** | 数据库连接（`DATABASE_URL` / `DB_PROVIDER`）、敏感材料（`MASTER_KEYS` / `URL_SIGN_KEY_HEX` / S3 SK / `BETTER_AUTH_SECRET`）、分发端热路径参数（`DELIVERY_*`、各 TTL 上限） | 引导依赖（连库本身不能存库里——鸡生蛋）；敏感材料由部署平台 Secret 管控（CNB 密钥仓库）；热路径不新增 DB 读依赖（ADR-0011 失败场景要求 DB 挂时分片仍可播） |
-| **system_settings（落库）** | 运行时可调的非敏感控制面项：`playback_base_url`（播放域名，已实现——覆盖 `DELIVERY_PUBLIC_BASE_URL`，清单 / 密钥 / 字幕 / local 分片基址，分发端 60s 缓存读取；s3 分片为预签名直出，走存储端点 / 加速域名）等 | 免重启生效、UI 可管理、变更落审计、env 不无限膨胀 |
+| **system_settings（落库）** | 运行时可调的非敏感控制面项：`playback_base_url`（播放域名，已实现——覆盖 `DELIVERY_PUBLIC_BASE_URL`，清单 / 密钥 / 字幕基址，分发端 60s 缓存读取；分片为预签名直出，走存储端点 / 加速域名）等 | 免重启生效、UI 可管理、变更落审计、env 不无限膨胀 |
 
 工程约束：
 
@@ -167,7 +167,7 @@ root 下按资产类别分四个分区，互不嵌套：
 - 弹窗内播放 original 原视频（「手动上传 / 视频截帧」双 Tab 中的截帧 Tab，`<video>` 原生控件），**拖拽进度条选择目标时间点**（antd Slider，拖拽期间挂起播放进度回写），取当前帧画面作为封面；
 - 截帧在**浏览器侧**完成（`<video>` 当前帧 → canvas → JPEG），不依赖 ffmpeg / Worker，服务端零新增负载；产物以 `poster.jpg` 字节走同一端点，服务端逻辑与模式 A 完全一致；
 - 导出约束：JPEG 质量 0.9；帧分辨率超过 1280px 最长边时等比缩小（控制封面体积）；
-- 跨域前置：local 模式预览为同源 Range 代理，可直接截取；s3 模式预览为预签名 302 跳转，`<video>` 必须显式 `crossOrigin="anonymous"` 以 CORS 模式拉流（媒体元素默认 no-cors，即使桶已放行 CORS 画布仍会被污染、导出抛 SecurityError）；**要求对象桶 CORS 允许管理端源站**（AllowedOrigin 与页面源站含协议端口精确匹配、Method 含 GET 与 OPTIONS——Range 头触发预检、AllowedHeader 含 Range 或 `*`）；CORS 未放行时视频直接加载失败（onError 提示排查项并回退手动上传），不阻塞端点。
+- 跨域前置：预览为预签名 302 跳转，`<video>` 必须显式 `crossOrigin="anonymous"` 以 CORS 模式拉流（媒体元素默认 no-cors，即使桶已放行 CORS 画布仍会被污染、导出抛 SecurityError）；**要求对象桶 CORS 允许管理端源站**（AllowedOrigin 与页面源站含协议端口精确匹配、Method 含 GET 与 OPTIONS——Range 头触发预检、AllowedHeader 含 Range 或 `*`）；CORS 未放行时视频直接加载失败（onError 提示排查项并回退手动上传），不阻塞端点。
 
 ## 3. 管理端页面
 
@@ -338,7 +338,7 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 | `GET /v1/media/{id}/manifest/master.m3u8` | token(m) | 改写主清单：变体行替换为分发端 URL（typ=m + `tpl`）；`no-store` |
 | `GET /v1/media/{id}/manifest/{variant}/index.m3u8` | token(m) | 改写子清单：`EXT-X-KEY` URI → key 接口（typ=k）；分片行 → typ=s（local）或 S3 预签名 URL（s3）；`no-store` |
 | `GET /v1/media/{id}/key` | token(k) | **16B CEK**（`application/octet-stream`，`no-store`）：验签 + 会话有效 → 按 `hls_keys.mk_ver` 取 MK 解封 |
-| `GET /v1/media/{id}/segment/{tpl}/{variant}/{seg}` | token(s) | **local 驱动**分片流式输出（支持 Range）；s3 驱动分片为预签名直出，不走此处 |
+| ~~`GET /v1/media/{id}/segment/{tpl}/{variant}/{seg}`~~ | — | **已删除**（ADR-0005 2026-09-22 修订：仅 S3，local 驱动分片流式输出移除）；分片一律预签名直出 |
 | `GET /v1/media/{id}/subtitles/{trackId}.vtt` | token(v) | 字幕 VTT 输出（§7.5）：验签 + 会话有效 → 查轨道（`status=READY`）→ 按行内 `storage_key` 读对象，**两种驱动均由分发端代理输出**（≤5MiB）；`text/vtt; charset=utf-8` + `no-store` |
 
 **token 传递（用户定，2026-09-18）**：URL query `t` 优先，其次请求头 `X-Playback-Token`（App / hls.js 可带自定义头；**Safari 原生 HLS 的密钥与分片请求无法带头**，因此 query 是必须形态）。token 自包含（`ver|typ|mid|sid|exp|kid`，HMAC-SHA256），`typ` 作用域 `m 清单 / s 分片 / k 密钥 / v 字幕`，`mid` 绑定防跨媒资重放，`sid` 绑定会话可吊销。
@@ -375,14 +375,14 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `DELIVERY_DATABASE_URL` | 无（必填） | 分发端受限账号（ADR-0011：只读约定表 + `playback_sessions` 读写）。支持 `mysql://user:pw@host:port/db` 或 go-sql-driver DSN；**本地调试需指向可达库**（仓库 `.env` 里的 127.0.0.1 是占位） |
-| `DELIVERY_PUBLIC_BASE_URL` | 空 → `http://127.0.0.1:{端口}` | 播放 URL 基址（清单 / 密钥 / 字幕 / local 分片）；生产填分发域名。**运行时可被 `system_settings.playback_base_url` 覆盖**（分发端 60s 缓存读取，spec §2.1.2），无需重启 |
+| `DELIVERY_PUBLIC_BASE_URL` | 空 → `http://127.0.0.1:{端口}` | 播放 URL 基址（清单 / 密钥 / 字幕）；生产填分发域名。**运行时可被 `system_settings.playback_base_url` 覆盖**（分发端 60s 缓存读取，spec §2.1.2），无需重启 |
 | `URL_SIGN_KEY_KID` | `urlsign-v1` | 播放 token 的 `kid`（多 kid 宽限轮换为演进项） |
 | `DELIVERY_JWT_ISSUER` | `openvod-delivery` | JWT `iss` |
 | `DELIVERY_JWT_TTL_SEC` | `86400` | JWT 有效期（ADR-0007：默认 24h，无 refresh） |
 | `PLAYBACK_SESSION_TTL_SEC` | `14400` | 播放会话有效期 |
 | `PLAYBACK_MANIFEST_TTL_SEC` | `14400` | 清单 token / 预签名有效期上限（token exp ≤ 会话 exp） |
 | `PLAYBACK_SUBTITLE_TTL_SEC` | `86400` | 字幕 token 有效期上限（`@openvod/shared DEFAULTS.subtitleTtlSec`）；实际 `exp` 取与会话 `exp` 的较小值（§7.5） |
-| `STORAGE_DRIVER` / `STORAGE_ROOT_PREFIX` / `STORAGE_LOCAL_ROOT` / `S3_*` | 对齐管理端 | 与 `packages/storage` 同源命名（§1.5） |
+| `STORAGE_ROOT_PREFIX` / `S3_*` | 对齐管理端 | 与 `packages/storage` 同源命名（§1.5）；仅 S3 兼容存储（ADR-0005 2026-09-22 修订，`STORAGE_DRIVER` / `STORAGE_LOCAL_ROOT` 已删除） |
 | `STORAGE_CDN_BASE_URL` | 空 | 对象存储加速域名（ADR-0005 统一加速域名方案，管理端 / 分发端共用命名）：配置后 **GET 预签名 URL 的 origin 替换**为该域名（管理端 original / 封面预览 302、presign 模式分片直出），路径与签名 query 原样保留；上传预签名不受影响。前提：CDN 回源 COS 且 **Host 透传 / 改写为桶端点**（SigV4 签名覆盖 Host），缓存按 query 不缓存或短 TTL 配置 |
 | `DELIVERY_CORS_ORIGINS` | `*` | 允许跨域读取清单 / 密钥 / 分片（管理端「产物解密播放」的 hls.js 需要）；播放鉴权全走 URL token、不带 Cookie，`*` 不引入凭证泄露面，可收敛为管理端源站（逗号分隔） |
 
@@ -392,7 +392,7 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 - 登录 / play **限频**（ADR-0010）；严格模式（key 一次性 nonce、IP / UA 绑定、并发上限的踢下线，ADR-0006 §7 默认关）；
 - 会话吊销的进程内 60s 缓存（当前每请求查库，语义更严格、量级可接受）；
 - SQLite 自托管驱动（当前 Go 侧仅 MySQL；ADR-0004 的单机同卷形态待补）；
-- `poster_url` 的 local 直出与 `custom_data` **公开白名单**（当前返回空对象，避免泄露内部字段）；
+- `custom_data` **公开白名单**（当前返回空对象，避免泄露内部字段）；`poster_url` 已随仅-S3 决策全量预签名直出；
 - 字幕链路（M4）：规范见 §7（当前 501）；字幕进 CDN 缓存（ADR-0009 原始设想）为演进项，前置条件是引入内容版本号 / 共享 token 形态。
 
 **部署前置（非未完成项）**：管理端「产物 → 播放」由浏览器直连对象存储拉分片（s3 形态），要求**对象桶 CORS 放行管理端源站**（与封面截帧同一前提，§2.3）——未配置时表现为「有总时长但一直转圈」（分片请求被浏览器拦截），播放弹窗会在等待超时后给出该提示；`local` 形态分片经分发端流式输出（已带 CORS 头），无需桶配置。播放器为 Video.js v10（与媒资预览同一皮肤），HLS 由 `@videojs/hlsjs-video`（hls.js / MSE）承载，Safari 由 Video.js 自行回退原生 HLS。

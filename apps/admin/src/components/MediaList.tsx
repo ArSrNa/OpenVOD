@@ -1303,8 +1303,7 @@ export function MediaList() {
             {playing.corsOk === false && (
               <Typography.Paragraph type="warning" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
                 对象桶未放行当前管理端源站的 CORS：浏览器直连分片会被拦，表现为「有总时长但一直转圈」。
-                请在对象桶加 CORS 规则（Origin 含本页源站、Method GET/HEAD、Header *），或把 STORAGE_DRIVER 临时切 local
-                验证（见 dev-workflow §8）。
+                请在对象桶加 CORS 规则（Origin 含本页源站、Method GET/HEAD、Header *）（见 dev-workflow §8）。
               </Typography.Paragraph>
             )}
             {playError && (

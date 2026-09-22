@@ -4,7 +4,7 @@
 // 媒体元素换成 @videojs/hlsjs-video（hls.js / MSE；Safari 由 Video.js 自行回退原生 HLS）：
 //   src = 分发端签名主清单 URL（token 已在 URL 上）→ 播放器自动取密钥（16B CEK）→ 浏览器本地解密。
 // 管理端不接触任何密钥材料（P0，spec.md §4.3）。
-// 卡顿诊断：分片由浏览器直连对象存储（s3 形态）或分发端（local 形态），
+// 卡顿诊断：分片由浏览器直连对象存储（预签名直出），
 // 若对象桶未放行管理端源站的 CORS，会表现为「有总时长但一直转圈」——等待超时后给出明确提示。
 import "@videojs/react/video/skin.css";
 import { HlsJsVideo } from "@videojs/react/media/hlsjs-video";

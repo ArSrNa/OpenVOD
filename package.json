@@ -8,7 +8,8 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "./start-admin.sh",
+    "dev": "bun scripts/dev.ts",
+    "dev:all": "bun scripts/dev.ts all --background",
     "contracts:json": "bun packages/contracts/scripts/gen-json.ts",
     "contracts:go": "bash packages/contracts/scripts/gen-go.sh",
     "contracts": "bun run contracts:json && bun run contracts:go",
@@ -20,6 +21,7 @@
     "test": "bun test && go -C apps/delivery test ./..."
   },
   "devDependencies": {
+    "@clack/prompts": "^1.8.1",
     "@types/bun": "^1.2.0",
     "typescript": "^5.8.0"
   }

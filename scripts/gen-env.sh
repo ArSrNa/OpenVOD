@@ -3,7 +3,7 @@
 # gen-env.sh — 从「环境变量」生成 .env
 #
 # .env 已被 .gitignore，真源是 CNB 密钥仓库：云原生开发启动时由 .cnb.yml 的
-# imports 注入环境变量，再用本脚本把变量落回 .env（start.sh / Taskfile 照旧读取）。
+# imports 注入环境变量，再用本脚本把变量落回 .env（scripts/dev.ts / Taskfile 照旧读取）。
 #
 # 用法：
 #   scripts/gen-env.sh                 生成 <root>/.env（已存在则跳过）
@@ -26,7 +26,9 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 ENV_FILE=${ENV_FILE:-$ROOT/.env}
 TEMPLATE=${TEMPLATE:-$ROOT/.env.example}
-REQUIRED_KEYS=${REQUIRED_KEYS:-"DB_PROVIDER DATABASE_URL MASTER_KEYS URL_SIGN_KEY_HEX BETTER_AUTH_SECRET"}
+# ADR-0015：必需键收敛为最小集（DB 引导 + MK 根密钥）；
+# 其余配置（存储 / 播放域名 / TTL / 密钥类）由管理台首次启动向导（/setup）写入 system_settings
+REQUIRED_KEYS=${REQUIRED_KEYS:-"DATABASE_URL DB_PROVIDER MASTER_KEYS DELIVERY_DATABASE_URL"}
 FORCE=0
 STDOUT=0
 CHECK=0

@@ -2,7 +2,7 @@
 //
 // 播放链路（ADR-0006 §3）：login(JWT) → play(建会话, 返回签名主清单 URL)
 // → 主清单改写（子清单 URL 注入 typ=m token）→ 子清单改写（EXT-X-KEY URI 注入 typ=k token、
-// 分片注入 typ=s token / 预签名直出）→ 播放器凭 token 取密钥（16B CEK）本地解密。
+// 分片改写为 S3 预签名直出 URL，字节不经过分发端）→ 播放器凭 token 取密钥（16B CEK）本地解密。
 //
 // token 传递方式：URL query `?t=` 优先，其次 header `X-Playback-Token`
 // （App / hls.js 可带头；Safari 原生 HLS 的密钥与分片请求无法带自定义头，因此 query 是必须形态）。
@@ -22,7 +22,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -60,63 +59,21 @@ type Options struct {
 }
 
 type api struct {
-	o        Options
-	signer   *auth.Signer
-	urlKeys  []token.SigningKey
-	playBase *playbackBase
+	o       Options
+	signer  *auth.Signer
+	urlKeys []token.SigningKey
 }
 
-/**
- * playbackBase 播放域名解析器（spec.md §2.1.2 分层）：
- * system_settings.playback_base_url（管理端「系统设置 → 播放设置」运行时可改）60s 进程内缓存读取；
- * 未配置 / DB 故障 / 表不存在一律回退 env DELIVERY_PUBLIC_BASE_URL——设置读取失败不阻塞播放热路径。
- * 60s 与 ADR-0006 §6 的吊销收敛窗口同量级：改域名后最长 1 分钟内新旧域名并存（均可用）。
- */
-type playbackBase struct {
-	db       *store.Store
-	fallback string
-	ttl      time.Duration
-
-	mu    sync.Mutex
-	val   string
-	until time.Time
-}
-
-func (p *playbackBase) base(ctx context.Context) string {
-	if p == nil || p.db == nil {
-		return p.fallback
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	now := time.Now()
-	if p.until.After(now) {
-		return p.val
-	}
-	qctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	v, err := p.db.SettingValue(qctx, "playback_base_url")
-	if err != nil {
-		p.val = p.fallback
-	} else if v = strings.TrimRight(strings.TrimSpace(v), "/"); v != "" {
-		p.val = v
-	} else {
-		p.val = p.fallback
-	}
-	p.until = now.Add(p.ttl)
-	return p.val
-}
-
-// publicBase 播放 URL 基址：DB 设置（system_settings.playback_base_url）覆盖 > env（spec.md §2.1.2）
-func (a *api) publicBase(ctx context.Context) string { return a.playBase.base(ctx) }
+// publicBase 使用当前 handler 的配置快照；app 每 60 秒整体刷新配置与存储，避免混用不同版本。
+func (a *api) publicBase(_ context.Context) string { return a.o.Cfg.PublicBaseURL }
 
 func New(o Options) http.Handler {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
 	a := &api{
-		o:        o,
-		urlKeys:  []token.SigningKey{{Kid: o.Cfg.URLSignKeyKid, Key: o.Cfg.URLSignKey}},
-		playBase: &playbackBase{db: o.DB, fallback: o.Cfg.PublicBaseURL, ttl: time.Minute},
+		o:       o,
+		urlKeys: []token.SigningKey{{Kid: o.Cfg.URLSignKeyKid, Key: o.Cfg.URLSignKey}},
 	}
 	if len(o.JWTKeys) > 0 {
 		a.signer = o.JWTKeys[0]
@@ -150,8 +107,6 @@ func New(o Options) http.Handler {
 		// 子清单：`{variant}/index.m3u8` 可能含子目录（如 720p/index.m3u8），故用通配
 		r.Get("/media/{id}/manifest/*", a.handleManifestVariant)
 		r.Get("/media/{id}/key", a.handleKey)
-		// local 驱动分片流式输出（s3 驱动为预签名直出，不走这里；ADR-0005）
-		r.Get("/media/{id}/segment/*", a.handleSegment)
 		// 字幕 VTT（token(v)；spec.md §7.5）：未带 / 非法 / 已吊销 token 一律 403（P0 门禁）
 		r.Get("/media/{id}/subtitles/{trackId}.vtt", a.handleSubtitle)
 
@@ -272,9 +227,9 @@ func (a *api) mediaListItem(ctx context.Context, m *store.Media) contracts.Item 
 	}
 }
 
-/** posterURL：s3 直出预签名；local 驱动待补（management 预览已有本地代理，分发端留 TODO） */
+/** posterURL：S3 预签名直出（可经 STORAGE_CDN_BASE_URL 换加速域名） */
 func (a *api) posterURL(ctx context.Context, posterKey string) *string {
-	if posterKey == "" || a.o.Blob.Driver() != "s3" {
+	if posterKey == "" {
 		return nil
 	}
 	u, err := a.o.Blob.PresignGet(ctx, posterKey, time.Duration(a.o.Cfg.ManifestTTLSec)*time.Second)
@@ -556,11 +511,6 @@ func (a *api) handleManifestVariant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, contracts.Internal, "签发播放凭证失败")
 		return
 	}
-	segTok, err := a.signToken(token.TypeSegment, mediaID, p.Sid, exp)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, contracts.Internal, "签发播放凭证失败")
-		return
-	}
 	variantDir := path.Dir(rest)
 
 	var segErr error
@@ -575,14 +525,9 @@ func (a *api) handleManifestVariant(w http.ResponseWriter, r *http.Request) {
 				segErr = fmt.Errorf("非法分片路径 %q", name)
 				return "", segErr
 			}
+			// 分片服务（ADR-0005）：S3 预签名直出（字节不经过分发端，P0；
+			// 可经 STORAGE_CDN_BASE_URL 换加速域名）
 			storageKey := proceedKey(mediaID, tpl, path.Join(variantDir, name))
-			// 分片服务（ADR-0005）：local 驱动 = 分发端 typ=s 代理（本地卷无预签名能力）；
-			// s3 驱动 = S3 预签名直出（字节不经过分发端，P0；可经 STORAGE_CDN_BASE_URL 换加速域名）
-			if a.o.Blob.Driver() == "local" {
-				rel := strings.TrimPrefix(storageKey, "proceed/"+mediaID+"/")
-				return fmt.Sprintf("%s/v1/media/%s/segment/%s?t=%s",
-					a.publicBase(ctx), url.PathEscape(mediaID), rel, url.QueryEscape(segTok)), nil
-			}
 			u, err := a.o.Blob.PresignGet(ctx, storageKey, time.Duration(a.o.Cfg.ManifestTTLSec)*time.Second)
 			if err != nil {
 				segErr = err
@@ -638,32 +583,6 @@ func (a *api) handleKey(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(cek)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(cek)
-}
-
-// ---- local 驱动分片流式输出（s3 驱动为预签名直出，不走这里） ----
-
-func (a *api) handleSegment(w http.ResponseWriter, r *http.Request) {
-	mediaID := chi.URLParam(r, "id")
-	rest := chi.URLParam(r, "*")
-	if !validRelativeMediaPath(rest) || (!strings.HasSuffix(rest, ".ts") && !strings.HasSuffix(rest, ".m4s")) {
-		writeError(w, http.StatusNotFound, contracts.NotFound, "分片不存在")
-		return
-	}
-	if _, ok := a.authorize(w, r, token.TypeSegment, mediaID); !ok {
-		return
-	}
-	f, info, err := a.o.Blob.OpenLocal("proceed/" + mediaID + "/" + rest)
-	if err != nil {
-		writeError(w, http.StatusNotFound, contracts.NotFound, "分片不存在")
-		return
-	}
-	defer func() { _ = f.Close() }()
-	// 分片可被 CDN 缓存（ADR-0006 §5），但本地直出无缓存层：保守用 no-store，签名过期即失效
-	w.Header().Set("Cache-Control", "no-store")
-	if strings.HasSuffix(rest, ".ts") {
-		w.Header().Set("Content-Type", "video/mp2t")
-	}
-	http.ServeContent(w, r, path.Base(rest), info.ModTime(), f) // 支持 Range（拖动）
 }
 
 // ---- 字幕（token(v)；spec.md §7.5 / ADR-0009） ----
@@ -864,7 +783,7 @@ func corsMiddleware(origins []string) func(http.Handler) http.Handler {
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Playback-Token, Range")
-			// Range / 长度对分片与本地流式输出必需（hls.js 会读）
+			// Range / 长度对分片（浏览器直连对象存储）必需（hls.js 会读）
 			w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)

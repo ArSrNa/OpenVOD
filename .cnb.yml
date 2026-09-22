@@ -38,7 +38,7 @@
         - docker build -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:latest . --push
 
 # 分发端 EdgeOne Cloud Functions（ADR-0003：与 SCF 容器同级的另一个目标）
-# 用开发镜像：已内置 Go 1.26 + Node + edgeone CLI —— edgeone makers deploy 会在本地交叉编译 Go 函数。
+# 用开发镜像的 Go + Bun；scripts/edgeone.ts 固定 Makers CLI 版本，构建和上传使用同一份产物。
 # 变量值先留空：正式值走 CNB 密钥仓库 imports（或平台环境变量），不要写进仓库。
 .deploy-delivery-edgeone: &deploy-delivery-edgeone
   name: 构建并部署 delivery 到 EdgeOne
@@ -46,12 +46,17 @@
     cpus: 32
   docker:
     image: docker.cnb.cool/arsrna/media/openvod/dev:latest
+  env:
+    EO_DELIVERY_URL: https://delivery.ovod.skirk.cn
+    EO_API_REGION: china
   stages:
-    - name: EdgeOne 入口交叉编译门禁
-      script: task build:edgeone
-    - name: edgeone makers deploy
+    - name: 构建 Makers 产物并校验 Go 根路径路由
+      script: bun --no-env-file scripts/edgeone.ts build
+    - name: 校验生产引导变量并上传 Makers 产物
       imports: https://cnb.cool/arsrna/env/-/blob/main/tencent.yml
-      script: npx -y edgeone@latest makers deploy -n "openvod-delivery" -t "$EO_SECRET"
+      script: bun --no-env-file scripts/edgeone.ts deploy
+    - name: 等待分发服务就绪并验证播放鉴权路由
+      script: bun --no-env-file scripts/check-delivery-deployment.ts "$EO_DELIVERY_URL"
 
 # 管理端 admin 镜像（ADR-0003 / ADR-0013：Next.js 全栈单容器，UI + API 同源）
 # 构建上下文是**仓库根**：admin 经 transpilePackages 直接消费 workspace 的 TS 源码包。
@@ -98,7 +103,8 @@ $:
         - vscode
       <<: *devenv
       imports:
-        - https://cnb.cool/arsrna/media/openvod-secrets/-/blob/main/env.dev.yml
+        # - https://cnb.cool/arsrna/media/openvod-secrets/-/blob/main/env.dev.yml
+        - https://cnb.cool/arsrna/media/openvod-secrets/-/blob/main/env.dev.v2.yml
       stages:
         - <<: *environ
         - <<: *install

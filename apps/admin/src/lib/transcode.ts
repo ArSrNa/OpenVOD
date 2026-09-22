@@ -2,7 +2,7 @@
 // 发起时**只做校验与快照**，不生成 argv：源片分辨率 / 帧率未知，编译在 Worker 探测后完成（ADR-0014）。
 // 单次可**多选**模板（编排核心见 ./transcode-submit，依赖注入便于单测）：每个模板各入队一条任务，
 // 产物各落 proceed/{mediaId}/{templateId}/（spec.md §1.3）。
-import { TranscodeJobDTO, TranscodeSubmitResponse, z } from "@openvod/contracts";
+import { TranscodeJobDTO, TranscodeSubmitResponse, z, type DashboardStats } from "@openvod/contracts";
 import { getDb } from "@openvod/db";
 import { NextResponse } from "next/server";
 import { apiError } from "./api";
@@ -116,14 +116,7 @@ export async function listTranscodeJobs(limit = 200): Promise<{
 
 // ---- 总览统计（intent.md「控制台总览」）：按状态聚合未终结任务（spec.md §5.1 状态机） ----
 
-export interface ActiveJobStats {
-  /** 未终结任务总数（QUEUED + PROBING + ENCODING + PACKAGING） */
-  active: number;
-  queued: number;
-  probing: number;
-  encoding: number;
-  packaging: number;
-}
+export type ActiveJobStats = DashboardStats["jobs"];
 
 /** 四个状态各一次 COUNT（DB 侧聚合，不拉取任务行） */
 export async function getActiveJobStats(): Promise<ActiveJobStats> {

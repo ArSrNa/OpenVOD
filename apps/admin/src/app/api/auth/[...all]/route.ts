@@ -1,7 +1,10 @@
-// better-auth 全量路由挂载（ADR-0013）：
-//   /api/auth/sign-in/email、/api/auth/sign-out、/api/auth/get-session、
-//   /api/auth/signin/social、/api/auth/oauth2/callback/generic-oidc ...
-import { toNextJsHandler } from "better-auth/next-js";
-import { auth } from "@/lib/auth";
+import { getAuth } from "@/lib/auth";
 
-export const { GET, POST } = toNextJsHandler(auth.handler);
+// better-auth 路由入口（ADR-0013）。ADR-0015：auth 实例惰性初始化，
+// 首个请求时从 system_settings 解封会话密钥（env 兜底），支持首次启动向导。
+async function handler(req: Request): Promise<Response> {
+  const auth = await getAuth();
+  return auth.handler(req);
+}
+
+export { handler as GET, handler as POST };

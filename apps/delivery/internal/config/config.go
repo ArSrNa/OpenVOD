@@ -11,10 +11,9 @@ import (
 )
 
 // StorageConfig 对象存储配置（env 命名与 packages/storage 的 from-env 对齐，spec.md §1.5）
+// 2026-09-22 修订（ADR-0005）：仅 S3 兼容存储，local 驱动已移除。
 type StorageConfig struct {
-	Driver          string // local | s3
-	RootPrefix      string // STORAGE_ROOT_PREFIX（空 = 桶/根目录顶层）
-	LocalRoot       string // local 驱动根目录
+	RootPrefix      string // STORAGE_ROOT_PREFIX（空 = 桶顶层）
 	Endpoint        string
 	Region          string
 	Bucket          string
@@ -31,8 +30,8 @@ type Config struct {
 	Listen      string
 	DatabaseURL string // go-sql-driver DSN（由 DELIVERY_DATABASE_URL 归一，见 ParseDatabaseURL）
 
-	// 资源 URL 基址：拼清单 / 密钥 / 字幕 / local 分片 URL（ADR-0006 §3）。
-	// 运行时可被 system_settings.playback_base_url 覆盖（分发端 60s 缓存读取，env 兜底）。
+	// 资源 URL 基址：拼清单 / 密钥 / 字幕 URL（ADR-0006 §3）。
+	// 运行时由 system_settings 覆盖（与其余设置一起 60s 刷新，env 兜底）。
 	PublicBaseURL string
 
 	// 允许跨域访问的源（管理端产物预览用 hls.js 需要；`*` = 全部）。
@@ -80,7 +79,9 @@ func Load() (*Config, error) {
 	}
 
 	if key, err := hexKey("URL_SIGN_KEY_HEX"); err != nil {
-		return nil, err
+		// ADR-0015：签名密钥不再强制 env——缺失时由装配层从 system_settings 解封（url_sign_key_hex），
+		// 两处都没有才在启动时报错（安全失败，拒绝签发 token）
+		cfg.URLSignKey = nil
 	} else {
 		cfg.URLSignKey = key
 	}
@@ -97,17 +98,18 @@ func Load() (*Config, error) {
 		if part == "" {
 			continue
 		}
+		// 只报「形态」不报内容：这些错误会进启动日志，密钥值绝不能出现（ADR-0006 红线）
 		seg := strings.SplitN(part, ":", 2)
 		if len(seg) != 2 {
-			return nil, fmt.Errorf("MASTER_KEYS 片段非法: %q", part)
+			return nil, fmt.Errorf("MASTER_KEYS 片段非法（应为 版本:64位hex）：缺少「版本:」分隔符")
 		}
 		var ver int
 		if _, err := fmt.Sscanf(seg[0], "%d", &ver); err != nil {
-			return nil, fmt.Errorf("MASTER_KEYS 版本非法: %q", part)
+			return nil, fmt.Errorf("MASTER_KEYS 片段非法（应为 版本:64位hex）：版本段不是正整数")
 		}
 		key, err := hex.DecodeString(seg[1])
 		if err != nil || len(key) != 32 {
-			return nil, fmt.Errorf("MASTER_KEYS 密钥非法（需 64 位 hex）: %q", part)
+			return nil, fmt.Errorf("MASTER_KEYS 片段非法（应为 版本:64位hex）：密钥段长度 %d 字符（应为 64 位 hex）", len(seg[1]))
 		}
 		cfg.MasterKeys[ver] = key
 	}
@@ -115,10 +117,10 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("MASTER_KEYS 未配置")
 	}
 
+	// ADR-0015：存储配置 env 只作兜底——缺失不再启动失败，装配层会先读
+	// system_settings（首次启动向导写入），两处都不完整才报"请先完成管理台首次启动向导"。
 	cfg.Storage = StorageConfig{
-		Driver:          getEnv("STORAGE_DRIVER", "local"),
 		RootPrefix:      os.Getenv("STORAGE_ROOT_PREFIX"),
-		LocalRoot:       getEnv("STORAGE_LOCAL_ROOT", "./data/storage"),
 		Endpoint:        os.Getenv("S3_ENDPOINT"),
 		Region:          os.Getenv("S3_REGION"),
 		Bucket:          os.Getenv("S3_BUCKET"),
@@ -127,11 +129,6 @@ func Load() (*Config, error) {
 		// COS 只接受 virtual-hosted-style，必须显式 S3_FORCE_PATH_STYLE="false"；MinIO 默认 true
 		ForcePathStyle: strings.ToLower(getEnv("S3_FORCE_PATH_STYLE", "true")) != "false",
 		CDNBaseURL:     strings.TrimRight(strings.TrimSpace(os.Getenv("STORAGE_CDN_BASE_URL")), "/"),
-	}
-	if cfg.Storage.Driver == "s3" {
-		if cfg.Storage.Bucket == "" || cfg.Storage.AccessKeyID == "" || cfg.Storage.SecretAccessKey == "" {
-			return nil, fmt.Errorf("STORAGE_DRIVER=s3 需要 S3_BUCKET / S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY")
-		}
 	}
 
 	return cfg, nil

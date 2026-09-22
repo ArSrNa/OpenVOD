@@ -127,7 +127,6 @@ token.exp = min(会话 expires_at, 签发时刻 + PLAYBACK_MANIFEST_TTL_SEC)
 | `GET /v1/media/{id}/manifest/master.m3u8` | token(m) | 改写后主清单 `application/vnd.apple.mpegurl` | **no-store** |
 | `GET /v1/media/{id}/manifest/*` | token(m) | 改写后子清单 | **no-store** |
 | `GET /v1/media/{id}/key` | token(k) | **16B 裸 CEK** `application/octet-stream` | **no-store** |
-| `GET /v1/media/{id}/segment/*` | token(s) | 分片字节（`.ts`→`video/mp2t` / `.m4s`），支持 Range（仅 local 驱动） | no-store（local 直出无缓存层） |
 | `GET /v1/media/{id}/subtitles/{trackId}.vtt` | token(v) | 字幕 WebVTT `text/vtt; charset=utf-8`（分发端代理输出，见 §4.8） | **no-store** |
 
 ### 4.2 登录 `POST /v1/auth/login`
@@ -194,9 +193,8 @@ token.exp = min(会话 expires_at, 签发时刻 + PLAYBACK_MANIFEST_TTL_SEC)
 | 分片行（默认） | 整行替换，见下 |
 
 - 分片 URL 注入（相对名以子清单所在目录拼接）：
-  - **local 驱动**：`{base}/v1/media/{id}/segment/{相对 proceed/{id}/ 的路径}?t=<s token>`
-  - **s3 驱动**：`Blob.PresignGet(storageKey, PLAYBACK_MANIFEST_TTL_SEC)` 生成 **S3/COS 预签名 GET URL**，分片字节不经过函数（P0）。
-- key token 与 segment token 在改写开始前一次性签好，exp 与清单 token 相同。
+  - `Blob.PresignGet(storageKey, PLAYBACK_MANIFEST_TTL_SEC)` 生成 **S3/COS 预签名 GET URL**（唯一路径，ADR-0005 2026-09-22 修订：local 代理已移除），分片字节不经过函数（P0）。
+- key token 在改写开始前一次性签好，exp 与清单 token 相同。
 
 ### 4.6 密钥接口 `GET /v1/media/{id}/key`（加密流核心）
 
@@ -214,14 +212,14 @@ Content-Length: 16
 <body: 16 字节裸 CEK>
 ```
 
-### 4.7 分片获取（两条路径）
+### 4.7 分片获取（S3 预签名直出）
 
-| | local 驱动 | s3 驱动 |
-|---|---|---|
-| URL 形态 | `{base}/v1/media/{id}/segment/{path}?t=<s token>` | 清单中直接是 S3/COS 预签名 URL |
-| 字节路径 | 经 delivery 流式输出（`http.ServeContent`，支持 Range 拖动） | **不经过函数**（P0），客户端直连存储/CDN |
-| 校验 | token(s) + 会话存活 + 后缀白名单 `.ts/.m4s` + 路径白名单 | 预签名自身即鉴权（TTL 与清单 token 对齐） |
-| 演进 | — | 已关闭：S3 预签名直出为最终方案（ADR-0005 2026-09-20 修订） |
+| | 说明 |
+|---|---|
+| URL 形态 | 清单中直接是 S3/COS 预签名 URL（可经 `STORAGE_CDN_BASE_URL` 换加速域名 origin） |
+| 字节路径 | **不经过函数**（P0），客户端直连存储/CDN |
+| 校验 | 预签名自身即鉴权（TTL 与清单 token 对齐） |
+| 演进 | local 驱动分发端代理已随 ADR-0005 2026-09-22 修订移除（存储仅 S3） |
 
 ### 4.8 字幕 `GET /v1/media/{id}/subtitles/{trackId}.vtt`（spec.md §7.5）
 
@@ -264,16 +262,15 @@ MK 轮换语义：新版本加进 `MASTER_KEYS` 且**保留旧版本**，`hls_ke
 |---|---|---|
 | `DELIVERY_LISTEN` | `:9000` | 监听地址（SCF Web 函数固定 9000） |
 | `DELIVERY_DATABASE_URL` | 必填 | 仅 `mysql://`（归一为 go-sql-driver DSN：`parseTime=true&loc=UTC&charset=utf8mb4`） |
-| `DELIVERY_PUBLIC_BASE_URL` | `http://127.0.0.1:{port}` | 清单/密钥/local 分片 URL 基址 |
+| `DELIVERY_PUBLIC_BASE_URL` | `http://127.0.0.1:{port}` | 清单/密钥/字幕 URL 基址 |
 | `URL_SIGN_KEY_HEX` / `URL_SIGN_KEY_KID` | 必填 / `urlsign-v1` | 播放 token HMAC 密钥 |
 | `MASTER_KEYS` | 必填 | `版本:64位hex`，每版必须 32B，多版本逗号分隔 |
 | `DELIVERY_JWT_ISSUER` / `DELIVERY_JWT_TTL_SEC` | `openvod-delivery` / `86400` | JWT 签发参数 |
 | `PLAYBACK_SESSION_TTL_SEC` / `PLAYBACK_MANIFEST_TTL_SEC` | `14400` / `14400` | 会话 TTL / token exp 上限 |
 | `PLAYBACK_SUBTITLE_TTL_SEC` | `86400` | 字幕 token 有效期上限（实际取与会话 exp 的较小值，§4.8） |
 | `DELIVERY_CORS_ORIGINS` | `*` | CORS 白名单；暴露 `Content-Length/Content-Range/Accept-Ranges`，允许 `X-Playback-Token`、`Range` 头 |
-| `STORAGE_DRIVER` | `local` | `local` / `s3` |
-| `STORAGE_ROOT_PREFIX` / `STORAGE_LOCAL_ROOT` | 空 / `./data/storage` | 键前缀 / 本地根目录 |
-| `S3_ENDPOINT/REGION/BUCKET/ACCESS_KEY_ID/SECRET_ACCESS_KEY/FORCE_PATH_STYLE` | — | s3 驱动；COS 必须显式 `S3_FORCE_PATH_STYLE="false"`（virtual-hosted-style） |
+| `STORAGE_ROOT_PREFIX` | 空 | 全局 root 前缀 |
+| `S3_ENDPOINT/REGION/BUCKET/ACCESS_KEY_ID/SECRET_ACCESS_KEY/FORCE_PATH_STYLE` | 必填 | S3 兼容存储（唯一驱动）；COS 必须显式 `S3_FORCE_PATH_STYLE="false"`（virtual-hosted-style） |
 
 DB 账号分权（硬约束，ADR-0011）：delivery 使用受限账号——`users / media / media_subtitles / hls_keys / signing_keys / transcode_templates` 只读 + `playback_sessions` 读写，其余拒绝；**绝不共用管理端全权账号**。
 
@@ -283,7 +280,7 @@ DB 账号分权（硬约束，ADR-0011）：delivery 使用受限账号——`us
 
 1. 未携带合法 token 的清单/密钥/分片/**字幕**请求必须 `403`（CI：`assert-unsigned-403`）。
 2. m3u8（主/子）、`/key` 与字幕 `.vtt` 响应必须 `Cache-Control: no-store`（CI：`assert-no-store`）。
-3. s3 形态分片字节不经过函数；回源代理模式已被否决（ADR-0005）。
+3. 分片字节不经过函数（S3 预签名直出）；回源代理与 local 驱动代理模式均已被否决（ADR-0005）。
 4. 明文 CEK 不落日志、不落存储、不入契约 DTO；日志中的密钥操作只记事件不记材料。
 5. 转码禁止上任何函数；delivery 响应体 ≤6MB（清单远小于此，`blob.Get` 读取上限 8MB 为余量）。
 6. token 校验必须恒时比较；`typ`/`mid` 绑定校验不可省略。
@@ -293,7 +290,7 @@ DB 账号分权（硬约束，ADR-0011）：delivery 使用受限账号——`us
 
 ## 8. 当前实现状态与演进项（截至本文撰写）
 
-**已落地**：login(JWT)、media 列表/详情、play（会话幂等 + 并发上限）、主/子清单行级改写、key 接口（MK 解封 CEK）、local 分片流式输出（Range 支持）、s3 预签名直出（`STORAGE_CDN_BASE_URL` 加速域名 origin 替换）、播放域名 DB 覆盖（`playback_base_url` 60s 缓存）、模板产物探测（`resolveTemplate`）。
+**已落地**：login(JWT)、media 列表/详情、play（会话幂等 + 并发上限）、主/子清单行级改写、key 接口（MK 解封 CEK）、S3 预签名直出（`STORAGE_CDN_BASE_URL` 加速域名 origin 替换）、播放域名 DB 覆盖（`playback_base_url` 60s 缓存）、模板产物探测（`resolveTemplate`）。（ADR-0005 2026-09-22 修订：local 分片流式输出已随仅-S3 决策删除）
 
 **未落地（演进项，勿当作既有能力）**：
 
@@ -303,16 +300,16 @@ DB 账号分权（硬约束，ADR-0011）：delivery 使用受限账号——`us
 | ~~EdgeOne TypeA URL 鉴权 + 私有回源~~ | 已关闭（2026-09-20）：S3 预签名直出为最终方案 | ADR-0005 修订、spec.md §6.6 |
 | 登录/play 限频 | 未实现（代码有 TODO） | ADR-0010 |
 | 吊销 60s 进程内缓存 | 实现为每请求查库（更严格） | ADR-0006 §6 |
-| poster local 直出、`custom_data` 公开白名单 | poster 仅 s3 形态返回；custom 回传空对象 | spec.md §6.6 |
+| poster 直出、`custom_data` 公开白名单 | poster_url 预签名直出（S3-only 后全量生效）；custom 回传空对象 | spec.md §6.6 |
 
 ---
 
 ## 9. AI 阅读速查（关键事实浓缩）
 
 - 播放入口永远从 `POST /v1/media/{id}/play` 拿 `manifest_url` 开始，之后不再需要 JWT；同一响应还带 `subtitles[]`（每条含 typ=v 签名 `url`），字幕不入清单（§4.8）。
-- token 四型：`m` 清单 / `s` 分片 / `k` 密钥 / `v` 字幕；传递 `?t=` 优先，header `X-Playback-Token` 兜底。
+- token 类型：`m` 清单 / `k` 密钥 / `v` 字幕（`s` 分片型常量保留但不再签发——分片走 S3 预签名）；传递 `?t=` 优先，header `X-Playback-Token` 兜底。
 - key 接口返回的是 **16 字节二进制**，不是 JSON；用 `Content-Length: 16` 与 `application/octet-stream` 识别。
 - 加密方式：HLS SAMPLE-AES 之外的 **AES-128（METHOD=AES-128, CBC, 清单显式 IV）**，每媒资一把 CEK。
-- 分片 URL：local 形态带 `?t=<s>`；s3 形态是预签名 URL（无 `t` 参数），两者都合法。
+- 分片 URL：清单中直接是 S3/COS 预签名 URL（无 `t` 参数）。
 - `tpl` query：模板布局必填 cuid；旧布局传空串。
 - 代码索引：路由 `internal/server/server.go`；token `internal/token/token.go`；清单改写 `internal/playback/playlist.go`；CEK 解封 `internal/mk/mk.go`；存储 `internal/blob/blob.go`；读模型/会话 `internal/store/store.go`；DTO `internal/contracts/`（生成物，源在 `packages/contracts`）。

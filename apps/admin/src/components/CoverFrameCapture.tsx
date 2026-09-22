@@ -163,11 +163,6 @@ export function CoverFrameCapture({ src, uploading, onCapture }: CoverFrameCaptu
           </Button>
         </div>
       </div>
-      <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 0 }}>
-        截帧在浏览器侧完成（视频当前帧 → canvas → JPEG），以 poster.jpg 走与手动上传相同的封面端点；
-        帧分辨率超过 1280px 最长边时等比缩小。s3 存储形态下视频以 CORS 模式加载（crossOrigin=anonymous），
-        要求对象桶放行管理端源站，否则视频无法加载、无法截帧（回退手动上传）。
-      </Typography.Paragraph>
     </div>
   );
 }

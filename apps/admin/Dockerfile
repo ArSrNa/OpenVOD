@@ -8,7 +8,12 @@
 # 运行时为 **Node 22**（ADR-0013：next build + next start）；bun 只用于安装依赖与跑构建脚本。
 FROM node:22-bookworm-slim AS build
 
-RUN npm i -g bun@1
+# openssl 必须在**构建阶段**也存在：Prisma 生成客户端时按检测到的 libssl 选择查询引擎
+# （缺 openssl 会退化为 debian-openssl-1.1.x，与运行阶段（libssl3）不匹配 → 引擎加载失败、db:false）
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssl ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && npm i -g bun@1
 WORKDIR /app
 # 整仓入上下文（.dockerignore 已剔除 node_modules / .next / 生成物 / 密钥）：
 # 逐个 COPY 各 workspace 的 package.json 会更省缓存层，但新增包时容易漏，取舍见 docs/vod/deploy-apps.md
@@ -18,6 +23,13 @@ RUN bun run --cwd packages/db generate:mysql && bun run --cwd packages/db genera
 RUN bun run --cwd apps/admin build
 
 FROM node:22-bookworm-slim AS runtime
+
+# Prisma 查询引擎需要系统 openssl（bookworm 为 libssl3）：缺失时引擎报
+# "failed to detect the libssl/openssl version ... Defaulting to openssl-1.1.x"，
+# 存在引擎加载失败风险（worker 镜像基于 Debian 全量环境，无此问题）
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production \
     TZ=Asia/Shanghai

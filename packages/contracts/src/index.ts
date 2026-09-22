@@ -426,5 +426,49 @@ export const UpdateSubtitleTrackRequest = z
   })
   .refine((v) => Object.keys(v).length > 0, { message: "没有需要更新的字段" });
 
+// ---- 控制台总览（spec.md §2.1；仅管理端使用，不生成 Go struct） ----
+const DashboardCount = z.number().int().nonnegative();
+
+export const DashboardStatsResponse = z.object({
+  media: z.object({
+    total: DashboardCount,
+    ready: DashboardCount,
+    not_ingested: DashboardCount,
+  }),
+  jobs: z.object({
+    active: DashboardCount,
+    queued: DashboardCount,
+    probing: DashboardCount,
+    encoding: DashboardCount,
+    packaging: DashboardCount,
+  }),
+  users: z.object({
+    total: DashboardCount,
+    active: DashboardCount,
+    disabled: DashboardCount,
+  }),
+  storage: z.object({
+    /** 当前 root 下四个业务分区的对象大小总和，包含 HLS 分片 */
+    used_bytes: DashboardCount,
+  }),
+  subtitles: z.object({
+    total: DashboardCount,
+    media_count: DashboardCount,
+  }),
+  products: z.object({
+    /** 按媒资 × 模板计组数；旧布局按每媒资一组，字幕不计入 */
+    total: DashboardCount,
+    media_count: DashboardCount,
+  }),
+  metadata: z.object({
+    total: DashboardCount,
+    probe: DashboardCount,
+    custom: DashboardCount,
+    other: DashboardCount,
+  }),
+});
+
+export type DashboardStats = z.infer<typeof DashboardStatsResponse>;
+
 // 管理端 / Worker 直接复用同一份 zod 实例做请求校验（避免各包重复声明 zod 依赖）
 export { z } from "zod";

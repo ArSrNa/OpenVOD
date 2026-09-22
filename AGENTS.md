@@ -12,6 +12,12 @@ OpenVOD：自建云点播系统（媒资 → 转码加密 → 元数据 / 字幕
 
 ## 常用命令
 
+### 执行约束（用户要求）
+
+- Node.js 生态相关操作统一使用 Bun 运行时，包括依赖安装、脚本执行、开发、构建和测试。
+- 安装依赖使用 `bun install` / `bun add`；执行 CLI 使用 `bunx --bun`、`bun run --bun` 或 `bun <脚本路径>`。不要使用 npm、npx、pnpm、yarn 或直接调用 node；工具的 Node shebang 也须显式由 Bun 执行。
+- Go 等非 Node.js 工具继续使用原生工具链。
+
 工具链要求：Bun ≥1.4、Go 1.26、Node 22+、ffmpeg/ffprobe、Task（可选，无 Task 时直接看 `Taskfile.yml` / `package.json` 里的原始命令）；云原生开发镜像 `.ide/Dockerfile` 已内置全部工具。
 
 | 命令 | 说明 |
@@ -24,10 +30,11 @@ OpenVOD：自建云点播系统（媒资 → 转码加密 → 元数据 / 字幕
 | `task db:parity` | 校验两份 Prisma schema 的 enum/model 段逐字一致（CI 门禁） |
 | `task contracts` | zod → JSON Schema → Go struct（quicktype）。生成物**必须入库**，CI 用 `bun run check:contracts-go` diff 门禁 |
 | `task vectors` | 生成 TS/Go 加密互通测试向量；未生成时两端互通测试会 skip |
-| `./start.sh` | 后台一键启动 admin + delivery + **worker（转码队列消费者，必须一起跑）**；子命令 `stop` / `status` / `logs admin\|delivery\|worker`；pid 与日志在 `.run/`（worker 无端口，用 pid 判定存活） |
-| `./start-admin.sh` | 前台管理端调试。**会自动一并启动 Worker**（后台，日志 `.run/worker.log`），退出时一并收掉；已在跑则沿用不动它 |
-| `./start-delivery.sh` | 前台分发端调试（`task dev:delivery` 等价） |
-| `./start-worker.sh` | 前台单跑转码 Worker（观察认领 / 转码日志用）；`task dev:worker` 等价 |
+| `bun scripts/dev.ts` | 开发启动器（TS，取代旧 `./start*.sh`）：交互式勾选服务（admin / delivery / worker）与运行方式（前台调试 / 后台常驻），端口跟随 `.env` 的 `ADMIN_PORT` / `DELIVERY_LISTEN` |
+| `bun scripts/dev.ts all --background` | 后台一键启动全部（等价旧 `./start.sh`），含 **worker（转码队列消费者，必须一起跑）**；子命令 `stop` / `status` / `logs <服务>`；pid 与日志在 `.run/`（worker 无端口，用 pid 判定存活，`setsid` 独立进程组整组收） |
+| `bun scripts/dev.ts admin` | 前台管理端调试。**会自动一并启动 Worker**（后台，日志 `.run/worker.log`），退出时一并收掉；已在跑则沿用不动它 |
+| `bun scripts/dev.ts delivery` | 前台分发端调试（自动增量 `go build` 到 `.run/delivery`，`task dev:delivery` 同源） |
+| `bun scripts/dev.ts worker` | 前台单跑转码 Worker（观察认领 / 转码日志用） |
 | `task dev:worker` | 转码 Worker（Bun `--watch`，需 ffmpeg/ffprobe，缺失直接退出） |
 | `task test` | `bun test` + `go -C apps/delivery test ./...` |
 | `bun test packages/crypto/test/interop.test.ts` | 运行单个 TS 测试文件；`bun test -t "用例名"` 按名称过滤 |
@@ -94,7 +101,7 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可轮换）
 
 ### 当前实现状态（scaffold 骨架）
 
-- `apps/delivery` **播放链路（M3）已实现**：`internal/{config,contracts,server,token,auth,blob,mk,playback,store}`——login（bcrypt + ES256 JWT，私钥自 `signing_keys` 解封）、media 列表/详情、play（会话幂等复用 / `force_new` / 并发上限 / 多模板产物自动或显式选择）、主 + 子清单改写（`EXT-X-KEY` URI → token(k)、分片 → token(s) 或 S3 预签名直出）、`/key`（MK 解封 16B CEK，`no-store`）、local 驱动分片流式（Range）、**字幕下发**（`play` 附 typ=v 签名 URL；`.vtt` 验签 + 会话 → 按 `storage_key` 代理输出 `text/vtt` + `no-store`，spec.md §7.5）；无签名 403。规则与未覆盖项（限频、严格模式、sqlite）见 `docs/vod/spec.md §6`（CDN + EO TypeA 已于 2026-09-20 关闭：s3 预签名直出定稿，ADR-0005 修订）。**本地调试分发端需把 `DELIVERY_DATABASE_URL` 指向可达库**（仓库 `.env` 里是 127.0.0.1 占位）。管理端「产物 → 播放」预览由后端以预览账号（`DELIVERY_BASE_URL` / `DELIVERY_PREVIEW_USERNAME|PASSWORD`）换签名主清单 URL，浏览器用 Video.js v10（`@videojs/hlsjs-video`）直连分发端播放——**密钥仍只由分发端下发**；跨域由 `DELIVERY_CORS_ORIGINS` 控制（默认 `*`），s3 形态还需对象桶 CORS 放行管理端源站（否则「有总时长但一直转圈」，见 dev-workflow §8）。
+- `apps/delivery` **播放链路（M3）已实现**：`internal/{config,contracts,server,token,auth,blob,mk,playback,store}`——login（bcrypt + ES256 JWT，私钥自 `signing_keys` 解封）、media 列表/详情、play（会话幂等复用 / `force_new` / 并发上限 / 多模板产物自动或显式选择）、主 + 子清单改写（`EXT-X-KEY` URI → token(k)、分片 → S3 预签名直出）、`/key`（MK 解封 16B CEK，`no-store`）、**字幕下发**（`play` 附 typ=v 签名 URL；`.vtt` 验签 + 会话 → 按 `storage_key` 代理输出 `text/vtt` + `no-store`，spec.md §7.5）；无签名 403。规则与未覆盖项（限频、严格模式、sqlite）见 `docs/vod/spec.md §6`（CDN + EO TypeA 已于 2026-09-20 关闭：s3 预签名直出定稿；local 驱动已于 2026-09-22 移除：仅 S3 兼容存储，ADR-0005 修订）。**本地调试分发端需把 `DELIVERY_DATABASE_URL` 指向可达库**（仓库 `.env` 里是 127.0.0.1 占位）。管理端「产物 → 播放」预览由后端以预览账号（`DELIVERY_BASE_URL` / `DELIVERY_PREVIEW_USERNAME|PASSWORD`）换签名主清单 URL，浏览器用 Video.js v10（`@videojs/hlsjs-video`）直连分发端播放——**密钥仍只由分发端下发**；跨域由 `DELIVERY_CORS_ORIGINS` 控制（默认 `*`），还需对象桶 CORS 放行管理端源站（否则「有总时长但一直转圈」，见 dev-workflow §8）。
 - `apps/worker/src/index.ts` 的 `tick()` 为空实现，注释列出 ADR-0008 的完整流程（认领 → ffprobe → key_info → 转码 → 上传 → 写 `hls_keys`）。
 - `apps/admin` 的 `/api/auth/*`（better-auth）、`/healthz`、登录页与建号脚本可用；`/api/admin/*` 业务端点按里程碑逐条落地——已实现：媒资（上传 / 列表 / 详情 / 重命名 / 删除 / 预览 / 封面 / 元数据 / 产物 / 转码发起）、`/api/admin/templates`、`/api/admin/keys`（含 MK 轮换）、`/api/admin/jobs`（列表 + SSE + 停止 / 重启）、`/api/admin/stats`、`/api/admin/users`（播放端用户 CRUD + 重置口令 + 吊销会话，spec.md §2.1.1）、`/api/admin/media/{id}/subtitles`（字幕轨道 CRUD + 覆盖文本，spec.md §7）；其余路径仍由 `/api/admin/[...path]` 会话守卫后返回 501。
 

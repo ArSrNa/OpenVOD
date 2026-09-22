@@ -4,11 +4,12 @@
 // 管理端只做「以预览账号向分发端换一个签名主清单 URL」，**绝不自行解封 / 转发密钥**；
 // 浏览器按标准 HLS 播放（hls.js / Safari 原生），清单、密钥、分片全部由分发端 / 对象存储直达浏览器。
 //
-// 配置（.env）：DELIVERY_BASE_URL、DELIVERY_PREVIEW_USERNAME、DELIVERY_PREVIEW_PASSWORD
-// （预览账号用 apps/admin/scripts/bootstrap-playback.ts 创建，建议专用、只配本机/内网可达地址）。
+// 配置（ADR-0015）：分发端地址 DELIVERY_BASE_URL（env）；
+// 预览账号 delivery_preview_username（明文设置）+ delivery_preview_password（MK 封装设置），
+// env 同名键兜底（预览账号用 apps/admin/scripts/bootstrap-playback.ts 创建，建议专用）。
 import { getDb } from "@openvod/db";
 
-import { getPlaybackBaseUrl } from "./settings";
+import { getSettingsSnapshot } from "./settings";
 
 const db = getDb<any>();
 
@@ -26,13 +27,14 @@ function baseUrl(): string {
   return (process.env.DELIVERY_BASE_URL?.trim() || "http://127.0.0.1:9000").replace(/\/+$/, "");
 }
 
-type TokenCache = { value: string; expiresAtSec: number };
+type TokenCache = { value: string; expiresAtSec: number; credentials: string };
 let cached: TokenCache | null = null;
 
 /** 取预览账号 JWT（进程内缓存到过期前 60s，避免每次点击都 login，ADR-0007 无 refresh） */
 async function previewToken(): Promise<string> {
-  const username = process.env.DELIVERY_PREVIEW_USERNAME?.trim();
-  const password = process.env.DELIVERY_PREVIEW_PASSWORD ?? "";
+  const snap = await getSettingsSnapshot();
+  const username = snap.admin.previewUsername || process.env.DELIVERY_PREVIEW_USERNAME?.trim() || "";
+  const password = snap.admin.previewPassword || process.env.DELIVERY_PREVIEW_PASSWORD || "";
   if (!username || !password) {
     throw new DeliveryPreviewError(
       "not_implemented",
@@ -41,7 +43,8 @@ async function previewToken(): Promise<string> {
     );
   }
   const nowSec = Math.floor(Date.now() / 1000);
-  if (cached && cached.expiresAtSec - 60 > nowSec) return cached.value;
+  const credentials = JSON.stringify([baseUrl(), username, password]);
+  if (cached && cached.credentials === credentials && cached.expiresAtSec - 60 > nowSec) return cached.value;
 
   let res: Response;
   try {
@@ -64,7 +67,7 @@ async function previewToken(): Promise<string> {
       502,
     );
   }
-  cached = { value: body.access_token, expiresAtSec: nowSec + (body.expires_in ?? 3600) };
+  cached = { value: body.access_token, expiresAtSec: nowSec + (body.expires_in ?? 3600), credentials };
   return cached.value;
 }
 
@@ -148,10 +151,12 @@ export async function previewPlay(
     .catch(() => null);
 
   // 播放域名（系统设置）兜底改写：分发端自己会读同一设置生成播放 URL（spec §2.1.2，
-  // 清单 / 密钥 / 字幕 / local 分片基址）；此处仅防旧版分发端未升级时控制台预览仍指向错误域名。
+  // 清单 / 密钥 / 字幕基址）；此处仅防旧版分发端未升级时控制台预览仍指向错误域名。
   // 读取失败时回退分发端原样 URL，不阻塞播放。
   let manifestUrl = body.manifest_url;
-  const playbackBase = await getPlaybackBaseUrl().catch(() => "");
+  const playbackBase = await getSettingsSnapshot()
+    .then((s) => s.playbackBaseUrl)
+    .catch(() => "");
   if (playbackBase) {
     try {
       const u = new URL(manifestUrl);

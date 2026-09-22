@@ -16,7 +16,7 @@
 //                         /media/[id]/subtitles/[trackId]（PATCH 元信息 / DELETE 轨道）、
 //                         /media/[id]/subtitles/[trackId]/content（PUT 覆盖文本）
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
+import { getAuth } from "@/lib/auth";
 
 const STUB = NextResponse.json(
   {
@@ -29,6 +29,7 @@ const STUB = NextResponse.json(
 );
 
 async function handle(req: NextRequest): Promise<NextResponse> {
+  const auth = await getAuth();
   const session = await auth.api.getSession({ headers: req.headers });
   if (!session) {
     return NextResponse.json(

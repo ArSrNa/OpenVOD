@@ -20,7 +20,7 @@
 管理员 ─────▶ 管理端 admin ─────┘
               （admin API + admin-web + worker 常驻容器）
                   │
-                  └──▶ 对象存储（COS / 本地卷）──(S3 预签名直出 / local 流式，可前置任意 CDN 透传)──▶ 播放端 App
+                  └──▶ 对象存储（COS / MinIO，S3 兼容）──(S3 预签名直出，可前置任意 CDN 透传)──▶ 播放端 App
 ```
 
 - **两个应用**：分发端（delivery，无状态，公网热点）与管理端（admin API + admin-web + worker，常驻容器）。

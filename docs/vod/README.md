@@ -20,7 +20,7 @@ flowchart LR
   end
 
   DB[("共享数据库 · Prisma：MySQL(TDSQL-C) / SQLite")]
-  ST[("对象存储 · COS / MinIO / 本地卷：源片、HLS 分片、字幕")]
+  ST[("对象存储 · COS / MinIO（S3 兼容）：源片、HLS 分片、字幕")]
   CDN["EdgeOne CDN 加速域名（分片带签名直出）"]
 
   APP -->|"① 登录 / 元数据 / play（JWT）"| DAPI
@@ -39,7 +39,7 @@ flowchart LR
 
 1. [intent.md](./intent.md) — 项目意图、目标与非目标、成功标准
 2. `decisions/` 按编号阅读；**ADR-0006（视频加密与播放密钥）为核心**
-3. [spec.md](./spec.md) — 功能规范（媒资存储布局 / 媒资 ID / 控制台 API 面）
+3. [spec.md](./spec.md) — 功能规范（媒资存储布局 / 媒资 ID / 控制面 API / 分发端 API）
 4. [open-questions.md](./open-questions.md) — 进入 specification 前必须关闭的问题
 5. [dev-workflow.md](./dev-workflow.md) — 本地开发环境与工作流（启动、数据库、建号、排错）
 6. [deploy-delivery.md](./deploy-delivery.md) — 分发端部署（SCF 容器 / EdgeOne Cloud Functions 双目标）
@@ -63,6 +63,7 @@ flowchart LR
 | [ADR-0012](./decisions/0012-admin-oauth-login.md) | 管理端 OAuth 登录（OIDC + PKCE，双轨账号） | 已接受 |
 | [ADR-0013](./decisions/0013-admin-nextjs-betterauth.md) | 管理端迁移 Next.js 全栈 + better-auth | 已接受 |
 | [ADR-0014](./decisions/0014-transcode-template-storage.md) | 转码模板的存储位置（DB 表 + 任务快照） | 已接受 |
+| [ADR-0015](./decisions/0015-env-vs-admin-settings.md) | 环境变量与系统设置的边界（env 最小集 + 启动向导 + MK 封装入库） | 已接受（同日修订） |
 
 状态语义：**已接受** = 用户已拍板，或沿用仓库既有决策（开发镜像 / 前期文档）；**提议（待复核）** = 本文档给出的推荐方案，specification 前需确认。
 

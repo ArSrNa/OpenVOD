@@ -2,6 +2,7 @@
 
 - 状态：已接受（平台事实经官方文档核实，2026-09；含 P0 验证项）
 - 日期：2026-09-17
+- 修订：2026-09-22，EdgeOne Makers 固定 CLI、独立暂存项目、产物路由门禁与生产域名冒烟
 - 关联：ADR-0002、ADR-0005、ADR-0006
 
 ## 背景
@@ -46,7 +47,7 @@ task deploy =
   db:migrate            # Prisma migrate deploy（生产 MySQL）
   image:build           # docker buildx build --platform linux/amd64（SCF 仅 x86）
   image:push            # 推 TCR（同地域私有仓库）
-  delivery:rollout      # EdgeOne Pages 发布（edgeone pages deploy）或 SCF 函数更新
+  delivery:rollout      # EdgeOne Makers 发布（已检查的 .edgeone 产物）或 SCF 函数更新
   admin:rollout         # 管理端 + Worker 滚动更新
   smoke                 # P0 冒烟断言（下）
 ```
@@ -54,6 +55,56 @@ task deploy =
 CI 硬门禁（延续前期文档）：
 - `assert-unsigned-403`：对加速域名发无签名 m3u8 / 分片请求，断言 403；
 - `assert-no-store`：密钥与清单端点响应头必须 `Cache-Control: no-store`，且不得进入任何 CDN / 边缘缓存。
+
+### EdgeOne Go 构建与发布修订（2026-09-22）
+
+Go Framework 模式由平台生成 catch-all，入口文件名决定前缀：`index.go` 对应根路径，
+其他文件名会加入前缀（[官方 Go 文档](https://pages.edgeone.ai/document/go)）。
+只有 Go 编译成功不能证明 `/healthz` 和 `/v1/...` 已正确发布。
+
+CLI 1.6.41 会递归扫描 `cloud-functions/`。旧的源码副本布局
+`cloud-functions/openvod/apps/delivery/internal/server/server.go` 中含 `chi.NewRouter()`，
+被识别成 Framework 入口，生成 `^/server(.*)$`，导致根路径 API 不匹配。
+因此撤回“隔离构建要求把所有源码放在 cloud-functions 内”的旧判断，采用以下发布约束：
+
+1. `scripts/edgeone.ts prepare` 在 `.run/edgeone-delivery/` 生成独立项目：根目录放原模块的
+   `go.mod`、`go.sum`、`app/`、`internal/`；`cloud-functions/` 只有 `index.go`，不使用嵌套模块或 `replace`。
+   最小 `package.json` 不安装 workspace 依赖，`public/` 为空静态目录。
+2. `task build:edgeone` 调用 `bun --no-env-file scripts/edgeone.ts build`，交叉编译并运行固定的
+   `bunx --bun edgeone@1.6.41 makers build`；随后检查生成的 Go 函数配置为 Chi 根 catch-all、二进制为 Linux amd64 ELF。
+   项目根模块的支持依据固定 CLI 的实现与实际构建验证；升级 CLI 必须重跑该门禁。
+3. `bun --no-env-file scripts/edgeone.ts deploy` 重新检查产物，并复用脚本内固定的 CLI 版本，
+   在暂存项目内显式上传 `.edgeone` 到 `openvod-delivery` 的 `production` 环境，Token 由 stage 密钥注入。
+   显式目录使用已检查产物，避免部署时隐式重建
+   （[官方 CLI 文档](https://pages.edgeone.ai/document/edgeone-cli)）。
+4. 部署后对 `EO_DELIVERY_URL`（默认 `https://delivery.ovod.skirk.cn`）执行健康 JSON 与无签名 403 冒烟。
+   Makers HTML `NOT_FOUND` 说明尚未命中 delivery，需继续核查域名绑定、生产部署与产物路由。
+
+发布入口统一为 CNB EdgeOne 按钮或同等命令，不使用仓库根的隐式构建 / Git 自动部署。
+运行装配仍由 `apps/delivery/app` 单点维护，SCF 与 EdgeOne 入口共用内部装配逻辑。
+完整命令与部署验收见 [分发端部署](../deploy-delivery.md)。
+
+### Go Framework 引导变量补充（2026-09-22）
+
+控制台变量在发布前已保存并对生产生效，但上传 `.edgeone` 的 Go 实例仍读不到
+`DELIVERY_DATABASE_URL`（部署 `dpiljo0vcwwh` 的运行日志），因此不能继续依赖平台隐式注入。
+发布阶段改为使用 `EO_SECRET` 只读查询确切项目的 Production 环境，校验并筛选
+`DELIVERY_DATABASE_URL`、`MASTER_KEYS`，保存为私有函数目录内的 `openvod-runtime-env.json`。
+EdgeOne 入口在共享装配前加载该文件，只补齐缺失变量；监听强制为 `:9000`。
+SCF 入口不加载文件。两种目标仍共用业务装配。
+
+该文件是部署时生成的敏感配置，不是源码或静态资源：本地 `0600`、发布完成 / 失败清理，
+禁止入库、日志输出、公开归档及放入 `assets`。私有函数包现在也属于主密钥保管边界，
+应与平台环境变量采用同级访问控制；不将 MK 写入数据库，也不把 admin 全权连接传给 delivery。
+缺少生产配置时在上传前失败，配置变更需重新部署。
+
+### 就绪检查与状态码适配补充（2026-09-22）
+
+- 发布后的就绪检查允许冷启动：先独立等待 `/healthz` 的 delivery 成功 JSON，单次 30s、
+  总窗口 120s、间隔 5s，仅重试网络 / 平台暂态错误；就绪后顺序执行鉴权检查，避免并发触发额外冷启动。
+- `RunEdgeOne()` 在共享 `run()` 外包装 Makers 响应协议。固定 CLI 的中间件生成并不保证被根模块下的
+  嵌套路由接入；必须在 HTTP 响应提交前设置平台状态头，保留业务 401/403 以及正文、缓存策略。
+  SCF 使用原 `Run()`，不增加平台专用响应头。
 
 ## 理由
 
@@ -64,4 +115,4 @@ CI 硬门禁（延续前期文档）：
 
 - Cloud Functions 120s 超时对 API 足够；不能承载任何转码（P0，永久约束）。
 - 分发端冷启动百毫秒级，可接受；清单与密钥路由保持同一函数实例以减少冷启动。
-- 大陆与海外加速需分别配置地域（`edgeone.json` 的 `mainlandRegions` / `overseasRegions` 各限一个地域）。
+- 大陆与海外加速需分别配置地域（`edgeone.json` 的 `cloudFunctions.regions.mainland` / `overseas` 各限一个地域）。

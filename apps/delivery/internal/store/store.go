@@ -225,11 +225,11 @@ func (s *Store) DefaultTemplateID(ctx context.Context) (string, error) {
 	return id, nil
 }
 
-// ---- system_settings（只读；播放域名运行时覆盖，spec.md §2.1.2） ----
+// ---- system_settings（只读；播放域名运行时覆盖，spec.md §2.1.2；ADR-0015 设置加载） ----
 
 /**
  * SettingValue 读单个设置值（key 为 MySQL 保留字风格的列名，必须反引号）。
- * 调用方（server 的 baseResolver）自带 60s 进程内缓存，DB 故障回退 env，不阻塞播放热路径。
+ * 返回原始字符串；配置刷新与失败回退由装配层负责。
  */
 func (s *Store) SettingValue(ctx context.Context, key string) (string, error) {
 	var v string
@@ -241,6 +241,26 @@ func (s *Store) SettingValue(ctx context.Context, key string) (string, error) {
 		return "", err
 	}
 	return v, nil
+}
+
+/**
+ * AllSettings 全量设置（key -> value 原始值；密钥键为封装 hex，由 internal/settings 解封）。
+ * ADR-0015：分发端启动与 60s 热刷新时读取，env 同名键兜底。
+ */
+func (s *Store) AllSettings(ctx context.Context) (map[string]string, error) {
+	rows := []struct {
+		Key   string `db:"key"`
+		Value string `db:"value"`
+	}{}
+	err := s.db.SelectContext(ctx, &rows, "SELECT `key`, `value` FROM system_settings")
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(rows))
+	for _, r := range rows {
+		out[r.Key] = r.Value
+	}
+	return out, nil
 }
 
 // ---- playback_sessions（分发端写，可吊销；ADR-0006 §6） ----

@@ -64,7 +64,7 @@ function loadMasterKeys(): MasterKey[] {
 /** 单次列举 proceed 分区，按媒资聚合对象数（存储不可用 → null，不阻塞密钥列表） */
 async function countProceedObjects(): Promise<Map<string, number> | null> {
   try {
-    const objects = await getStorage().listObjects(`${STORAGE_PARTITIONS.proceed}/`);
+    const objects = await (await getStorage()).listObjects(`${STORAGE_PARTITIONS.proceed}/`);
     const counts = new Map<string, number>();
     for (const o of objects) {
       const m = PROCEED_RE.exec(o.key);

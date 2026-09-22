@@ -145,3 +145,77 @@ export const DEFAULTS = {
   subtitleTtlSec: 24 * 3600,
   hlsTimeSec: 6,
 } as const;
+
+// ---- 系统设置键注册表（system_settings key-value，ADR-0015） ----
+// 唯一真相源：键名 / 默认值 / 是否密钥在此登记；Go 侧（apps/delivery/internal/settings）
+// 手工对齐（与 token 类型同机制）。解析顺序统一为：DB 值 > env 兜底 > 出厂默认。
+export const SETTING_KEYS = {
+  // ---- 首次启动向导 ----
+  setupCompleted: "setup_completed",
+  // ---- 存储（ADR-0005：仅 S3 兼容；明文键） ----
+  s3Endpoint: "s3_endpoint",
+  s3Region: "s3_region",
+  s3Bucket: "s3_bucket",
+  s3AccessKeyId: "s3_access_key_id",
+  s3ForcePathStyle: "s3_force_path_style",
+  storageRootPrefix: "storage_root_prefix",
+  storageCdnBaseUrl: "storage_cdn_base_url",
+  // ---- 播放 / 分发 ----
+  playbackBaseUrl: "playback_base_url",
+  urlSignKeyKid: "url_sign_key_kid",
+  jwtTtlSec: "jwt_ttl_sec",
+  playbackSessionTtlSec: "playback_session_ttl_sec",
+  playbackManifestTtlSec: "playback_manifest_ttl_sec",
+  playbackSubtitleTtlSec: "playback_subtitle_ttl_sec",
+  corsOrigins: "cors_origins",
+  // ---- worker ----
+  workerPollIntervalMs: "worker_poll_interval_ms",
+  workerLeaseMs: "worker_lease_ms",
+  workerMaxAttempts: "worker_max_attempts",
+  // ---- 管理端 ----
+  adminBaseUrl: "admin_base_url",
+  adminTrustedOrigins: "admin_trusted_origins",
+  adminSessionTtlSec: "admin_session_ttl_sec",
+  mediaIdLength: "media_id_length",
+  deliveryPreviewUsername: "delivery_preview_username",
+  // ---- OIDC（可选；issuer / client_id 明文，client_secret 封装） ----
+  oidcIssuer: "oidc_issuer",
+  oidcClientId: "oidc_client_id",
+} as const;
+
+/** 密钥类设置键：值必须是 MK 封装的 hex（AES-256-GCM，ADR-0006 分层），白名单外明文写入拒绝 */
+export const SETTING_SECRET_KEYS = [
+  "url_sign_key_hex",
+  "better_auth_secret",
+  "s3_secret_access_key",
+  "oidc_client_secret",
+  "delivery_preview_password",
+] as const;
+
+export type SettingSecretKey = (typeof SETTING_SECRET_KEYS)[number];
+
+/** 设置键出厂默认值（DB 无行且 env 无值时生效；与 env-vars.md 对齐）。Record 形态便于跨端字符串索引 */
+export const SETTING_DEFAULTS: Record<string, string> = {
+  [SETTING_KEYS.s3ForcePathStyle]: "true",
+  [SETTING_KEYS.urlSignKeyKid]: "urlsign-v1",
+  [SETTING_KEYS.jwtTtlSec]: String(DEFAULTS.jwtTtlSec),
+  [SETTING_KEYS.playbackSessionTtlSec]: String(DEFAULTS.playbackSessionTtlSec),
+  [SETTING_KEYS.playbackManifestTtlSec]: String(DEFAULTS.manifestTtlSec),
+  [SETTING_KEYS.playbackSubtitleTtlSec]: String(DEFAULTS.subtitleTtlSec),
+  [SETTING_KEYS.corsOrigins]: "*",
+  [SETTING_KEYS.workerPollIntervalMs]: "2000",
+  [SETTING_KEYS.workerLeaseMs]: "60000",
+  [SETTING_KEYS.workerMaxAttempts]: "3",
+  [SETTING_KEYS.adminSessionTtlSec]: "28800",
+  [SETTING_KEYS.mediaIdLength]: "8",
+} as const;
+
+/** TTL 上限防呆（秒）：误配成"永久 token"直接拒绝保存 */
+export const SETTING_TTL_LIMITS = {
+  [SETTING_KEYS.jwtTtlSec]: { min: 300, max: 30 * 24 * 3600 },
+  [SETTING_KEYS.playbackSessionTtlSec]: { min: 300, max: 30 * 24 * 3600 },
+  // 同时用于 S3 SigV4 预签名，其有效期上限为 7 天。
+  [SETTING_KEYS.playbackManifestTtlSec]: { min: 60, max: 7 * 24 * 3600 },
+  [SETTING_KEYS.playbackSubtitleTtlSec]: { min: 60, max: 30 * 24 * 3600 },
+  [SETTING_KEYS.adminSessionTtlSec]: { min: 600, max: 30 * 24 * 3600 },
+} as const;

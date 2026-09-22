@@ -1,8 +1,8 @@
 // Package app 分发端装配与启动（ADR-0003：同一份 Go 代码服务两个部署目标）。
 //
-// 两个目标都只调用 Run()，装配逻辑单点维护、避免漂移：
+// 两个目标共用 run() 装配，避免漂移：
 //   - SCF 容器：apps/delivery/main.go（Dockerfile 静态二进制，监听 :9000）；
-//   - EdgeOne Cloud Functions：cloud-functions/index.go（Go Framework 模式，平台交叉编译后监听 :9000）。
+//   - EdgeOne Cloud Functions：cloud-functions/index.go → RunEdgeOne（适配配置与响应头，监听 :9000）。
 package app
 
 import (
@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"reflect"
 	"syscall"
 	"time"
 
@@ -33,18 +34,29 @@ const shutdownTimeout = 10 * time.Second
  * 返回非 nil 表示启动失败或服务异常退出，由调用方决定退出码（两个部署目标都是非零退出）。
  */
 func Run() error {
-	cfg, err := config.Load()
+	return run(nil)
+}
+
+func run(wrap func(http.Handler) http.Handler) error {
+	base, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	db, err := store.Open(cfg.DatabaseURL)
+	db, err := store.Open(base.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("数据库不可用: %w", err)
 	}
 	defer func() { _ = db.Close() }()
+
+	// ADR-0015：启动只依赖 DELIVERY_DATABASE_URL + MASTER_KEYS；存储凭据 / 播放签名密钥 /
+	// TTL / CORS 从 system_settings 加载（首次启动向导写入，MK 封装的密钥在此解封），env 兜底。
+	cfg, err := settingsConfig(context.Background(), db, base)
+	if err != nil {
+		return err
+	}
 
 	bl, err := blob.New(cfg.Storage)
 	if err != nil {
@@ -52,11 +64,32 @@ func Run() error {
 	}
 
 	signers := loadJWTSigners(cfg, db, logger)
+	currentCfg := cfg
+	currentHandler := server.New(server.Options{Cfg: cfg, DB: db, Blob: bl, Logger: logger, JWTKeys: signers})
+	handler := newSettingsHandler(currentHandler, func(ctx context.Context) (http.Handler, error) {
+		next, err := settingsConfig(ctx, db, base)
+		if err != nil {
+			return nil, err
+		}
+		if reflect.DeepEqual(next, currentCfg) {
+			return currentHandler, nil
+		}
+		nextBlob, err := blob.New(next.Storage)
+		if err != nil {
+			return nil, err
+		}
+		candidate := server.New(server.Options{Cfg: next, DB: db, Blob: nextBlob, Logger: logger, JWTKeys: signers})
+		currentCfg, currentHandler = next, candidate
+		return candidate, nil
+	}, logger)
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           server.New(server.Options{Cfg: cfg, DB: db, Blob: bl, Logger: logger, JWTKeys: signers}),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
+	}
+	if wrap != nil {
+		srv.Handler = wrap(srv.Handler)
 	}
 
 	// 监听失败不能只留在 goroutine 里（否则进程会静默挂着），经 channel 回传后由 Run 返回
@@ -64,7 +97,7 @@ func Run() error {
 	go func() {
 		logger.Info("delivery listening",
 			"addr", cfg.Listen, "env", cfg.Env,
-			"storage", bl.Driver(), "public_base_url", cfg.PublicBaseURL,
+			"storage", "s3", "public_base_url", cfg.PublicBaseURL,
 			"jwt_keys", len(signers), "mk_versions", len(cfg.MasterKeys))
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			listenErr <- err

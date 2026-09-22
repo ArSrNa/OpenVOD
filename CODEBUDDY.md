@@ -21,10 +21,11 @@ OpenVOD：自建云点播系统（媒资 → 转码加密 → 元数据 / 字幕
 | `task db:parity` | 校验两份 Prisma schema 的 enum/model 段逐字一致（CI 门禁） |
 | `task contracts` | zod → JSON Schema → Go struct（quicktype）。生成物**必须入库**，CI 用 `bun run check:contracts-go` diff 门禁 |
 | `task vectors` | 生成 TS/Go 加密互通测试向量；未生成时两端互通测试会 skip |
-| `./start.sh` | 后台一键启动 admin + delivery + **worker（转码队列消费者，必须一起跑）**；子命令 `stop` / `status` / `logs admin\|delivery\|worker`；pid 与日志在 `.run/`（worker 无端口，用 pid 判定存活） |
-| `./start-admin.sh` | 前台管理端调试。**会自动一并启动 Worker**（后台，日志 `.run/worker.log`），退出时一并收掉；已在跑则沿用不动它 |
-| `./start-delivery.sh` | 前台分发端调试（`task dev:delivery` 等价） |
-| `./start-worker.sh` | 前台单跑转码 Worker（观察认领 / 转码日志用）；`task dev:worker` 等价 |
+| `bun scripts/dev.ts` | 开发启动器（TS，取代旧 `./start*.sh`）：交互式勾选服务（admin / delivery / worker）与运行方式（前台调试 / 后台常驻），端口跟随 `.env` 的 `ADMIN_PORT` / `DELIVERY_LISTEN` |
+| `bun scripts/dev.ts all --background` | 后台一键启动全部（等价旧 `./start.sh`），含 **worker（转码队列消费者，必须一起跑）**；子命令 `stop` / `status` / `logs <服务>`；pid 与日志在 `.run/`（worker 无端口，用 pid 判定存活，`setsid` 独立进程组整组收） |
+| `bun scripts/dev.ts admin` | 前台管理端调试。**会自动一并启动 Worker**（后台，日志 `.run/worker.log`），退出时一并收掉；已在跑则沿用不动它 |
+| `bun scripts/dev.ts delivery` | 前台分发端调试（自动增量 `go build` 到 `.run/delivery`，`task dev:delivery` 同源） |
+| `bun scripts/dev.ts worker` | 前台单跑转码 Worker（观察认领 / 转码日志用） |
 | `task dev:worker` | 转码 Worker（Bun `--watch`，需 ffmpeg/ffprobe，缺失直接退出） |
 | `task test` | `bun test` + `go -C apps/delivery test ./...` |
 | `bun test packages/crypto/test/interop.test.ts` | 运行单个 TS 测试文件；`bun test -t "用例名"` 按名称过滤 |
@@ -33,7 +34,8 @@ OpenVOD：自建云点播系统（媒资 → 转码加密 → 元数据 / 字幕
 | `task build:delivery` | 分发端静态二进制 → `apps/delivery/bin/delivery` |
 | `task image:delivery` | 分发端镜像；SCF 仅 x86，必须显式 `--platform linux/amd64` |
 | `task image:admin` / `task image:worker` | 管理端 / Worker 镜像；构建上下文是**仓库根**（workspace 包 + Prisma 生成物在镜像内重建） |
-| `task build:edgeone` | 分发端 EdgeOne Cloud Functions 入口交叉编译门禁（与平台同款 GOOS/GOARCH） |
+| `task edgeone:prepare` | 生成 `.run/edgeone-delivery/` 独立暂存项目；Go 模块与共享源码放根目录，`cloud-functions/` 仅入口 |
+| `task build:edgeone` | 生成暂存项目、交叉编译、固定 `edgeone@1.6.41` 构建，并校验 Chi 根 catch-all 与 Linux amd64 ELF；发布上传此 `.edgeone` 产物 |
 | `bun apps/admin/scripts/create-admin.ts <email> <password≥8位> [名称]` | 创建本地管理员账号，要求目标库已建表 |
 | `bun run --cwd packages/db studio` | Prisma Studio 查看数据 |
 | `cd apps/delivery && golangci-lint run` | Go 静态检查（开发镜像已含，无 Task 封装） |
@@ -48,7 +50,7 @@ OpenVOD：自建云点播系统（媒资 → 转码加密 → 元数据 / 字幕
 播放端 App ──JWT──▶ apps/delivery（Go 1.26 + Chi，:9000）   热路径 / Data Plane
 管理台    ──Cookie▶ apps/admin（Next.js 全栈，:8787）        控制面 / Control Plane
                     └─ apps/worker（Bun 常驻）ffmpeg/ffprobe 转码
-共享：MySQL(TDSQL-C)/SQLite + 对象存储（local / S3 兼容 COS/MinIO）
+共享：MySQL(TDSQL-C)/SQLite + 对象存储（仅 S3 兼容：COS/MinIO，ADR-0005 2026-09-22 修订移除 local 驱动）
 ```
 
 核心播放流程（ADR-0006，全系统最重要）：App `POST /v1/auth/login` 取 ES256 JWT → `POST /v1/media/{id}/play` 创建可吊销 `playback_sessions` 并返回签名主清单 URL → delivery 从存储读原始 m3u8 做行级改写，将分片 / 密钥 / 字幕 URL 全部注入签名 token → 分片经 S3 预签名直出（COS 私有桶，可配 `STORAGE_CDN_BASE_URL` 加速域名替换预签名 origin；2026-09-20 修订关闭 EO TypeA），**视频字节永远不经过函数** → 播放器调 key 接口取 16B CEK 本地解密。
@@ -84,14 +86,17 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可轮换）
 
 ### 部署形态与硬约束（ADR-0003 / 0011）
 
-- delivery 同一份 Go 静态二进制的两个同级目标：EdgeOne Makers Cloud Functions（Go 1.26）或 SCF 容器；无内网依赖，数据库必须公网可达 + 强制 TLS。装配逻辑单点维护在 `apps/delivery/app`，两个入口只做 `app.Run()` 包装：`apps/delivery/main.go`（容器）与 `cloud-functions/index.go`（EdgeOne，文件名必须为 `index.go`，否则 URL 会多一层前缀）。部署细则见 `docs/vod/deploy-delivery.md`。
+- delivery 同一份 Go 业务代码的两个同级目标：EdgeOne Makers Cloud Functions（Go 1.26）或 SCF 容器；无内网依赖，数据库必须公网可达 + 强制 TLS。装配逻辑单点维护在 `apps/delivery/app`：`apps/delivery/main.go` 调用 `Run()`，`cloud-functions/index.go` 调用 `RunEdgeOne()`（适配运行配置及平台响应头，入口必须为 `index.go`），两者共用内部装配。部署细则见 `docs/vod/deploy-delivery.md`。
+- EdgeOne 发布先 `task build:edgeone`，再使用 `bun --no-env-file scripts/edgeone.ts deploy` 上传已检查的 `.edgeone` 产物到 `openvod-delivery` 的生产环境（Token 由密钥注入），最后 `bun --no-env-file scripts/check-delivery-deployment.ts <分发域名>` 验收。**不要把共享源码复制进 `cloud-functions/`**：CLI 递归扫描会把 `internal/server/server.go` 识别成入口，生成 `/server` 前缀而使 `/v1/...` 404；模块与源码副本应放暂存项目根。2026-09-22 修订详见 ADR-0003。
+- EdgeOne Go 上传产物实测未收到控制台引导变量：发布脚本显式读取 Makers Production，仅把 `DELIVERY_DATABASE_URL` / `MASTER_KEYS` 写入私有函数包配置，入口由 `app.LoadEdgeOneEnvironment()` 补齐缺失变量并固定 `:9000`。该敏感文件禁止进入静态 assets、源码、日志或公开归档，发布后清理本地副本；SCF 仍直接读取进程环境。详见 ADR-0003。
+- 部署冒烟先等待健康接口就绪（总窗口 120s、单次 30s），随后顺序验证六项路由。EdgeOne 专用响应适配必须在提交响应前写入 Makers 状态头，防止业务 401/403 被平台替换为 HTML 500；持续故障仍让门禁失败。
 - admin 为一个 Node 22 容器（`next build` + `next start`，UI/API 同源无 CORS）；worker 为 Bun 常驻容器。
 - P0 硬约束：转码禁止上任何函数；分片字节不经过函数；所有响应体 ≤6MB；SCF 镜像仅 x86。
 - 两应用共享一库一桶但独立发版；delivery 使用受限 DB 账号（约定表只读 + `playback_sessions` 读写），绝不能共用管理端全权账号；存储键前缀即隔离（`original/` 仅管理端写，布局见 `docs/vod/spec.md §1`）。
 
 ### 当前实现状态（scaffold 骨架）
 
-- `apps/delivery` 播放链路（M3）已实现：`internal/{config,contracts,server,token,auth,blob,mk,playback,store}` 与装配包 `app`——login（bcrypt + ES256 JWT）、media 列表/详情、play（会话幂等 / 并发上限）、主 + 子清单改写、`/key`、local 驱动分片流式、字幕下发（`play` 附 typ=v 签名 URL；`.vtt` 按 `storage_key` 代理输出 `no-store`，spec.md §7.5）。未覆盖项见 `docs/vod/spec.md §6.6`。
+- `apps/delivery` 播放链路（M3）已实现：`internal/{config,contracts,server,token,auth,blob,mk,playback,store}` 与装配包 `app`——login（bcrypt + ES256 JWT）、media 列表/详情、play（会话幂等 / 并发上限）、主 + 子清单改写、`/key`、分片 S3 预签名直出、字幕下发（`play` 附 typ=v 签名 URL；`.vtt` 按 `storage_key` 代理输出 `no-store`，spec.md §7.5）。未覆盖项见 `docs/vod/spec.md §6.6`。
 - `apps/worker/src/index.ts` 的转码执行链已实现（ADR-0008：认领 → ffprobe → key_info → 转码 → 上传 → 写 `hls_keys`）。
 - `apps/admin` 的 `/api/auth/*`（better-auth）、`/healthz`、登录页与建号脚本可用；`/api/admin/*` 业务端点按里程碑逐条落地——已实现：媒资（上传 / 列表 / 详情 / 重命名 / 删除 / 预览 / 封面 / 元数据 / 产物 / 转码发起）、`/api/admin/templates`、`/api/admin/keys`（含 MK 轮换）、`/api/admin/jobs`（列表 + SSE + 停止 / 重启）、`/api/admin/stats`、`/api/admin/users`（播放端用户 CRUD + 重置口令 + 吊销会话，spec.md §2.1.1）、`/api/admin/media/{id}/subtitles`（字幕轨道 CRUD + 覆盖文本，spec.md §7）；其余路径仍由 `/api/admin/[...path]` 会话守卫后返回 501。
 

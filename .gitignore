@@ -25,7 +25,9 @@ packages/db/prisma/*.db-journal
 # go
 apps/delivery/bin/
 # EdgeOne 构建用的自包含源码副本（task edgeone:prepare 生成，见 docs/vod/deploy-delivery.md）
+# 旧版构建副本仍忽略；新版项目及产物位于上面已忽略的 .run/edgeone-delivery/。
 cloud-functions/openvod/
+.edgeone/
 
 # 桌面回收站等无关目录
 .Trash-0/

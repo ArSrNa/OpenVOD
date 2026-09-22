@@ -11,11 +11,18 @@ export interface MasterKey {
 export function parseMasterKeys(env: string | undefined): MasterKey[] {
   if (!env?.trim()) throw new Error("MASTER_KEYS 未配置（见 .env.example）");
   return env.split(",").map((part) => {
-    const [verRaw, hex] = part.trim().split(":");
+    const raw = part.trim();
+    const seg = raw.split(":");
+    const verRaw = seg[0];
+    const hex = seg.length > 1 ? seg.slice(1).join(":") : "";
     const ver = Number(verRaw);
-    const key = Buffer.from(hex ?? "", "hex");
+    const key = Buffer.from(hex, "hex");
     if (!Number.isInteger(ver) || ver <= 0 || key.length !== 32) {
-      throw new Error(`MASTER_KEYS 片段非法："${part.trim()}"（应为 "版本:64位hex"，32 字节密钥）`);
+      // 报「形态」不报内容：该消息会进向导页 / 启动日志 / API 响应，
+      // 密钥值绝不能出现在任何输出里（ADR-0006 红线）。只在确为 1–3 位数字时回显版本号。
+      const verText = /^[0-9]{1,3}$/.test(verRaw ?? "") ? `版本=${verRaw}` : "版本段不是 1–3 位正整数";
+      const hexText = hex === "" ? "缺少「版本:」分隔符" : `密钥段长度 ${hex.length}（应为 64 位 hex）`;
+      throw new Error(`MASTER_KEYS 片段非法（应为 "版本:64位hex"，32 字节密钥）：${verText}，${hexText}`);
     }
     return { ver, key };
   });

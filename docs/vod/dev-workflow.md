@@ -8,9 +8,9 @@
 
 | 组件 | 目录 | 运行时 | 端口 / 探测 | 说明 |
 |---|---|---|---|---|
-| 管理端 admin（UI + API） | `apps/admin` | Node（`next dev` / `next start`） | `:8787` · `GET /healthz` | UI/API 同源，无 CORS（ADR-0013） |
-| 分发端 delivery | `apps/delivery` | Go（Chi） | `:9000` · `GET /healthz` | 播放热路径（ADR-0010） |
-| 转码 Worker | `apps/worker` | Bun（常驻） | 无端口（轮询） | 需 `ffmpeg` / `ffprobe`（ADR-0008）；`./start.sh` 已一并启动，**不启动则转码任务停在「排队中」** |
+| 管理端 admin（UI + API） | `apps/admin` | Node（`next dev` / `next start`） | `:8787` · `GET /healthz` | UI/API 同源，无 CORS（ADR-0013）；端口由 `ADMIN_PORT` 控制 |
+| 分发端 delivery | `apps/delivery` | Go（Chi） | `:9000` · `GET /healthz` | 播放热路径（ADR-0010）；端口由 `DELIVERY_LISTEN` 控制 |
+| 转码 Worker | `apps/worker` | Bun（常驻） | 无端口（轮询） | 需 `ffmpeg` / `ffprobe`（ADR-0008）；`bun scripts/dev.ts` 已一并启动，**不启动则转码任务停在「排队中」** |
 | 共享包 | `packages/{db,shared,crypto,storage,transcode,contracts}` | TS 源码直引 | — | Next 经 `transpilePackages` 转译 |
 
 ## 2. 前置工具链
@@ -115,28 +115,35 @@ mkdir -p prisma/migrations/20260918000000_init
 
 ## 5. 启动
 
+> **容器形态（预构建镜像，常驻）**：`scripts/compose.sh up` 以 docker compose 常驻运行 admin + worker
+> （镜像由流水线预构建；CNB 端口预览 / 挂载 / 公网 DB 连通已实测）。源码直跑（本节各命令）仍是日常
+> 开发调试主路径；**两种形态不要同时起**（端口冲突）。详见 [deploy-apps.md](./deploy-apps.md) 的 Compose 运行章节。
+
 ### 5.1 一键（后台运行）
 
 ```bash
-./start.sh                              # 启动 admin + delivery + worker（已在运行则跳过）
-./start.sh status                       # 运行状态（含 worker）
-./start.sh logs worker                  # 跟踪日志（admin | delivery | worker）
-./start.sh stop                         # 停止
+bun scripts/dev.ts                      # 交互式：勾选服务（admin / delivery / worker）+ 运行方式（前台调试 / 后台常驻）
+bun scripts/dev.ts all --background     # 一键后台起 admin + delivery + worker（等价旧 ./start.sh）
+bun scripts/dev.ts status               # 运行状态（含 worker）
+bun scripts/dev.ts logs worker          # 跟踪日志（admin | delivery | worker；-n 行数 / --no-follow）
+bun scripts/dev.ts stop                 # 停止（worker → delivery → admin；也可只停指定服务）
 ```
 
+- 端口跟随根 `.env` 的 `ADMIN_PORT` / `DELIVERY_LISTEN`（缺省 `8787` / `:9000`），健康探测与提示都按实际端口来。
 - 日志与 pid 在 `.run/`（已忽略）；启动前自动补依赖与 Prisma 生成物（两份客户端）。
-- 探测方式：`curl -fsS http://localhost:8787/healthz`、`http://localhost:9000/healthz`；**worker 无 HTTP 端口，存活判定用 `.run/worker.pid`**。
-- ⚠️ **worker 是转码队列的唯一消费者**：只起 admin 而不起 worker 时，管理端发起的任务会一直停在「排队中」（`transcode_jobs.attempts=0`、`lease_until` 为空即"从未被认领"）。
+- 探测方式：`curl -fsS http://localhost:${ADMIN_PORT:-8787}/healthz`、`http://localhost:${DELIVERY_LISTEN#:}/healthz`；**worker 无 HTTP 端口，存活判定用 `.run/worker.pid`**。
+- 后台服务用 `setsid` 起独立进程组，停止时整组收掉（`bun --watch` 吞 SIGTERM → TERM 宽限后 SIGKILL 兜底）。
+- ⚠️ **worker 是转码队列的唯一消费者**：只起 admin 而不起 worker 时，管理端发起的任务会一直停在「排队中」（`transcode_jobs.attempts=0`、`lease_until` 为空即"从未被认领"）；启动 admin 会自动带起 worker（`--no-worker` 关闭）。
 
 ### 5.2 单服务前台（调试用）
 
 | 命令 | 服务 | 说明 |
 |---|---|---|
-| `./start-admin.sh` | 管理端 `:8787` | 前台，`next dev`；自动加载根 `.env`、补依赖与生成物。**并会自动后台启动 Worker**（日志 `.run/worker.log`），脚本退出（含 Ctrl-C）时一并停掉；若已有 Worker 在跑则沿用、退出时不动它 |
-| `./start-delivery.sh` | 分发端 `:9000` | 前台；每次增量 `go build` 到 `.run/delivery` |
-| `./start-worker.sh` | Worker | 前台单跑（观察认领 / 转码日志）；需 `ffmpeg`/`ffprobe` |
-| `task dev:admin` | 管理端 `:8787` | 同 `start-admin.sh`（含 `.env` 注入）；**注意：此路径不自动起 Worker**，转码需另开 `task dev:worker` |
-| `task dev:delivery` | 分发端 `:9000` | `go run .`（含 `.env` 注入） |
+| `bun scripts/dev.ts admin` | 管理端（`ADMIN_PORT`） | 前台，`next dev`；自动加载根 `.env`、补依赖与生成物。**并会自动后台启动 Worker**（日志 `.run/worker.log`），退出（含 Ctrl-C）时一并停掉；若已有 Worker 在跑则沿用、退出时不动它 |
+| `bun scripts/dev.ts delivery` | 分发端（`DELIVERY_LISTEN`） | 前台；每次增量 `go build` 到 `.run/delivery`；`DELIVERY_DATABASE_URL` 为本地占位时自动回退 `DATABASE_URL` |
+| `bun scripts/dev.ts worker` | Worker | 前台单跑（观察认领 / 转码日志）；需 `ffmpeg`/`ffprobe` |
+| `task dev:admin` | 管理端（`ADMIN_PORT`） | `next dev` + `.env` 注入；**注意：此路径不自动起 Worker**，转码需另开 `task dev:worker` |
+| `task dev:delivery` | 分发端（`DELIVERY_LISTEN`） | `go run .`（含 `.env` 注入） |
 | `task dev:worker` | Worker | `bun --watch`，需 `ffmpeg`/`ffprobe` |
 
 ### 5.3 播放链路本地调试（M3；规则见 spec.md §6）
@@ -146,7 +153,7 @@ mkdir -p prisma/migrations/20260918000000_init
 bun apps/admin/scripts/bootstrap-playback.ts demo <密码≥8位>
 
 # 2) 分发端：本地调试需把 DELIVERY_DATABASE_URL 指向可达库（.env 里是 127.0.0.1 占位，见 §8）
-DELIVERY_DATABASE_URL="$DATABASE_URL" ./start-delivery.sh    # 或直接改 .env
+bun scripts/dev.ts delivery    # 启动器在该值为空/127.0.0.1/localhost 时自动回退用 DATABASE_URL（亦可直接改 .env）
 
 # 3) login 取 JWT → play 取签名主清单 URL
 TOKEN=$(curl -s -X POST localhost:9000/v1/auth/login -H 'content-type: application/json' \
@@ -164,10 +171,10 @@ ffprobe "$MF" && ffmpeg -i "$MF" -c copy /tmp/out.mp4
 - 多套模板产物时 `play` 可带 `template_id`（不指定则取唯一产物或默认模板产物）；
 - M3 未覆盖项（限频 / 严格模式 / sqlite 驱动）见 spec.md §6.6；CDN+TypeA 演进项已于 2026-09-20 关闭（S3 预签名直出定稿，ADR-0005 修订）。
 
-> 启动脚本都会先加载根 `.env`。直接 `bun run --cwd apps/admin dev` 会缺少
+> `bun scripts/dev.ts` 会先加载根 `.env`。直接 `bun run --cwd apps/admin dev` 会缺少
 > `BETTER_AUTH_SECRET` / `DATABASE_URL`（Next 只读 `apps/admin/.env`，该文件默认不存在）。
 
-访问：管理端 <http://localhost:8787>（未登录会 307 到 `/login`）；分发端健康检查 <http://localhost:9000/healthz>。
+访问：管理端 <http://localhost:${ADMIN_PORT:-8787}>（未登录会 307 到 `/login`）；分发端健康检查 <http://localhost:${DELIVERY_LISTEN#:}/healthz>。
 
 ## 6. 创建本地管理员账号（ADR-0012 双轨 / ADR-0013）
 
@@ -200,20 +207,26 @@ task contracts            # 契约生成物变更后需入库（契约门禁）
 | `P3009 failed migrations` + MySQL `1064` near `'--…'` | 迁移 SQL 的 `--` 注释后**必须跟空格**（紧跟文字时 MySQL 不识别为注释，整个文件报 1064 且被记为 failed 挡住后续迁移）。修正 SQL 后：`bunx prisma migrate resolve --rolled-back <迁移名> --schema prisma/schema.mysql.prisma`，再 `task db:migrate` |
 | `P3014 could not create the shadow database` | 账号无建库权限；按 §4.3 的 baseline 四步，不要用 `migrate dev` |
 | 登录 403 + `[Better Auth]: Invalid origin: http://xxx` | CNB 预览网关转发时会把请求头 `Origin` 改写成 `http://<目标域名>`（实测：任意 Origin 都被改写，与浏览器是否用 https 无关）。`auth.ts` 已把 `ADMIN_BASE_URL` 的 http 等同体加进 `trustedOrigins`；仍报错时核对 `ADMIN_BASE_URL` 的 host 是否就是访问域名（CNB 上若注入了 `CNB_VSCODE_PROXY_URI`，`auth.ts` 已自动按 `{{port}} → ADMIN_PORT` 覆盖，无需手填）。附：better-auth 对无通配符条目做全量相等比对，`ADMIN_TRUSTED_ORIGINS` 里裸域名会被展开为 http/https 两条 |
-| 分发端启动即退出，提示 `URL_SIGN_KEY_HEX 未配置` / `MASTER_KEYS 未配置` | 未加载 `.env`；改用 `./start-delivery.sh` 或 `task dev:delivery` |
-| 分发端启动报 `数据库连接失败: dial tcp 127.0.0.1:3306` | `.env` 的 `DELIVERY_DATABASE_URL` 是本地占位；本地调试用 `DELIVERY_DATABASE_URL="$DATABASE_URL" ./start-delivery.sh`（生产必须用受限账号，ADR-0011） |
+| 分发端启动即退出，提示 `URL_SIGN_KEY_HEX 未配置` / `MASTER_KEYS 未配置` | 未加载 `.env`；改用 `bun scripts/dev.ts delivery` 或 `task dev:delivery` |
+| 管理端向导页报 `MASTER_KEYS 未配置/非法`，但部署环境明明配了 | 该判定同时覆盖两种情况：①**运行进程 env 里没有**——配在构建期（CI/镜像构建参数）、只配了 worker 没配 admin、或改了 `.env` 后没重建容器（compose 必须 `up -d --force-recreate admin worker`，`restart` 不重读 env_file）；②**值格式非法**——带引号 / 含空白或换行 / 全角冒号「：」/ hex 不足 64 位（`openssl rand -hex 32`）。自查：启动日志 `[admin] MASTER_KEYS 自检失败：<原因>`（`bun scripts/dev.ts logs admin`）或 `docker compose exec admin printenv MASTER_KEYS \| cut -c1-12`（**只看前缀，别把密钥贴进聊天/日志**）；向导页也会直接显示原因。`.env` 侧另有 `sh scripts/gen-env.sh --check`，但它只查存在性与占位值，不校验格式 |
+| 点「密钥管理」被弹回 `/setup`（即使已登录） | 服务端守卫先判向导再判会话（`apps/admin/src/lib/console.ts`）：`system_settings.setup_completed` 非 `1` → 跳 `/setup`（**说明该 admin 进程连的库里没有初始化标记**：向导没走完，或 `DATABASE_URL`/`DB_PROVIDER` 指到了另一个库）；读库抛错反而按“已完成”处理 → 跳 `/login` 而非 `/setup`。已在库中的初始化状态可用 `curl -s <admin>/api/setup` 判定：403「系统已完成初始化」= 正常 |
+| 分发端启动报 `数据库连接失败: dial tcp 127.0.0.1:3306` | `.env` 的 `DELIVERY_DATABASE_URL` 是本地占位；`bun scripts/dev.ts delivery` 会自动回退用 `DATABASE_URL`（亦可手动 `DELIVERY_DATABASE_URL="$DATABASE_URL" bun scripts/dev.ts delivery`；生产必须用受限账号，ADR-0011） |
 | `login` 返回 503「未配置 JWT 签名密钥」 | `signing_keys` 无 ACTIVE 的 JWT 行：`bun apps/admin/scripts/bootstrap-playback.ts <用户> <密码≥8位>` 后重启分发端 |
 | `play` 返回 409 `not_playable` | 媒资非 `READY`（转码中 / 失败）、该媒资无转码产物，或多套产物未指定 `template_id`（响应消息会列出可选值；模板 ID 亦可在管理端媒资详情查看） |
-| 管理端「产物 → 播放」有总时长但一直转圈 | **对象桶 CORS 未放行管理端源站**（s3 形态：浏览器直连 COS 拉分片被拦；`curl -H "Origin: http://localhost:8787" <预签名分片 URL>` 可复现「200 但没有 `Access-Control-Allow-Origin`」）。到 COS 控制台加 CORS 规则：Origin 含管理端访问源站（本地 `http://localhost:8787`、CNB 预览 `https://*.cnb.run` 或 `*`）、Method `GET/HEAD`、Header `*`、ExposeHeader `ETag, Content-Length, Content-Range, Accept-Ranges`。临时本地验证可把 `STORAGE_DRIVER` 切 `local`（分片经分发端流式输出，自带 CORS，无需桶配置） |
+| EdgeOne 部署后管理端预览 404，`/healthz` 也返回 Makers HTML `NOT_FOUND` / `The site does not exist` | 请求未到达 delivery。旧构建把共享 Go 源码放入 `cloud-functions/`，CLI 将 `server.go` 识别为 Framework 入口并生成 `/server` 前缀；改用 `task build:edgeone` 构建独立暂存项目并校验根 catch-all，`bun --no-env-file scripts/edgeone.ts deploy` 上传受检查产物到生产环境。再用 `bun --no-env-file scripts/check-delivery-deployment.ts <分发域名>` 验收健康 JSON 与无签名 403；若仍是平台 HTML 404，核对 Makers 域名绑定和生产部署。验收通过后在管理端重新生成播放 URL，完整步骤见 [deploy-delivery.md](./deploy-delivery.md) |
+| Makers 控制台已配置变量，但 Go 函数仍 502、日志报 `DELIVERY_DATABASE_URL 未配置` | Go Framework 上传产物未收到引导变量。使用更新后的 `scripts/edgeone.ts build` / `deploy`：发布前从控制台 Production 读取两项引导配置，写入私有函数包，由 EdgeOne 入口补齐进程环境。检查 `EO_API_REGION` 是否与账号站点一致；不要把 admin 的整份 `.env` 放进公开产物。控制台变量必须在发布前保存。详见 [deploy-delivery.md](./deploy-delivery.md) |
+| 管理端「产物 → 播放」有总时长但一直转圈 | **对象桶 CORS 未放行管理端源站**（浏览器直连 COS 拉分片被拦；`curl -H "Origin: http://localhost:8787" <预签名分片 URL>` 可复现「200 但没有 `Access-Control-Allow-Origin`」）。到 COS 控制台加 CORS 规则：Origin 含管理端访问源站（本地 `http://localhost:8787`、CNB 预览 `https://*.cnb.run` 或 `*`）、Method `GET/HEAD`、Header `*`、ExposeHeader `ETag, Content-Length, Content-Range, Accept-Ranges` |
 | `[worker] 缺少必需工具：ffmpeg, ffprobe` | 装 ffmpeg（`.ide/Dockerfile` 镜像已含） |
 | 运行时报 `Cannot find module '@openvod/xxx'`（某 app 里） | **该 app 的 `package.json` 没声明这个 workspace 依赖**：bun 只给声明了依赖的包建软链，缺声明时从该包内解析不到（`packages/*` 之间同理）。补 `"@openvod/xxx": "workspace:*"` 后 `bun i`。已在 `packages/crypto`（→ shared）与 `apps/worker`（→ contracts）踩到过 |
 | 管理端 `Error: [safe-delete]...SAFE_DELETE_BULK_CONFIRM_REQUIRED`（构建时） | Next 清理 `.next/turbopack` 触发环境的批量删除保护；先 `rm -rf apps/admin/.next` 再 `task build:admin` |
-| 任务一直停在「排队中」 | **worker 没在跑**（最常见）：`./start.sh status` 看 worker 行；起起来用 `./start.sh`（含 worker）或 `task dev:worker`。判据：该行 `attempts=0` 且 `lease_until` 为空 = 从未被任何消费者认领。若两者都非空，则是上一实例仍在执行或 lease 未过期（`WORKER_LEASE_MS`）|
+| 任务一直停在「排队中」 | **worker 没在跑**（最常见）：`bun scripts/dev.ts status` 看 worker 行；起起来用 `bun scripts/dev.ts all --background`（含 worker）或 `task dev:worker`。判据：该行 `attempts=0` 且 `lease_until` 为空 = 从未被任何消费者认领。若两者都非空，则是上一实例仍在执行或 lease 未过期（`WORKER_LEASE_MS`）|
 | 任务反复失败 / `last_error` 提到「重试次数已达上限」 | Worker 崩溃循环；看 `last_error` 根因（常见：`MASTER_KEYS 不可用`、源片缺失、模板快照非法）。修好后在「转码任务」页重新发起。注：档位「全部被跳过」已不再判失败（2026-09-18 起改走源规格兜底产出，spec.md §5.4） |
 | 「转码任务」页一直显示「连接中断，自动重连中…」 | SSE 长连接被中间层掐断或缓冲：浏览器会自动重连（端点已带 `no-store` / `X-Accel-Buffering: no`，反向代理需放行长连接）；若会话已过期，重连 401，重新登录即可 |
-| Worker 停不掉 / 有看不见的残留消费者 | `bun --watch` 会吞 SIGTERM，必须整组 SIGKILL：用 `./start.sh stop`（按 `.run/worker.pid` 对进程组收尾）。若启动脚本曾被 `\| head`/`\| grep` 之类管道提前中断（SIGPIPE 会跳过退出清理），pid 文件仍在，`./start.sh stop` 照样能收掉 |
-| 管理端 `Fast Refresh had to perform a full reload due to a runtime error` | 通常是上面某类运行时错误的连带表现，先按上表修根因，再重启 `./start-admin.sh` |
-| 端口被占 / `已是运行状态` | `./start.sh status` 查看，`./start.sh stop` 停止；或换 `ADMIN_PORT` / `DELIVERY_LISTEN` |
+| 控制台页面卡住约 60s（`GET /xxx 200 in 60s`）并报 `⨯ Error: The destination stream closed early.`（浏览器侧另有 `Uncaught TypeError: network error`），末端跟随 `[Better Auth]: Provider "generic-oidc": discovery left no usable …` 或 `Discovery fetch failed` | 出口网络 / IdP 抖动时，better-auth 的 OIDC discovery（`${OIDC_ISSUER}/.well-known/openid-configuration`）**无超时**且落在 `auth.api.getSession()` 的首次调用路径上——也就是每个控制台页面（`requireConsoleSession()`），请求被拖到 TCP 超时（实测 132s；客户端 / 网关约 60s 先放弃，故表现为 60s + React 流被关）。provider 注册前已由 `apps/admin/src/lib/oidc.ts` 带 3s 超时预检：**未配置 issuer（DB 键与 env 皆空）时直接返回、不触网**；预检失败即本次实例不注册 generic-oidc（SSO 暂不可用，**本地邮箱密码登录不受影响**），日志 `[admin] OIDC discovery 预检失败（…）`。要恢复 SSO 需核对 `admin_oidc_issuer`（或 `OIDC_ISSUER`，CNB 走密钥注入、**不出现在 `.env`**）与容器出口网络 |
+| Worker 停不掉 / 有看不见的残留消费者 | `bun --watch` 会吞 SIGTERM，必须整组 SIGKILL：用 `bun scripts/dev.ts stop worker`（按 `.run/worker.pid` 对进程组收尾）。若启动脚本曾被 `\| head`/`\| grep` 之类管道提前中断，pid 文件仍在，`bun scripts/dev.ts stop` 照样能收掉 |
+| 管理端 `Fast Refresh had to perform a full reload due to a runtime error` | 通常是上面某类运行时错误的连带表现，先按上表修根因，再重启 `bun scripts/dev.ts admin` |
+| 端口被占 / `已是运行状态` | `bun scripts/dev.ts status` 查看，`bun scripts/dev.ts stop` 停止；或换 `ADMIN_PORT` / `DELIVERY_LISTEN` |
+| `bun scripts/dev.ts stop` 执行了，端口仍被占用（status 显示 `pid -`） | 占用者不是本启动器起的进程，典型是 **compose 容器**（`docker ps` 里 `openvod-admin-1` 映射 `0.0.0.0:9000->9000`）：`dev.ts` 只收 `.run/*.pid` 记录的进程组，容器要用 `docker compose stop admin` / `docker compose down`（连 worker 容器一起停）。注意 worker 必须单实例——容器 worker 在跑时别再用 dev 起 worker（两个消费者同抢 `transcode_jobs`），先 `docker compose stop worker` |
 | `bun run --cwd packages/db exec ...` 报 `Script not found "exec"` | 用 `cd packages/db && ./node_modules/.bin/prisma ...` |
 
 ## 9. 目录与忽略规则
@@ -221,7 +234,7 @@ task contracts            # 契约生成物变更后需入库（契约门禁）
 | 路径 | 说明 |
 |---|---|
 | `.env` | 本地密钥，不入库（真源在 CNB 密钥仓库） |
-| `.run/` | `start.sh` 的 pid / 日志 / delivery 二进制 |
+| `.run/` | `scripts/dev.ts` 的 pid / 日志 / delivery 二进制，以及 `edgeone-delivery/` 的暂存源码与受检查部署产物 |
 | `packages/db/generated/` | Prisma 生成物（按方言，不入库） |
 | `packages/db/prisma/*.db` | SQLite 开发库文件 |
 | `packages/contracts/jsonschema/`、`apps/delivery/internal/contracts/` | 契约生成物，**需要入库** |

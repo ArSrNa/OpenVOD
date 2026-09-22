@@ -113,14 +113,14 @@ export const defaultSubtitleDeps: SubtitleDeps = {
   newTrackId: () => generateSubtitleTrackId(),
 
   putObject: async (key, bytes) => {
-    await getStorage().put(key, bytes, SUBTITLE_CONTENT_TYPE);
+    await (await getStorage()).put(key, bytes, SUBTITLE_CONTENT_TYPE);
   },
 
-  getObject: async (key) => getStorage().get(key),
+  getObject: async (key) => (await getStorage()).get(key),
 
   deleteObject: async (key) => {
     try {
-      await getStorage().delete(key);
+      await (await getStorage()).delete(key);
     } catch {
       // 删除幂等：对象已不存在等异常不阻断（spec.md §7.2）
     }
@@ -128,7 +128,7 @@ export const defaultSubtitleDeps: SubtitleDeps = {
 
   objectExists: async (key) => {
     try {
-      return Boolean(await getStorage().stat(key));
+      return Boolean(await (await getStorage()).stat(key));
     } catch {
       return null; // 存储不可用 → storage_ok = null（列表仍可用）
     }

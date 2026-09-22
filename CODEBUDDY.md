@@ -34,7 +34,8 @@ OpenVOD：自建云点播系统（媒资 → 转码加密 → 元数据 / 字幕
 | `task build:delivery` | 分发端静态二进制 → `apps/delivery/bin/delivery` |
 | `task image:delivery` | 分发端镜像；SCF 仅 x86，必须显式 `--platform linux/amd64` |
 | `task image:admin` / `task image:worker` | 管理端 / Worker 镜像；构建上下文是**仓库根**（workspace 包 + Prisma 生成物在镜像内重建） |
-| `task build:edgeone` | 分发端 EdgeOne Cloud Functions 入口交叉编译门禁（与平台同款 GOOS/GOARCH） |
+| `task edgeone:prepare` | 生成 `.run/edgeone-delivery/` 独立暂存项目；Go 模块与共享源码放根目录，`cloud-functions/` 仅入口 |
+| `task build:edgeone` | 生成暂存项目、交叉编译、固定 `edgeone@1.6.41` 构建，并校验 Chi 根 catch-all 与 Linux amd64 ELF；发布上传此 `.edgeone` 产物 |
 | `bun apps/admin/scripts/create-admin.ts <email> <password≥8位> [名称]` | 创建本地管理员账号，要求目标库已建表 |
 | `bun run --cwd packages/db studio` | Prisma Studio 查看数据 |
 | `cd apps/delivery && golangci-lint run` | Go 静态检查（开发镜像已含，无 Task 封装） |
@@ -86,6 +87,7 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可轮换）
 ### 部署形态与硬约束（ADR-0003 / 0011）
 
 - delivery 同一份 Go 静态二进制的两个同级目标：EdgeOne Makers Cloud Functions（Go 1.26）或 SCF 容器；无内网依赖，数据库必须公网可达 + 强制 TLS。装配逻辑单点维护在 `apps/delivery/app`，两个入口只做 `app.Run()` 包装：`apps/delivery/main.go`（容器）与 `cloud-functions/index.go`（EdgeOne，文件名必须为 `index.go`，否则 URL 会多一层前缀）。部署细则见 `docs/vod/deploy-delivery.md`。
+- EdgeOne 发布先 `task build:edgeone`，再使用 `bun --no-env-file scripts/edgeone.ts deploy` 上传已检查的 `.edgeone` 产物到 `openvod-delivery` 的生产环境（Token 由密钥注入），最后 `bun --no-env-file scripts/check-delivery-deployment.ts <分发域名>` 验收。**不要把共享源码复制进 `cloud-functions/`**：CLI 递归扫描会把 `internal/server/server.go` 识别成入口，生成 `/server` 前缀而使 `/v1/...` 404；模块与源码副本应放暂存项目根。2026-09-22 修订详见 ADR-0003。
 - admin 为一个 Node 22 容器（`next build` + `next start`，UI/API 同源无 CORS）；worker 为 Bun 常驻容器。
 - P0 硬约束：转码禁止上任何函数；分片字节不经过函数；所有响应体 ≤6MB；SCF 镜像仅 x86。
 - 两应用共享一库一桶但独立发版；delivery 使用受限 DB 账号（约定表只读 + `playback_sessions` 读写），绝不能共用管理端全权账号；存储键前缀即隔离（`original/` 仅管理端写，布局见 `docs/vod/spec.md §1`）。

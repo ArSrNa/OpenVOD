@@ -8,7 +8,7 @@ branch:
         description: 构建 apps/delivery 镜像并推送到 CNB 制品库（ADR-0003 SCF 容器目标）
         event: web_trigger_delivery_docker
       - name: 构建delivery（Edgeone）
-        description: 交叉编译门禁 + edgeone makers deploy（项目 openvod-delivery；Token 取自密钥仓库 EO_SECRET）
+        description: Makers 产物路由校验、生产部署与域名冒烟（项目 openvod-delivery；Token 取自 EO_SECRET）
         event: web_trigger_delivery_edgeone
       - name: 构建admin（Docker）
         description: 构建 apps/admin 镜像并推送到 CNB 制品库（ADR-0013 管理端容器）

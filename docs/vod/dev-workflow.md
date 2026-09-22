@@ -213,6 +213,7 @@ task contracts            # 契约生成物变更后需入库（契约门禁）
 | 分发端启动报 `数据库连接失败: dial tcp 127.0.0.1:3306` | `.env` 的 `DELIVERY_DATABASE_URL` 是本地占位；`bun scripts/dev.ts delivery` 会自动回退用 `DATABASE_URL`（亦可手动 `DELIVERY_DATABASE_URL="$DATABASE_URL" bun scripts/dev.ts delivery`；生产必须用受限账号，ADR-0011） |
 | `login` 返回 503「未配置 JWT 签名密钥」 | `signing_keys` 无 ACTIVE 的 JWT 行：`bun apps/admin/scripts/bootstrap-playback.ts <用户> <密码≥8位>` 后重启分发端 |
 | `play` 返回 409 `not_playable` | 媒资非 `READY`（转码中 / 失败）、该媒资无转码产物，或多套产物未指定 `template_id`（响应消息会列出可选值；模板 ID 亦可在管理端媒资详情查看） |
+| EdgeOne 部署后管理端预览 404，`/healthz` 也返回 Makers HTML `NOT_FOUND` / `The site does not exist` | 请求未到达 delivery。旧构建把共享 Go 源码放入 `cloud-functions/`，CLI 将 `server.go` 识别为 Framework 入口并生成 `/server` 前缀；改用 `task build:edgeone` 构建独立暂存项目并校验根 catch-all，`bun --no-env-file scripts/edgeone.ts deploy` 上传受检查产物到生产环境。再用 `bun --no-env-file scripts/check-delivery-deployment.ts <分发域名>` 验收健康 JSON 与无签名 403；若仍是平台 HTML 404，核对 Makers 域名绑定和生产部署。验收通过后在管理端重新生成播放 URL，完整步骤见 [deploy-delivery.md](./deploy-delivery.md) |
 | 管理端「产物 → 播放」有总时长但一直转圈 | **对象桶 CORS 未放行管理端源站**（浏览器直连 COS 拉分片被拦；`curl -H "Origin: http://localhost:8787" <预签名分片 URL>` 可复现「200 但没有 `Access-Control-Allow-Origin`」）。到 COS 控制台加 CORS 规则：Origin 含管理端访问源站（本地 `http://localhost:8787`、CNB 预览 `https://*.cnb.run` 或 `*`）、Method `GET/HEAD`、Header `*`、ExposeHeader `ETag, Content-Length, Content-Range, Accept-Ranges` |
 | `[worker] 缺少必需工具：ffmpeg, ffprobe` | 装 ffmpeg（`.ide/Dockerfile` 镜像已含） |
 | 运行时报 `Cannot find module '@openvod/xxx'`（某 app 里） | **该 app 的 `package.json` 没声明这个 workspace 依赖**：bun 只给声明了依赖的包建软链，缺声明时从该包内解析不到（`packages/*` 之间同理）。补 `"@openvod/xxx": "workspace:*"` 后 `bun i`。已在 `packages/crypto`（→ shared）与 `apps/worker`（→ contracts）踩到过 |
@@ -232,7 +233,7 @@ task contracts            # 契约生成物变更后需入库（契约门禁）
 | 路径 | 说明 |
 |---|---|
 | `.env` | 本地密钥，不入库（真源在 CNB 密钥仓库） |
-| `.run/` | `scripts/dev.ts` 的 pid / 日志 / delivery 二进制 |
+| `.run/` | `scripts/dev.ts` 的 pid / 日志 / delivery 二进制，以及 `edgeone-delivery/` 的暂存源码与受检查部署产物 |
 | `packages/db/generated/` | Prisma 生成物（按方言，不入库） |
 | `packages/db/prisma/*.db` | SQLite 开发库文件 |
 | `packages/contracts/jsonschema/`、`apps/delivery/internal/contracts/` | 契约生成物，**需要入库** |

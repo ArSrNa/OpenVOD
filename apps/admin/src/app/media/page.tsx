@@ -12,7 +12,7 @@ export const metadata: Metadata = {
 export default async function MediaPage() {
   const session = await requireConsoleSession();
   return (
-    <ConsoleShell userName={session.user.name} version={pkg.version} initialPath="/media">
+    <ConsoleShell userName={session.user.name} version={pkg.version}>
       <MediaList />
     </ConsoleShell>
   );

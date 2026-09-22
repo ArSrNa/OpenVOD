@@ -14,7 +14,7 @@ export const metadata: Metadata = {
 export default async function UsersPage() {
   const session = await requireConsoleSession();
   return (
-    <ConsoleShell userName={session.user.name} version={pkg.version} initialPath="/users">
+    <ConsoleShell userName={session.user.name} version={pkg.version}>
       <UsersManager />
     </ConsoleShell>
   );

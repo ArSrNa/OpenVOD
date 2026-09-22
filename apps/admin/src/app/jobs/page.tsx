@@ -12,7 +12,7 @@ export const metadata: Metadata = {
 export default async function JobsPage() {
   const session = await requireConsoleSession();
   return (
-    <ConsoleShell userName={session.user.name} version={pkg.version} initialPath="/jobs">
+    <ConsoleShell userName={session.user.name} version={pkg.version}>
       <JobsManager />
     </ConsoleShell>
   );

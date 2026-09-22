@@ -12,7 +12,7 @@ export const metadata: Metadata = {
 export default async function TemplatesPage() {
   const session = await requireConsoleSession();
   return (
-    <ConsoleShell userName={session.user.name} version={pkg.version} initialPath="/templates">
+    <ConsoleShell userName={session.user.name} version={pkg.version}>
       <TemplatesManager />
     </ConsoleShell>
   );

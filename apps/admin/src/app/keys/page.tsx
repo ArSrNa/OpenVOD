@@ -12,7 +12,7 @@ export const metadata: Metadata = {
 export default async function KeysPage() {
   const session = await requireConsoleSession();
   return (
-    <ConsoleShell userName={session.user.name} version={pkg.version} initialPath="/keys">
+    <ConsoleShell userName={session.user.name} version={pkg.version}>
       <KeysManager />
     </ConsoleShell>
   );

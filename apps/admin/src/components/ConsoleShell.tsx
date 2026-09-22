@@ -16,7 +16,7 @@ import {
 import { PageContainer, ProCard, ProLayout } from "@ant-design/pro-components";
 import { Dropdown, Empty, Spin, Typography } from "antd";
 import Image from "next/image";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { authClient } from "@/lib/auth-client";
 
@@ -90,18 +90,18 @@ function BrandLogo() {
 export function ConsoleShell({
   userName,
   version,
-  initialPath,
   children,
 }: {
   userName: string;
   version: string;
-  /** 真实路由页（/、/media、/about）传入：用于初始菜单选中 */
-  initialPath?: string;
   /** 页面内容；未实现模块渲染 scaffold 占位 */
   children?: ReactNode;
 }) {
   const router = useRouter();
-  const [current, setCurrent] = useState<string>(initialPath ?? MODULES[0].key);
+  // 当前 URL 是菜单选中与内容区判定的唯一真相源
+  const pathname = usePathname();
+  // 未实现模块只切内容区、不产生 URL，因此单独记录；真实导航后失效（见下方 effect）
+  const [placeholder, setPlaceholder] = useState<string | null>(null);
   // ProLayout 内部的 useBreakpoint 在客户端首帧渲染期同步读取 window.matchMedia
   // （SSR 恒为 false）：视口 < 992px 时侧边栏初始即折叠（64px、logo 无 <h1>、根节点多
   // screen-* class），与服务端展开态形成结构性差异，必然触发 hydration mismatch。
@@ -109,6 +109,9 @@ export function ConsoleShell({
   // 仅壳层首帧短暂显示占位，无额外代价。
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
+  // 真实导航（含前进/后退）后占位态失效，菜单高亮与内容区重新跟随 URL
+  useEffect(() => setPlaceholder(null), [pathname]);
+  const current = placeholder ?? pathname;
   const active = ALL_ENTRIES.find((m) => m.key === current) ?? MODULES[0];
   // 当前内容区是否为未实现模块的占位页（真实路由页的 children 总是渲染）
   const showPlaceholder = !ROUTE_PAGES.has(current);
@@ -124,10 +127,13 @@ export function ConsoleShell({
   const handleMenuClick = (path?: string) => {
     if (!path) return;
     if (ROUTE_PAGES.has(path)) {
-      if (path !== current) router.push(path);
+      // 必须先清占位：从占位态点回「当前 URL 对应的页面」时 router.push 是空操作，
+      // 组件不重挂载也不会重置状态，界面会卡在占位页（切页失效的根因）
+      setPlaceholder(null);
+      if (path !== pathname) router.push(path);
       return;
     }
-    setCurrent(path);
+    setPlaceholder(path);
   };
 
   if (!mounted) {
@@ -161,7 +167,15 @@ export function ConsoleShell({
       route={ROUTE}
       location={{ pathname: current }}
       menuItemRender={(item, dom) => (
-        <div onClick={() => handleMenuClick(item.path)}>{dom}</div>
+        <div
+          onClick={(event) => {
+            // dom 内层是链接，先掐掉默认的整页跳转，统一交给 router.push 走 SPA 导航
+            event.preventDefault();
+            handleMenuClick(item.path);
+          }}
+        >
+          {dom}
+        </div>
       )}
       avatarProps={{
         icon: <UserOutlined />,

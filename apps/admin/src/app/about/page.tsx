@@ -12,7 +12,7 @@ export const metadata: Metadata = {
 export default async function AboutPage() {
   const session = await requireConsoleSession();
   return (
-    <ConsoleShell userName={session.user.name} version={pkg.version} initialPath="/about">
+    <ConsoleShell userName={session.user.name} version={pkg.version}>
       <AboutContent version={pkg.version} />
     </ConsoleShell>
   );

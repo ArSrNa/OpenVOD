@@ -14,7 +14,7 @@ export const metadata: Metadata = {
 export default async function PlaybackSettingsPage() {
   const session = await requireConsoleSession();
   return (
-    <ConsoleShell userName={session.user.name} version={pkg.version} initialPath="/settings/playback">
+    <ConsoleShell userName={session.user.name} version={pkg.version}>
       <SettingsManager />
     </ConsoleShell>
   );

@@ -12,7 +12,7 @@ export const metadata: Metadata = {
 export default async function SubtitlesPage() {
   const session = await requireConsoleSession();
   return (
-    <ConsoleShell userName={session.user.name} version={pkg.version} initialPath="/subtitles">
+    <ConsoleShell userName={session.user.name} version={pkg.version}>
       <SubtitleTracksPage />
     </ConsoleShell>
   );

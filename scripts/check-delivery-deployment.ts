@@ -3,6 +3,7 @@
  * 部署后确认公开域名的请求确实到达 delivery，而非 EdgeOne 静态页或其他服务。
  * 用法：bun --no-env-file scripts/check-delivery-deployment.ts https://delivery.example.com
  *
+ * CLI 先等待 healthz 就绪（最多 120s），再逐项检查（单次最多 30s）。
  * 不需要账号、现有媒资或播放 token，不读取 .env，也不输出响应正文。
  * unsigned 403 当前不承诺 no-store；本检查不能替代有效签名清单 / 密钥响应的
  * Cache-Control: no-store 门禁（ADR-0006）。
@@ -15,6 +16,7 @@ export interface CheckResult {
   path: string;
   ok: boolean;
   detail: string;
+  retryable?: boolean;
 }
 
 interface Probe {
@@ -76,7 +78,7 @@ function record(value: unknown): Record<string, unknown> | undefined {
 }
 
 async function checkProbe(base: string, probe: Probe, fetcher: Fetcher, timeoutMs: number): Promise<CheckResult> {
-  const result = (ok: boolean, detail: string): CheckResult => ({ name: probe.name, path: probe.path, ok, detail });
+  const result = (ok: boolean, detail: string, retryable = false): CheckResult => ({ name: probe.name, path: probe.path, ok, detail, ...(retryable ? { retryable } : {}) });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -89,7 +91,7 @@ async function checkProbe(base: string, probe: Probe, fetcher: Fetcher, timeoutM
     const contentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
     if (response.status === 404 && contentType === "text/html") {
       await response.body?.cancel();
-      return result(false, "收到平台 HTML 404，未到达 delivery；检查自定义域名绑定、生产部署及 Cloud Functions 路由");
+      return result(false, "收到平台 HTML 404，未到达 delivery；检查自定义域名绑定、生产部署及 Cloud Functions 路由", true);
     }
     if (response.status >= 300 && response.status < 400) {
       await response.body?.cancel();
@@ -97,14 +99,14 @@ async function checkProbe(base: string, probe: Probe, fetcher: Fetcher, timeoutM
     }
     if (response.status !== probe.status || contentType !== "application/json") {
       await response.body?.cancel();
-      return result(false, `预期 HTTP ${probe.status} JSON，实际 HTTP ${response.status}${contentType === "application/json" ? " JSON" : " 非 JSON"}`);
+      return result(false, `预期 HTTP ${probe.status} JSON，实际 HTTP ${response.status}${contentType === "application/json" ? " JSON" : " 非 JSON"}`, response.status >= 500);
     }
 
     let body: Record<string, unknown> | undefined;
     try {
       body = record(await readJSON(response));
     } catch {
-      if (controller.signal.aborted) return result(false, `请求超过 ${timeoutMs}ms`);
+      if (controller.signal.aborted) return result(false, `请求超过 ${timeoutMs}ms`, true);
       return result(false, "响应不是有效 JSON 或超过 64 KiB");
     }
     if (probe.errorCode) {
@@ -117,7 +119,7 @@ async function checkProbe(base: string, probe: Probe, fetcher: Fetcher, timeoutM
     return result(true, `HTTP ${response.status}${probe.errorCode ? ` ${probe.errorCode}` : " delivery ok"}`);
   } catch {
     // fetch 异常可能携带 URL / 代理凭据；仅输出固定诊断，不输出 error.message。
-    return result(false, controller.signal.aborted ? `请求超过 ${timeoutMs}ms` : "请求失败；检查 DNS、TLS、网络及函数启动日志");
+    return result(false, controller.signal.aborted ? `请求超过 ${timeoutMs}ms` : "请求失败；检查 DNS、TLS、网络及函数启动日志", true);
   } finally {
     clearTimeout(timeout);
   }
@@ -125,12 +127,49 @@ async function checkProbe(base: string, probe: Probe, fetcher: Fetcher, timeoutM
 
 export async function checkDeliveryDeployment(
   baseURL: string,
-  options: { fetcher?: Fetcher; timeoutMs?: number } = {},
+  options: { fetcher?: Fetcher; timeoutMs?: number; onResult?: (result: CheckResult) => void } = {},
 ): Promise<CheckResult[]> {
   const base = parseBaseURL(baseURL);
-  const timeoutMs = options.timeoutMs ?? 10_000;
+  const timeoutMs = options.timeoutMs ?? 30_000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error("请求超时必须是正整数毫秒");
-  return Promise.all(probes.map((probe) => checkProbe(base, probe, options.fetcher ?? fetch, timeoutMs)));
+  const results: CheckResult[] = [];
+  // 顺序检查以复用预热实例，避免瞬时并发引发额外实例冷启动。
+  for (const probe of probes) {
+    const result = await checkProbe(base, probe, options.fetcher ?? fetch, timeoutMs);
+    results.push(result);
+    options.onResult?.(result);
+  }
+  return results;
+}
+
+// 发布完成并不代表所有实例已启动。先单独预热 healthz，避免同时制造六次冷启动。
+// 只等待可恢复的网络 / 平台错误；错误服务、重定向和错误 JSON 不会因重试变成成功。
+export async function waitForDeliveryReady(
+  baseURL: string,
+  options: { fetcher?: Fetcher; timeoutMs?: number; readyTimeoutMs?: number; retryDelayMs?: number; onRetry?: (attempt: number, result: CheckResult) => void } = {},
+): Promise<CheckResult> {
+  const base = parseBaseURL(baseURL);
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const readyTimeoutMs = options.readyTimeoutMs ?? 120_000;
+  const retryDelayMs = options.retryDelayMs ?? 5_000;
+  for (const value of [timeoutMs, readyTimeoutMs, retryDelayMs]) {
+    if (!Number.isSafeInteger(value) || value <= 0) throw new Error("就绪等待参数必须是正整数毫秒");
+  }
+  const deadline = Date.now() + readyTimeoutMs;
+  let attempt = 0;
+  for (;;) {
+    const result = await checkProbe(base, probes[0], options.fetcher ?? fetch, Math.max(1, Math.min(timeoutMs, deadline - Date.now())));
+    if (result.ok || !result.retryable) return result;
+    options.onRetry?.(++attempt, result);
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      return { ...result, detail: `启动就绪等待已用尽 ${readyTimeoutMs}ms 窗口；最后结果：${result.detail}` };
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(retryDelayMs, remaining)));
+    if (Date.now() >= deadline) {
+      return { ...result, detail: `启动就绪等待已用尽 ${readyTimeoutMs}ms 窗口；最后结果：${result.detail}` };
+    }
+  }
 }
 
 if (import.meta.main) {
@@ -140,11 +179,21 @@ if (import.meta.main) {
     process.exitCode = 1;
   } else {
     try {
-      const results = await checkDeliveryDeployment(args[0]);
-      for (const result of results) console.log(`[${result.ok ? "OK" : "FAIL"}] ${result.name}: ${result.detail}`);
-      const passed = results.filter((result) => result.ok).length;
-      console.log(`delivery 部署检查：${passed}/${results.length} 通过`);
-      process.exitCode = passed === results.length ? 0 : 1;
+      console.log("等待 delivery 就绪（最长 120s，单次请求 30s）...");
+      const ready = await waitForDeliveryReady(args[0], {
+        onRetry: (attempt, result) => console.log(`[WAIT ${attempt}] ${result.detail}`),
+      });
+      if (!ready.ok) {
+        console.error(`[FAIL] 启动就绪检查: ${ready.detail}`);
+        process.exitCode = 1;
+      } else {
+        const results = await checkDeliveryDeployment(args[0], {
+          onResult: (result) => console.log(`[${result.ok ? "OK" : "FAIL"}] ${result.name}: ${result.detail}`),
+        });
+        const passed = results.filter((result) => result.ok).length;
+        console.log(`delivery 部署检查：${passed}/${results.length} 通过`);
+        process.exitCode = passed === results.length ? 0 : 1;
+      }
     } catch (error) {
       // 此处仅捕获参数校验错误；网络与响应错误均由 checkProbe 转为固定文本。
       console.error(error instanceof Error ? error.message : "部署检查失败");

@@ -1,8 +1,8 @@
 // Package app 分发端装配与启动（ADR-0003：同一份 Go 代码服务两个部署目标）。
 //
-// 两个目标都只调用 Run()，装配逻辑单点维护、避免漂移：
+// 两个目标共用 run() 装配，避免漂移：
 //   - SCF 容器：apps/delivery/main.go（Dockerfile 静态二进制，监听 :9000）；
-//   - EdgeOne Cloud Functions：cloud-functions/index.go（Go Framework 模式，平台交叉编译后监听 :9000）。
+//   - EdgeOne Cloud Functions：cloud-functions/index.go → RunEdgeOne（适配配置与响应头，监听 :9000）。
 package app
 
 import (
@@ -34,6 +34,10 @@ const shutdownTimeout = 10 * time.Second
  * 返回非 nil 表示启动失败或服务异常退出，由调用方决定退出码（两个部署目标都是非零退出）。
  */
 func Run() error {
+	return run(nil)
+}
+
+func run(wrap func(http.Handler) http.Handler) error {
 	base, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
@@ -83,6 +87,9 @@ func Run() error {
 		Addr:              cfg.Listen,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
+	}
+	if wrap != nil {
+		srv.Handler = wrap(srv.Handler)
 	}
 
 	// 监听失败不能只留在 goroutine 里（否则进程会静默挂着），经 channel 回传后由 Run 返回

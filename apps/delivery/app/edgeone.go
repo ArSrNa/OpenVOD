@@ -3,11 +3,64 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 const edgeOneRuntimeEnvFilename = "openvod-runtime-env.json"
+
+// RunEdgeOne 保持业务装配共用，额外适配 Makers 的环境与响应协议。
+func RunEdgeOne() error {
+	if err := LoadEdgeOneEnvironment(); err != nil {
+		return err
+	}
+	return run(edgeOneResponseHeaders)
+}
+
+// 响应头协议来自固定 Makers CLI 1.6.41 的 Go/Node 适配器。
+// 必须在 WriteHeader/Write 提交响应之前设置，否则正常的业务 401/403 也可能
+// 被平台改写成 CLOUD_FUNCTION_INVOCATION_FAILED。该适配只用于 EdgeOne 入口。
+func edgeOneResponseHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Functions-Request-Id", r.Header.Get("x-scf-request-id"))
+		rw := &edgeOneResponseWriter{ResponseWriter: w}
+		next.ServeHTTP(rw, r)
+		if !rw.wroteHeader {
+			rw.WriteHeader(http.StatusOK)
+		}
+	})
+}
+
+type edgeOneResponseWriter struct {
+	http.ResponseWriter
+	wroteHeader bool
+}
+
+func (w *edgeOneResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *edgeOneResponseWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
+	if status >= 100 && status < 200 {
+		w.ResponseWriter.WriteHeader(status)
+		return
+	}
+	w.wroteHeader = true
+	w.Header().Set("eo-pages-inner-scf-status", strconv.Itoa(status))
+	// 受控业务错误也保留 JSON 正文，平台不得替换为 HTML 错误页。
+	w.Header().Set("eo-pages-inner-status-intercept", "false")
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *edgeOneResponseWriter) Write(body []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(body)
+}
 
 // LoadEdgeOneEnvironment 补齐 Makers Go Framework 上传产物未注入的引导变量。
 // 文件由发布阶段从 Makers Production 配置生成，仅位于私有函数包，禁止放入 assets。

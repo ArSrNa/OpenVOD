@@ -86,9 +86,10 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可轮换）
 
 ### 部署形态与硬约束（ADR-0003 / 0011）
 
-- delivery 同一份 Go 静态二进制的两个同级目标：EdgeOne Makers Cloud Functions（Go 1.26）或 SCF 容器；无内网依赖，数据库必须公网可达 + 强制 TLS。装配逻辑单点维护在 `apps/delivery/app`，两个入口只做 `app.Run()` 包装：`apps/delivery/main.go`（容器）与 `cloud-functions/index.go`（EdgeOne，文件名必须为 `index.go`，否则 URL 会多一层前缀）。部署细则见 `docs/vod/deploy-delivery.md`。
+- delivery 同一份 Go 业务代码的两个同级目标：EdgeOne Makers Cloud Functions（Go 1.26）或 SCF 容器；无内网依赖，数据库必须公网可达 + 强制 TLS。装配逻辑单点维护在 `apps/delivery/app`：`apps/delivery/main.go` 调用 `Run()`，`cloud-functions/index.go` 调用 `RunEdgeOne()`（适配运行配置及平台响应头，入口必须为 `index.go`），两者共用内部装配。部署细则见 `docs/vod/deploy-delivery.md`。
 - EdgeOne 发布先 `task build:edgeone`，再使用 `bun --no-env-file scripts/edgeone.ts deploy` 上传已检查的 `.edgeone` 产物到 `openvod-delivery` 的生产环境（Token 由密钥注入），最后 `bun --no-env-file scripts/check-delivery-deployment.ts <分发域名>` 验收。**不要把共享源码复制进 `cloud-functions/`**：CLI 递归扫描会把 `internal/server/server.go` 识别成入口，生成 `/server` 前缀而使 `/v1/...` 404；模块与源码副本应放暂存项目根。2026-09-22 修订详见 ADR-0003。
 - EdgeOne Go 上传产物实测未收到控制台引导变量：发布脚本显式读取 Makers Production，仅把 `DELIVERY_DATABASE_URL` / `MASTER_KEYS` 写入私有函数包配置，入口由 `app.LoadEdgeOneEnvironment()` 补齐缺失变量并固定 `:9000`。该敏感文件禁止进入静态 assets、源码、日志或公开归档，发布后清理本地副本；SCF 仍直接读取进程环境。详见 ADR-0003。
+- 部署冒烟先等待健康接口就绪（总窗口 120s、单次 30s），随后顺序验证六项路由。EdgeOne 专用响应适配必须在提交响应前写入 Makers 状态头，防止业务 401/403 被平台替换为 HTML 500；持续故障仍让门禁失败。
 - admin 为一个 Node 22 容器（`next build` + `next start`，UI/API 同源无 CORS）；worker 为 Bun 常驻容器。
 - P0 硬约束：转码禁止上任何函数；分片字节不经过函数；所有响应体 ≤6MB；SCF 镜像仅 x86。
 - 两应用共享一库一桶但独立发版；delivery 使用受限 DB 账号（约定表只读 + `playback_sessions` 读写），绝不能共用管理端全权账号；存储键前缀即隔离（`original/` 仅管理端写，布局见 `docs/vod/spec.md §1`）。

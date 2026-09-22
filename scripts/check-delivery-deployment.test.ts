@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { checkDeliveryDeployment } from "./check-delivery-deployment";
+import { checkDeliveryDeployment, waitForDeliveryReady } from "./check-delivery-deployment";
 
 function deliveryResponse(url: string): Response {
   const path = new URL(url).pathname;
@@ -144,6 +144,66 @@ describe("delivery 部署门禁", () => {
       await expect(promise).rejects.toThrow("base URL");
       try { await promise; } catch (error) { expect(String(error)).not.toContain("private-secret"); }
       expect(calls).toBe(0);
+    }
+  });
+});
+
+describe("delivery 冷启动就绪等待", () => {
+  it("只预热 healthz，超时及平台 503 后恢复时通过", async () => {
+    let calls = 0;
+    const retries: number[] = [];
+    const result = await waitForDeliveryReady("https://delivery.example.com", {
+      timeoutMs: 10, readyTimeoutMs: 300, retryDelayMs: 1,
+      onRetry: (attempt) => retries.push(attempt),
+      fetcher: async (url, init) => {
+        expect(new URL(url).pathname).toBe("/healthz");
+        calls++;
+        if (calls === 1) return new Promise((_resolve, reject) => init.signal!.addEventListener("abort", () => reject(new Error("timeout")), { once: true }));
+        if (calls === 2) return new Response("not ready", { status: 503 });
+        return deliveryResponse(url);
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(calls).toBe(3);
+    expect(retries).toEqual([1, 2]);
+  });
+
+  it("部署切换暂时出现平台 404 时允许在窗口内恢复", async () => {
+    let calls = 0;
+    const result = await waitForDeliveryReady("https://delivery.example.com", {
+      readyTimeoutMs: 100, retryDelayMs: 1,
+      fetcher: async (url) => ++calls === 1
+        ? new Response("not ready", { status: 404, headers: { "content-type": "text/html" } })
+        : deliveryResponse(url),
+    });
+    expect(result.ok).toBe(true);
+    expect(calls).toBe(2);
+  });
+
+  it("持续故障在总预算到期后失败，不无限重试", async () => {
+    let calls = 0;
+    const start = Date.now();
+    const result = await waitForDeliveryReady("https://delivery.example.com", {
+      timeoutMs: 1000, readyTimeoutMs: 20, retryDelayMs: 1,
+      fetcher: async (_url, init) => {
+        calls++;
+        return new Promise((_resolve, reject) => init.signal!.addEventListener("abort", () => reject(new Error("timeout")), { once: true }));
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain("20ms 窗口");
+    expect(calls).toBe(1);
+    expect(Date.now() - start).toBeLessThan(500);
+  });
+
+  it("重定向或另一个服务的健康响应立即失败，不掩盖配置错误", async () => {
+    for (const response of [() => new Response(null, { status: 302 }), () => Response.json({ app: "admin", status: "ok" })]) {
+      let calls = 0;
+      const result = await waitForDeliveryReady("https://delivery.example.com", {
+        fetcher: async () => { calls++; return response(); },
+      });
+      expect(result.ok).toBe(false);
+      expect(calls).toBe(1);
     }
   });
 });

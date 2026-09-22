@@ -55,7 +55,7 @@
     - name: 校验生产引导变量并上传 Makers 产物
       imports: https://cnb.cool/arsrna/env/-/blob/main/tencent.yml
       script: bun --no-env-file scripts/edgeone.ts deploy
-    - name: 验证分发域名健康与播放鉴权路由
+    - name: 等待分发服务就绪并验证播放鉴权路由
       script: bun --no-env-file scripts/check-delivery-deployment.ts "$EO_DELIVERY_URL"
 
 # 管理端 admin 镜像（ADR-0003 / ADR-0013：Next.js 全栈单容器，UI + API 同源）

@@ -81,7 +81,7 @@ CLI 1.6.41 会递归扫描 `cloud-functions/`。旧的源码副本布局
    Makers HTML `NOT_FOUND` 说明尚未命中 delivery，需继续核查域名绑定、生产部署与产物路由。
 
 发布入口统一为 CNB EdgeOne 按钮或同等命令，不使用仓库根的隐式构建 / Git 自动部署。
-运行装配仍由 `apps/delivery/app` 单点维护，SCF 与 EdgeOne 入口共用 `app.Run()`。
+运行装配仍由 `apps/delivery/app` 单点维护，SCF 与 EdgeOne 入口共用内部装配逻辑。
 完整命令与部署验收见 [分发端部署](../deploy-delivery.md)。
 
 ### Go Framework 引导变量补充（2026-09-22）
@@ -90,13 +90,21 @@ CLI 1.6.41 会递归扫描 `cloud-functions/`。旧的源码副本布局
 `DELIVERY_DATABASE_URL`（部署 `dpiljo0vcwwh` 的运行日志），因此不能继续依赖平台隐式注入。
 发布阶段改为使用 `EO_SECRET` 只读查询确切项目的 Production 环境，校验并筛选
 `DELIVERY_DATABASE_URL`、`MASTER_KEYS`，保存为私有函数目录内的 `openvod-runtime-env.json`。
-EdgeOne 入口在 `app.Run()` 前加载该文件，只补齐缺失变量；监听强制为 `:9000`。
-SCF 入口不加载文件。两种目标的业务装配仍共用 `app.Run()`。
+EdgeOne 入口在共享装配前加载该文件，只补齐缺失变量；监听强制为 `:9000`。
+SCF 入口不加载文件。两种目标仍共用业务装配。
 
 该文件是部署时生成的敏感配置，不是源码或静态资源：本地 `0600`、发布完成 / 失败清理，
 禁止入库、日志输出、公开归档及放入 `assets`。私有函数包现在也属于主密钥保管边界，
 应与平台环境变量采用同级访问控制；不将 MK 写入数据库，也不把 admin 全权连接传给 delivery。
 缺少生产配置时在上传前失败，配置变更需重新部署。
+
+### 就绪检查与状态码适配补充（2026-09-22）
+
+- 发布后的就绪检查允许冷启动：先独立等待 `/healthz` 的 delivery 成功 JSON，单次 30s、
+  总窗口 120s、间隔 5s，仅重试网络 / 平台暂态错误；就绪后顺序执行鉴权检查，避免并发触发额外冷启动。
+- `RunEdgeOne()` 在共享 `run()` 外包装 Makers 响应协议。固定 CLI 的中间件生成并不保证被根模块下的
+  嵌套路由接入；必须在 HTTP 响应提交前设置平台状态头，保留业务 401/403 以及正文、缓存策略。
+  SCF 使用原 `Run()`，不增加平台专用响应头。
 
 ## 理由
 

@@ -1,7 +1,7 @@
 # 分发端（delivery）部署
 
 分发端是**同一份 Go 代码的两个同级目标**（ADR-0003）：SCF 容器与 EdgeOne Cloud Functions。
-两边的装配逻辑单点维护在 `apps/delivery/app`，两个入口调用同一个 `app.Run()`：
+两边的装配逻辑单点维护在 `apps/delivery/app`：容器调用 `Run()`，EdgeOne 调用 `RunEdgeOne()`，共用内部装配：
 
 | 目标 | 入口 | 形态 |
 |---|---|---|
@@ -65,7 +65,7 @@ task build:edgeone
 # EO_SECRET 从安全环境注入；不要把 Token 写入脚本或仓库
 bun --no-env-file scripts/edgeone.ts deploy
 
-# 对真实域名验收 healthz JSON 与无签名清单 403
+# 先等待 healthz 就绪（最多 120s），再逐项验收健康与鉴权（单次最多 30s）
 bun --no-env-file scripts/check-delivery-deployment.ts "https://delivery.ovod.skirk.cn"
 ```
 
@@ -142,7 +142,7 @@ CLI 1.6.41 递归扫描 `cloud-functions/`，把副本中含 `chi.NewRouter()` �
 
 CLI 1.6.41 支持从项目根读取 Go 模块并带上同模块源码构建，因而无需嵌套模块或 `replace`。
 当扫描目录没有含 Framework 初始化语句的文件时，CLI 从根 `go.mod` 的 Chi 依赖判断 Framework，
-将唯一的 `index.go` 作为入口，所以仍可共用 `app.Run()`，不需要复制业务路由到入口。
+将唯一的 `index.go` 作为入口，所以仍可共用业务装配，不需要复制业务路由到入口。
 此布局是针对固定 CLI 的实现验证；官方 Go Modules 示例仍展示 `cloud-functions/go.mod`，
 不能据此推断任意版本都采用同样的复制与扫描逻辑。升级 CLI 时必须重跑完整构建门禁。
 
@@ -185,9 +185,22 @@ CLI 1.6.41 支持从项目根读取 Go 模块并带上同模块源码构建，�
 3. 以 JSON 原值写入 `.edgeone/cloud-functions/api-go/openvod-runtime-env.json`，本地权限 `0600`。
    **这是包含明文引导密钥的私有函数配置，仅随函数包上传，禁止进入 assets、Git、日志或公开构建附件。**
    正常结束或失败时由 `finally` 删除本地文件；CI 工作区也不得对外归档该目录。
-4. EdgeOne 入口调用 `app.LoadEdgeOneEnvironment()`，按可执行文件所在目录读取配置，只补齐缺失的进程变量，
-   并固定监听 `:9000`，随后调用共享的 `app.Run()`。配置读取 / 解析失败时不输出内容。
+4. EdgeOne 入口调用 `app.RunEdgeOne()`，先按可执行文件所在目录读取配置，只补齐缺失的进程变量，
+   并固定监听 `:9000`，随后执行共享装配。配置读取 / 解析失败时不输出内容。
    SCF / Compose 入口保持纯环境变量方式。
 
 主密钥仍与数据库分开保存；其分发边界扩展到私有函数包的访问权限，因此该包必须按密钥材料管理。
 其余运行设置由 `system_settings` 加载。控制台修改这两个引导变量后仍需重新执行流水线，生成新的配置快照。
+
+### 冷启动与业务错误状态（2026-09-22）
+
+发布后的第一次请求可能超过 10s。冒烟脚本先只请求 `/healthz`：单次最多 30s，
+网络超时 / 平台 404 或 5xx 在 120s 总窗口内每隔 5s 重试。必须收到 `app=delivery,status=ok` 的 200 JSON，
+随后才顺序检查六项路由，复用已预热实例。重定向、其他服务的 200 或错误 JSON 立即失败；
+持续故障在窗口结束后仍使流水线失败。每次尝试 / 每项结果均输出进度。
+
+Go Framework 根模块布局下，CLI 生成的响应中间件未自动接入嵌套的业务路由。
+线上曾出现 healthz 正常、401/403 却被平台替换为 500 HTML（响应仍携带 delivery 的 CORS 头）。
+`RunEdgeOne()` 现显式包装 HTTP 响应，在首次 `WriteHeader` / `Write` **之前**设置固定 CLI 使用的
+`eo-pages-inner-scf-status`、`eo-pages-inner-status-intercept=false` 和请求 ID，保留业务状态及 JSON / no-store。
+平台响应头只用于 EdgeOne，SCF / Compose 不受影响。适配的最终边缘行为仍需部署后以六项检查验收。

@@ -8,7 +8,7 @@
 //     把创建 Chi 路由的 server.go 当成入口并生成错误的 /server 前缀（ADR-0003）。
 //   - 平台自动交叉编译 GOOS=linux GOARCH=amd64，并把命中 catch-all 的请求转发给
 //     监听 :9000 的本进程（config.Load 的 DELIVERY_LISTEN 默认值即 :9000）。
-//   - 本文件与 apps/delivery/main.go 都是 app.Run() 的薄包装，装配逻辑单点维护。
+//   - 本入口通过 app.RunEdgeOne() 适配运行配置和响应头；与容器入口共用业务装配。
 package main
 
 import (
@@ -19,11 +19,7 @@ import (
 )
 
 func main() {
-	if err := app.LoadEdgeOneEnvironment(); err != nil {
-		slog.Error("EdgeOne 运行配置不可用", "err", err)
-		os.Exit(1)
-	}
-	if err := app.Run(); err != nil {
+	if err := app.RunEdgeOne(); err != nil {
 		slog.Error("delivery 退出", "err", err)
 		os.Exit(1)
 	}

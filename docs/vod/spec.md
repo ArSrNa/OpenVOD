@@ -22,7 +22,7 @@ root 下按资产类别分四个分区，互不嵌套：
 | 分区 | 内容 | 写入方 | 读取方 |
 |---|---|---|---|
 | `original/` | 原始上传视频，一个媒资一个文件 | 管理端 | Worker（转码源） |
-| `proceed/` | 转码与处理产物：HLS 主/子清单、分片、字幕等 | Worker / 管理端 | 分发端（经预签名 / local 流式）、管理端 |
+| `proceed/` | 转码与处理产物：HLS 主/子清单、分片、字幕等 | Worker / 管理端 | 分发端（预签名直出）、管理端 |
 | `cover/` | 封面与图片资产（poster、缩略图等） | Worker / 管理端 | 分发端、管理端 |
 | `metadata/` | 元数据：ffprobe 结果、业务扩展元数据等 | 管理端 / Worker | 管理端 / 分发端 |
 
@@ -324,30 +324,58 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 
 ## 6. 播放链路（分发端，M3）
 
-> 决策源 ADR-0006（加密与密钥下发）/ ADR-0010（API 面）；本节记录实现细节与 M3 落地范围。与 ADR 冲突时以本节为准并回写 ADR。
+> 决策源 ADR-0006（加密与密钥下发）/ ADR-0010（API 面）；**本节即分发端（数据面）API 参考**，记录实现细节与 M3 落地范围。与 ADR 冲突时以本节为准并回写 ADR。
 
 ### 6.1 端点与 token 传递
 
 | 端点 | 鉴权 | 说明 |
 |---|---|---|
 | `POST /v1/auth/login` | 凭据 | bcrypt 校验 `users`（须 `status=ACTIVE`）→ ES256 JWT（`kid` / `exp=DELIVERY_JWT_TTL_SEC`；未配置签名密钥时 503） |
-| `GET /v1/media` | JWT | 上架列表（`status=READY`；`limit` ≤200，默认 50；`poster_url` s3 形态为预签名） |
+| `GET /v1/media` | JWT | 上架列表（`status=READY`；`limit` ≤200，默认 50；排序 `COALESCE(published_at, created_at) DESC, id DESC`；`poster_url` 为预签名直出） |
 | `GET /v1/media/{id}` | JWT | 详情：probe 摘要（契约 `Probe` 子集）+ 就绪字幕轨道 + `playable` |
 | `POST /v1/media/{id}/play` | JWT | 建 / 复用播放会话：`template_id` 可选（见 §6.3）；同用户同媒资未过期末吊销会话**默认复用**（幂等），`force_new=true` 强制新建；并发上限命中 → 409 `session_limit`；媒资非 READY → 409 `not_playable`；返回 `{sid, manifest_url, expires_at, template_id}`（M4 起附签名 `subtitles[]` 与每条轨道的 `url`，§7.5） |
 | `GET /v1/media/{id}/manifest/master.m3u8` | token(m) | 改写主清单：变体行替换为分发端 URL（typ=m + `tpl`）；`no-store` |
-| `GET /v1/media/{id}/manifest/{variant}/index.m3u8` | token(m) | 改写子清单：`EXT-X-KEY` URI → key 接口（typ=k）；分片行 → typ=s（local）或 S3 预签名 URL（s3）；`no-store` |
+| `GET /v1/media/{id}/manifest/*`（实际路径 `{variant}/index.m3u8`） | token(m) | 改写子清单（通配路由，可含子目录）：`EXT-X-KEY` URI → key 接口（typ=k）；分片行 → **S3 预签名直出 URL**（`typ=s` 不再签发）；`no-store` |
 | `GET /v1/media/{id}/key` | token(k) | **16B CEK**（`application/octet-stream`，`no-store`）：验签 + 会话有效 → 按 `hls_keys.mk_ver` 取 MK 解封 |
-| ~~`GET /v1/media/{id}/segment/{tpl}/{variant}/{seg}`~~ | — | **已删除**（ADR-0005 2026-09-22 修订：仅 S3，local 驱动分片流式输出移除）；分片一律预签名直出 |
-| `GET /v1/media/{id}/subtitles/{trackId}.vtt` | token(v) | 字幕 VTT 输出（§7.5）：验签 + 会话有效 → 查轨道（`status=READY`）→ 按行内 `storage_key` 读对象，**两种驱动均由分发端代理输出**（≤5MiB）；`text/vtt; charset=utf-8` + `no-store` |
+| ~~`GET /v1/media/{id}/segment/{tpl}/{variant}/{seg}`~~ | — | **已取消**（ADR-0005 2026-09-22 修订：仅 S3，local 驱动分片流式输出移除）；分片一律预签名直出 |
+| `GET /v1/media/{id}/subtitles/{trackId}.vtt` | token(v) | 字幕 VTT 输出（§7.5）：验签 + 会话有效 → 查轨道（`status=READY`）→ 按行内 `storage_key` 读对象，**由分发端代理输出**（≤5MiB）；`text/vtt; charset=utf-8` + `no-store` |
 
-**token 传递（用户定，2026-09-18）**：URL query `t` 优先，其次请求头 `X-Playback-Token`（App / hls.js 可带自定义头；**Safari 原生 HLS 的密钥与分片请求无法带头**，因此 query 是必须形态）。token 自包含（`ver|typ|mid|sid|exp|kid`，HMAC-SHA256），`typ` 作用域 `m 清单 / s 分片 / k 密钥 / v 字幕`，`mid` 绑定防跨媒资重放，`sid` 绑定会话可吊销。
+**token 传递（用户定，2026-09-18）**：URL query `t` 优先，其次请求头 `X-Playback-Token`（App / hls.js 可带自定义头；**Safari 原生 HLS 的密钥与分片请求无法带头**，因此 query 是必须形态）。token 自包含（`ver|typ|mid|sid|exp|kid`，HMAC-SHA256），`typ` 作用域 `m 清单 / s 分片 / k 密钥 / v 字幕`（`s` 为保留类型，v1 不再签发——分片走预签名直出），`mid` 绑定防跨媒资重放，`sid` 绑定会话可吊销。
+
+**请求 / 响应字段（2026-09-23 按实现核对）**：
+
+- `login`：请求 `{username, password}`；成功写 `users.last_login_at`，返回 `{access_token, token_type:"Bearer", expires_in, kid}`；
+- `GET /v1/media`：`limit` 缺省 50、上限 200（非法 / 越界静默回退缺省值）；返回 `{items[], next_cursor}`，条目 = `{id, title, duration_ms, poster_url, custom}`，排序 `COALESCE(published_at, created_at) DESC, id DESC`；**cursor 分页未实现，`next_cursor` 恒为 `null`**（v1 只返回前 `limit` 条，ADR-0010 的 cursor 契约留待后续）；
+- `GET /v1/media/{id}`：`{id, title, status, playable, duration_ms, poster_url, probe, subtitles[], custom}`——`probe` 仅含宽 / 高 / 视频编码 / 音频编码 / 码率（未探测为 `null`）；`subtitles[]` = `{id, lang, label, is_default}`（`status=READY`，顺序 `is_default DESC, created_at ASC`，**不含 URL**）；`custom` 恒为 `{}`；未入库 404（非 READY 仍返回详情，仅 `playable=false`）；
+- `POST /v1/media/{id}/play`：请求体**可整体省略**（仅在 `Content-Length>0` 时解析）；返回 `{sid, manifest_url, expires_at, template_id, subtitles[]}`，`expires_at` 为 RFC3339 UTC（会话到期时间），`subtitles[].url` 各轨共用同一枚 typ=v token。
+
+**请求体与错误信封**：请求体上限 64 KiB，超限 / 非法 JSON / 空体 → 400 `bad_request`；错误响应统一 `{ "error": { "code", "message" } }`（HTTP 状态与 `code` 双通道）。
+
+| code | HTTP | 触发场景 |
+|---|---|---|
+| `bad_request` | 400 | 登录 / play 请求体非法或为空；清单 / 播放 URL 的 `tpl` 非 cuid 形状 |
+| `invalid_credentials` | 401 | 登录失败（用户不存在 / 口令错误 / `status≠ACTIVE` 统一提示，不泄露账号状态） |
+| `unauthorized` | 401 | JWT 缺失 / 过期 / 签名不符（`/v1/media*` 业务面） |
+| `bad_token` | 403 | 播放 token 缺失 / 非法 / 过期 / `typ` 或 `mid` 绑定不符 / 会话已吊销或过期 |
+| `not_found` | 404 | 媒资未入库；主 / 子清单对象缺失；密钥行不存在；字幕轨道或对象缺失；未知路由（JSON 信封，非 HTML） |
+| `not_playable` | 409 | 媒资非 READY；`template_id` 指定的产物不存在；多套产物且无默认模板（消息列出可选值） |
+| `session_limit` | 409 | 并发播放会话上限命中（仅 `max_concurrent_sessions>0` 时检查） |
+| `internal` | 500 / 503 | 查询 / 存储 / 签发失败；`MASTER_KEYS` 缺该 `mk_ver`；`signing_keys` 无可用私钥时 `login` 返回 503 |
+
+`rate_limited` / `not_implemented` / `forbidden` 为契约保留码，v1 分发端不返回（限频未实现，见 §6.6）。
+
+**响应头与 CORS**：
+
+- `Content-Type`：JSON `application/json; charset=utf-8`；改写后清单 `application/vnd.apple.mpegurl; charset=utf-8`；CEK `application/octet-stream`；字幕 `text/vtt; charset=utf-8`；
+- **清单 / 密钥 / 字幕一律 `Cache-Control: no-store`**（P0 缓存纪律，CI 门禁）；`GET /healthz` → `{"status":"ok","app":"delivery"}`；
+- CORS 为全路由中间件（含预检）：`Access-Control-Allow-Origin` 按 `DELIVERY_CORS_ORIGINS`（`*` = 全部，播放鉴权不带 Cookie 故无凭证泄露面）；Allow-Methods `GET, POST, OPTIONS`（OPTIONS → 204）；Allow-Headers `Content-Type, Authorization, X-Playback-Token, Range`；Expose-Headers `Content-Length, Content-Range, Accept-Ranges`（浏览器直连对象存储读分片所需）。
 
 ### 6.2 解密链路（一次播放的顺序）
 
 1. `login` 取 JWT（业务 API 用；**不用于清单 / 密钥 / 分片**）；
 2. `play` 建会话并返回签名主清单 URL；
 3. 拉主清单 → 子清单（`tpl` + typ=m token）；
-4. 子清单里 `#EXT-X-KEY` 的 URI 已被改写为 `/v1/media/{id}/key?t=<typ=k>`（`METHOD` / 显式 `IV` 原样保留）；分片行改写为 typ=s 分发端 URL（local）或**预签名直出 URL**（s3，字节不经过函数）；
+4. 子清单里 `#EXT-X-KEY` 的 URI 已被改写为 `/v1/media/{id}/key?t=<typ=k>`（`METHOD` / 显式 `IV` 原样保留）；分片行一律改写为 **S3 预签名直出 URL**（字节不经过函数，P0；`STORAGE_CDN_BASE_URL` 可替换 origin）——`typ=s` 不再签发；
 5. 播放器自动 GET key → 验签 + 会话有效 → **MK 解封 `wrapped_cek`** → 返回 16B CEK（`no-store`，绝不缓存）；
 6. 播放器用 CEK + 清单显式 IV 本地 AES-128-CBC 解密分片——Safari 原生 HLS / hls.js / ExoPlayer 均原生支持，**业务侧零解密代码**。
 
@@ -371,19 +399,27 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 
 ### 6.5 相关环境变量
 
+> 启动最小集（ADR-0015）：进程最早只要求 `DELIVERY_DATABASE_URL` + `MASTER_KEYS`；下表其余项均可由 `system_settings` 提供并约 60s 整体热切换（失败保留上一版完整配置），env 同名键兜底。
+
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `DELIVERY_DATABASE_URL` | 无（必填） | 分发端受限账号（ADR-0011：只读约定表 + `playback_sessions` 读写）。支持 `mysql://user:pw@host:port/db` 或 go-sql-driver DSN；**本地调试需指向可达库**（仓库 `.env` 里的 127.0.0.1 是占位） |
+| `MASTER_KEYS` | 无（必填） | 主密钥 `版本:64位hex`（逗号分隔多版本，ADR-0006）：解封 CEK（按 `hls_keys.mk_ver`）与 JWT 私钥（逐版本尝试）。**轮换后必须保留旧版本**，否则旧产物密钥接口 500 |
+| `DELIVERY_LISTEN` | `:9000` | 监听地址；SCF Web 函数 / EdgeOne 平台固定 `:9000` |
+| `APP_ENV` | `dev` | 运行环境标识（仅日志，不改变行为） |
 | `DELIVERY_PUBLIC_BASE_URL` | 空 → `http://127.0.0.1:{端口}` | 播放 URL 基址（清单 / 密钥 / 字幕）；生产填分发域名。**运行时可被 `system_settings.playback_base_url` 覆盖**（分发端 60s 缓存读取，spec §2.1.2），无需重启 |
+| `URL_SIGN_KEY_HEX` | 空 | 播放 token 的 HMAC 密钥（64 位 hex = 32 字节；生成 `openssl rand -hex 32`）。ADR-0015 后可由 `system_settings.url_sign_key_hex`（MK 封装）提供；两处都缺则启动失败（安全失败，拒绝签发 token）。**更换会使已下发的签名链接立即失效** |
 | `URL_SIGN_KEY_KID` | `urlsign-v1` | 播放 token 的 `kid`（多 kid 宽限轮换为演进项） |
 | `DELIVERY_JWT_ISSUER` | `openvod-delivery` | JWT `iss` |
 | `DELIVERY_JWT_TTL_SEC` | `86400` | JWT 有效期（ADR-0007：默认 24h，无 refresh） |
 | `PLAYBACK_SESSION_TTL_SEC` | `14400` | 播放会话有效期 |
-| `PLAYBACK_MANIFEST_TTL_SEC` | `14400` | 清单 token / 预签名有效期上限（token exp ≤ 会话 exp） |
+| `PLAYBACK_MANIFEST_TTL_SEC` | `14400` | 清单 token / 预签名有效期上限（token exp ≤ 会话 exp；上限 7 天，同时约束 S3 SigV4 预签名） |
 | `PLAYBACK_SUBTITLE_TTL_SEC` | `86400` | 字幕 token 有效期上限（`@openvod/shared DEFAULTS.subtitleTtlSec`）；实际 `exp` 取与会话 `exp` 的较小值（§7.5） |
 | `STORAGE_ROOT_PREFIX` / `S3_*` | 对齐管理端 | 与 `packages/storage` 同源命名（§1.5）；仅 S3 兼容存储（ADR-0005 2026-09-22 修订，`STORAGE_DRIVER` / `STORAGE_LOCAL_ROOT` 已删除） |
 | `STORAGE_CDN_BASE_URL` | 空 | 对象存储加速域名（ADR-0005 统一加速域名方案，管理端 / 分发端共用命名）：配置后 **GET 预签名 URL 的 origin 替换**为该域名（管理端 original / 封面预览 302、presign 模式分片直出），路径与签名 query 原样保留；上传预签名不受影响。前提：CDN 回源 COS 且 **Host 透传 / 改写为桶端点**（SigV4 签名覆盖 Host），缓存按 query 不缓存或短 TTL 配置 |
 | `DELIVERY_CORS_ORIGINS` | `*` | 允许跨域读取清单 / 密钥 / 分片（管理端「产物解密播放」的 hls.js 需要）；播放鉴权全走 URL token、不带 Cookie，`*` 不引入凭证泄露面，可收敛为管理端源站（逗号分隔） |
+
+分发端消费的 `system_settings` 键（DB 优先、env 兜底；键名与 `packages/shared SETTING_KEYS` 手工对齐）：`s3_endpoint` / `s3_region` / `s3_bucket` / `s3_access_key_id` / `s3_secret_access_key`（MK 封装）/ `s3_force_path_style` / `storage_root_prefix` / `storage_cdn_base_url` / `url_sign_key_hex`（MK 封装）/ `url_sign_key_kid` / `jwt_ttl_sec` / `playback_session_ttl_sec` / `playback_manifest_ttl_sec` / `playback_subtitle_ttl_sec` / `cors_origins` / `playback_base_url`。
 
 ### 6.6 M3 已落地范围外（演进项）
 
@@ -392,9 +428,10 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 - 会话吊销的进程内 60s 缓存（当前每请求查库，语义更严格、量级可接受）；
 - SQLite 自托管驱动（当前 Go 侧仅 MySQL；ADR-0004 的单机同卷形态待补）；
 - `custom_data` **公开白名单**（当前返回空对象，避免泄露内部字段）；`poster_url` 已随仅-S3 决策全量预签名直出；
-- 字幕链路（M4）：规范见 §7（当前 501）；字幕进 CDN 缓存（ADR-0009 原始设想）为演进项，前置条件是引入内容版本号 / 共享 token 形态。
+- **cursor 分页**（ADR-0010 契约）：`GET /v1/media` 当前只支持 `limit`（缺省 50 / 上限 200）、`next_cursor` 恒为 `null`，媒资规模需要时再实现；
+- 字幕链路（M4）**已实现（2026-09-20）**：规范见 §7.5；字幕进 CDN 缓存（ADR-0009 原始设想）仍为演进项，前置条件是引入内容版本号 / 共享 token 形态。
 
-**部署前置（非未完成项）**：管理端「产物 → 播放」由浏览器直连对象存储拉分片（s3 形态），要求**对象桶 CORS 放行管理端源站**（与封面截帧同一前提，§2.3）——未配置时表现为「有总时长但一直转圈」（分片请求被浏览器拦截），播放弹窗会在等待超时后给出该提示；`local` 形态分片经分发端流式输出（已带 CORS 头），无需桶配置。播放器为 Video.js v10（与媒资预览同一皮肤），HLS 由 `@videojs/hlsjs-video`（hls.js / MSE）承载，Safari 由 Video.js 自行回退原生 HLS。
+**部署前置（非未完成项）**：管理端「产物 → 播放」由浏览器直连对象存储拉分片（仅 S3 形态），要求**对象桶 CORS 放行管理端源站**（与封面截帧同一前提，§2.3）——未配置时表现为「有总时长但一直转圈」（分片请求被浏览器拦截），播放弹窗会在等待超时后给出该提示。播放器为 Video.js v10（与媒资预览同一皮肤），HLS 由 `@videojs/hlsjs-video`（hls.js / MSE）承载，Safari 由 Video.js 自行回退原生 HLS。
 
 ## 7. 字幕（WebVTT，M4）
 
@@ -471,7 +508,7 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 2. `authorize(typ=v, mid={id})`：token 校验（query `t` 优先，其次 `X-Playback-Token`）+ `mid` 绑定 + 会话未过期未吊销 —— 未携带 / 非法 / 已吊销 → 403 `bad_token`（纳入 `assert-unsigned-403` 门禁）；
 3. DB 查轨道 `id=trackId AND media_id={id} AND status=READY`；不存在 → 404 `not_found`；
 4. 读对象以行内 `storage_key` 为准（**不按 URL 拼键**，保持键可迁移）；对象缺失 → 404；
-5. 输出：**两种驱动都由分发端代理输出**（`blob.Get` 读整对象写出）—— s3 若走预签名 302，对象响应头（`no-store`）与跨域策略都不受分发端控制，而 `no-store` 是「就地覆盖、下一次请求即生效」的前提；P0 的「分片字节不经过函数」只约束分片，字幕不适用（≤5 MiB，低于 6MB 响应体上限）；
+5. 输出：**由分发端代理输出**（`blob.Get` 读整对象写出，v1 仅 S3 形态）—— 若改走预签名 302，对象响应头（`no-store`）与跨域策略都不受分发端控制，而 `no-store` 是「就地覆盖、下一次请求即生效」的前提；P0 的「分片字节不经过函数」只约束分片，字幕不适用（≤5 MiB，低于 6MB 响应体上限）；
 6. 响应头 `Content-Type: text/vtt; charset=utf-8`、`Cache-Control: no-store`（与清单 / 密钥同纪律：token 逐会话签发、文本可被就地覆盖，缓存会读到陈旧字幕）；ADR-0009 的「CDN 可缓存」列为**演进项**，前置条件是引入内容版本号 / 共享 token 形态；
 7. **不入 HLS 清单**：v1 由播放端外挂轨道（`<track>` / hls.js `addTextTrack`）引用 `play` 返回的 URL；`EXT-X-MEDIA TYPE=SUBTITLES` 需分段 playlist，列为演进项（ADR-0009）。
 

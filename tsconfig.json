@@ -1,0 +1,6 @@
+{
+  // Bun 只按文件名 tsconfig.json 查找路径别名；根目录脚本（scripts/*.ts）
+  // 与 packages 源码依赖本文件才能解析 @root/*（别名真源在 tsconfig.base.json）。
+  "extends": "./tsconfig.base.json",
+  "include": ["scripts/**/*.ts"]
+}

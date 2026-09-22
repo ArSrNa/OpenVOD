@@ -74,12 +74,10 @@ const COLUMNS: ColumnsType<OssItem> = [
   { title: "用途", dataIndex: "usage" },
 ];
 
-export function AboutContent({ version }: { version: string }) {
+export function AboutContent() {
   return (
     <div>
-      <Typography.Paragraph type="secondary">
-        OpenVOD v{version}. Powered by Ar-Sr-Na
-      </Typography.Paragraph>
+      <h1>开源组件列表</h1>
       {GROUPS.map((group) => (
         <ProCard key={group.key} title={group.title} bordered style={{ marginBottom: 16 }}>
           <Table<OssItem> rowKey="name" columns={COLUMNS} dataSource={group.items} pagination={false} size="small" />

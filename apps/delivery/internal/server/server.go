@@ -22,7 +22,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -60,63 +59,21 @@ type Options struct {
 }
 
 type api struct {
-	o        Options
-	signer   *auth.Signer
-	urlKeys  []token.SigningKey
-	playBase *playbackBase
+	o       Options
+	signer  *auth.Signer
+	urlKeys []token.SigningKey
 }
 
-/**
- * playbackBase 播放域名解析器（spec.md §2.1.2 分层）：
- * system_settings.playback_base_url（管理端「系统设置 → 播放设置」运行时可改）60s 进程内缓存读取；
- * 未配置 / DB 故障 / 表不存在一律回退 env DELIVERY_PUBLIC_BASE_URL——设置读取失败不阻塞播放热路径。
- * 60s 与 ADR-0006 §6 的吊销收敛窗口同量级：改域名后最长 1 分钟内新旧域名并存（均可用）。
- */
-type playbackBase struct {
-	db       *store.Store
-	fallback string
-	ttl      time.Duration
-
-	mu    sync.Mutex
-	val   string
-	until time.Time
-}
-
-func (p *playbackBase) base(ctx context.Context) string {
-	if p == nil || p.db == nil {
-		return p.fallback
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	now := time.Now()
-	if p.until.After(now) {
-		return p.val
-	}
-	qctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	v, err := p.db.SettingValue(qctx, "playback_base_url")
-	if err != nil {
-		p.val = p.fallback
-	} else if v = strings.TrimRight(strings.TrimSpace(v), "/"); v != "" {
-		p.val = v
-	} else {
-		p.val = p.fallback
-	}
-	p.until = now.Add(p.ttl)
-	return p.val
-}
-
-// publicBase 播放 URL 基址：DB 设置（system_settings.playback_base_url）覆盖 > env（spec.md §2.1.2）
-func (a *api) publicBase(ctx context.Context) string { return a.playBase.base(ctx) }
+// publicBase 使用当前 handler 的配置快照；app 每 60 秒整体刷新配置与存储，避免混用不同版本。
+func (a *api) publicBase(_ context.Context) string { return a.o.Cfg.PublicBaseURL }
 
 func New(o Options) http.Handler {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
 	a := &api{
-		o:        o,
-		urlKeys:  []token.SigningKey{{Kid: o.Cfg.URLSignKeyKid, Key: o.Cfg.URLSignKey}},
-		playBase: &playbackBase{db: o.DB, fallback: o.Cfg.PublicBaseURL, ttl: time.Minute},
+		o:       o,
+		urlKeys: []token.SigningKey{{Kid: o.Cfg.URLSignKeyKid, Key: o.Cfg.URLSignKey}},
 	}
 	if len(o.JWTKeys) > 0 {
 		a.signer = o.JWTKeys[0]

@@ -14,49 +14,55 @@ import (
 
 	"openvod/apps/delivery/internal/config"
 	"openvod/apps/delivery/internal/mk"
-	"openvod/apps/delivery/internal/store"
 )
 
 // 键名注册表（与 packages/shared SETTING_KEYS 手工对齐；Go 侧无生成物）
 const (
-	KeySetupCompleted     = "setup_completed"
-	KeyS3Endpoint         = "s3_endpoint"
-	KeyS3Region           = "s3_region"
-	KeyS3Bucket           = "s3_bucket"
-	KeyS3AccessKeyID      = "s3_access_key_id"
-	KeyS3SecretAccessKey  = "s3_secret_access_key" // 密钥：MK 封装
-	KeyS3ForcePathStyle   = "s3_force_path_style"
-	KeyStorageRootPrefix  = "storage_root_prefix"
-	KeyStorageCDNBaseURL  = "storage_cdn_base_url"
-	KeyURLSignKeyHex      = "url_sign_key_hex" // 密钥：MK 封装
-	KeyURLSignKeyKid      = "url_sign_key_kid"
-	KeyJWTTTLSec          = "jwt_ttl_sec"
-	KeySessionTTLSec      = "playback_session_ttl_sec"
-	KeyManifestTTLSec     = "playback_manifest_ttl_sec"
-	KeySubtitleTTLSec     = "playback_subtitle_ttl_sec"
-	KeyCORSOrigins        = "cors_origins"
-	KeyPlaybackBaseURL    = "playback_base_url"
-	KeyWorkerPollMs       = "worker_poll_interval_ms"
-	KeyWorkerLeaseMs      = "worker_lease_ms"
-	KeyWorkerMaxAttempts  = "worker_max_attempts"
-	KeyAdminBaseURL       = "admin_base_url"
+	KeySetupCompleted      = "setup_completed"
+	KeyS3Endpoint          = "s3_endpoint"
+	KeyS3Region            = "s3_region"
+	KeyS3Bucket            = "s3_bucket"
+	KeyS3AccessKeyID       = "s3_access_key_id"
+	KeyS3SecretAccessKey   = "s3_secret_access_key" // 密钥：MK 封装
+	KeyS3ForcePathStyle    = "s3_force_path_style"
+	KeyStorageRootPrefix   = "storage_root_prefix"
+	KeyStorageCDNBaseURL   = "storage_cdn_base_url"
+	KeyURLSignKeyHex       = "url_sign_key_hex" // 密钥：MK 封装
+	KeyURLSignKeyKid       = "url_sign_key_kid"
+	KeyJWTTTLSec           = "jwt_ttl_sec"
+	KeySessionTTLSec       = "playback_session_ttl_sec"
+	KeyManifestTTLSec      = "playback_manifest_ttl_sec"
+	KeySubtitleTTLSec      = "playback_subtitle_ttl_sec"
+	KeyCORSOrigins         = "cors_origins"
+	KeyPlaybackBaseURL     = "playback_base_url"
+	KeyWorkerPollMs        = "worker_poll_interval_ms"
+	KeyWorkerLeaseMs       = "worker_lease_ms"
+	KeyWorkerMaxAttempts   = "worker_max_attempts"
+	KeyAdminBaseURL        = "admin_base_url"
 	KeyAdminTrustedOrigins = "admin_trusted_origins"
-	KeyAdminSessionTTL    = "admin_session_ttl_sec"
-	KeyMediaIDLength      = "media_id_length"
+	KeyAdminSessionTTL     = "admin_session_ttl_sec"
+	KeyMediaIDLength       = "media_id_length"
 	KeyDeliveryPreviewUser = "delivery_preview_username"
 	KeyDeliveryPreviewPwd  = "delivery_preview_password" // 密钥：MK 封装
-	KeyOIDCIssuer         = "oidc_issuer"
-	KeyOIDCClientID       = "oidc_client_id"
-	KeyOIDCClientSecret   = "oidc_client_secret" // 密钥：MK 封装
+	KeyOIDCIssuer          = "oidc_issuer"
+	KeyOIDCClientID        = "oidc_client_id"
+	KeyOIDCClientSecret    = "oidc_client_secret" // 密钥：MK 封装
 )
 
-// secretKeys 密钥类键（读取时 MK 解封）；写入侧白名单由管理台强制，明文入库直接拒绝
+// 分发端只消费这些键；不解封管理端/OIDC/预览账号的私密设置，避免无关配置损坏影响播放。
+var deliveryKeys = map[string]bool{
+	KeyS3Endpoint: true, KeyS3Region: true, KeyS3Bucket: true,
+	KeyS3AccessKeyID: true, KeyS3SecretAccessKey: true, KeyS3ForcePathStyle: true,
+	KeyStorageRootPrefix: true, KeyStorageCDNBaseURL: true,
+	KeyURLSignKeyHex: true, KeyURLSignKeyKid: true,
+	KeyJWTTTLSec: true, KeySessionTTLSec: true, KeyManifestTTLSec: true, KeySubtitleTTLSec: true,
+	KeyCORSOrigins: true, KeyPlaybackBaseURL: true,
+}
+
+// secretKeys 仅列分发端实际使用的密钥键（读取时 MK 解封）。
 var secretKeys = map[string]bool{
 	KeyS3SecretAccessKey: true,
 	KeyURLSignKeyHex:     true,
-	KeyDeliveryPreviewPwd: true,
-	KeyOIDCClientSecret:  true,
-	"better_auth_secret": true, // 管理台自用；分发端读到也不解密（仅登记以保持白名单一致）
 }
 
 // Snapshot 一次加载的系统设置全集（已解封密钥；未配置的键为空串，由调用方决定兜底）
@@ -64,14 +70,21 @@ type Snapshot struct {
 	Values map[string]string
 }
 
-// Load 读取全部设置行并解封密钥键。DB 故障返回 error（启动期致命；运行期读失败由调用方回退 env）。
-func Load(ctx context.Context, st *store.Store, masterKeys map[int][]byte) (*Snapshot, error) {
+type Source interface {
+	AllSettings(context.Context) (map[string]string, error)
+}
+
+// Load 读取分发端设置并解封所需密钥。DB 故障返回 error；运行期由调用方保留完整旧配置。
+func Load(ctx context.Context, st Source, masterKeys map[int][]byte) (*Snapshot, error) {
 	rows, err := st.AllSettings(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("读取 system_settings 失败: %w", err)
 	}
 	snap := &Snapshot{Values: map[string]string{}}
 	for k, v := range rows {
+		if !deliveryKeys[k] {
+			continue
+		}
 		if secretKeys[k] && v != "" {
 			plain, _, err := mkUnwrapAny(masterKeys, v)
 			if err != nil {
@@ -188,7 +201,7 @@ func (s *Snapshot) ApplyTo(cfg *config.Config) error {
 		}
 	}
 
-	// ---- 播放域名（清单 / 密钥 / 字幕基址的兜底值；运行期仍由 server 60s 缓存读取覆盖） ----
+	// ---- 播放域名（与其余配置在同一快照中原子生效） ----
 	if v := strings.TrimRight(s.Get(KeyPlaybackBaseURL), "/"); v != "" {
 		cfg.PublicBaseURL = v
 	}

@@ -36,7 +36,9 @@ const MODULES = [
 // 系统设置二级菜单：设置项按域拆子页（/settings 本身只做重定向到首个子页）
 const SETTINGS_CHILDREN = [
   { key: "/settings/playback", label: "播放设置" },
+  { key: "/settings/storage", label: "存储设置" },
   { key: "/settings/security", label: "安全设置" },
+  { key: "/settings/worker", label: "任务设置" },
 ];
 
 // 扁平查找表：内容区标题 / 占位判定用（含二级菜单项）
@@ -52,6 +54,9 @@ const ROUTE_PAGES = new Set([
   "/keys",
   "/jobs",
   "/settings/playback",
+  "/settings/storage",
+  "/settings/security",
+  "/settings/worker",
   "/about",
 ]);
 

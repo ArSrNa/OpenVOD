@@ -19,8 +19,9 @@ import { getDb } from "@openvod/db";
 
 import { apiError } from "./envelope";
 import { masterKeysDiagnostic, type MasterKeysDiagnostic } from "./master-keys";
+import { snapshotCache } from "./reloadable";
 
-const db = getDb<any>();
+const database = () => getDb<any>();
 
 export class SettingsError extends Error {
   constructor(
@@ -89,6 +90,9 @@ function urlValidator(label: string): Validator {
     if (u.protocol !== "http:" && u.protocol !== "https:") {
       throw new SettingsError("bad_request", `${label}协议必须是 http / https`);
     }
+    if (u.username || u.password || u.search || u.hash) {
+      throw new SettingsError("bad_request", `${label}不能包含用户名、口令、查询参数或片段`);
+    }
     return raw;
   };
 }
@@ -124,13 +128,14 @@ function corsOriginsValidator(): Validator {
       .split(",")
       .map((p) => p.trim().replace(/\/+$/, ""))
       .filter(Boolean);
-    for (const p of parts) {
-      if (p === "*") continue;
-      if (!/^https?:\/\//i.test(p)) {
-        throw new SettingsError("bad_request", `CORS 来源必须是 * 或 http(s):// 开头的源：${p}`);
-      }
-    }
-    return parts.join(",");
+    const origins = parts.map((p) => {
+      try {
+        const u = new URL(p);
+        if (!["http:", "https:"].includes(u.protocol) || u.username || u.password || u.search || u.hash || u.pathname !== "/") throw new Error();
+        return u.origin;
+      } catch { throw new SettingsError("bad_request", "CORS 来源须为 * 或不含路径、凭据的 http(s) 来源；不能混用 * 与来源列表"); }
+    });
+    return [...new Set(origins)].join(",");
   };
 }
 
@@ -145,10 +150,12 @@ function trustedOriginsValidator(): Validator {
       .filter(Boolean);
     for (const p of parts) {
       if (p.includes("://")) {
-        if (!/^https?:\/\//i.test(p)) {
-          throw new SettingsError("bad_request", `信任来源协议必须是 http / https：${p}`);
-        }
-      } else if (!/^[a-z0-9*.-]+$/i.test(p)) {
+        const normalized = p.replace("://*.", "://wildcard.");
+        try {
+          const u = new URL(normalized);
+          if (!["http:", "https:"].includes(u.protocol) || u.username || u.password || u.search || u.hash || u.pathname !== "/") throw new Error();
+        } catch { throw new SettingsError("bad_request", "信任来源必须是 http(s) 来源，不能包含路径或凭据"); }
+      } else if (!/^(\*\.)?[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i.test(p) || p.includes("..")) {
         throw new SettingsError("bad_request", `信任来源必须是合法域名：${p}`);
       }
     }
@@ -166,10 +173,20 @@ const PLAIN_META: Record<string, { env?: string; validate: Validator } | undefin
     env: "S3_FORCE_PATH_STYLE",
     validate: enumValidator("寻址风格", ["true", "false"]),
   },
-  [SETTING_KEYS.storageRootPrefix]: { env: "STORAGE_ROOT_PREFIX", validate: (v) => v.trim().replace(/^\/+|\/+$/g, "") },
+  [SETTING_KEYS.storageRootPrefix]: { env: "STORAGE_ROOT_PREFIX", validate: (v) => {
+    const normalized = v.trim().replace(/^\/+|\/+$/g, "");
+    if (/[\\\x00-\x1f]/.test(normalized) || normalized.split("/").some((part) => part === "." || part === "..")) {
+      throw new SettingsError("bad_request", "根前缀不能包含 .、..、反斜线或控制字符");
+    }
+    return normalized;
+  } },
   [SETTING_KEYS.storageCdnBaseUrl]: { env: "STORAGE_CDN_BASE_URL", validate: urlValidator("加速域名") },
   [SETTING_KEYS.playbackBaseUrl]: { env: "DELIVERY_PUBLIC_BASE_URL", validate: urlValidator("播放域名") },
-  [SETTING_KEYS.urlSignKeyKid]: { env: "URL_SIGN_KEY_KID", validate: (v) => v.trim() },
+  [SETTING_KEYS.urlSignKeyKid]: { env: "URL_SIGN_KEY_KID", validate: (v) => {
+    const raw = v.trim();
+    if (raw && !/^[a-zA-Z0-9_-]{1,64}$/.test(raw)) throw new SettingsError("bad_request", "签名密钥 ID 只能包含 1–64 位字母、数字、下划线或短横线");
+    return raw;
+  } },
   [SETTING_KEYS.jwtTtlSec]: { env: "DELIVERY_JWT_TTL_SEC", validate: intValidator("JWT 有效期", SETTING_TTL_LIMITS[SETTING_KEYS.jwtTtlSec].min, SETTING_TTL_LIMITS[SETTING_KEYS.jwtTtlSec].max) },
   [SETTING_KEYS.playbackSessionTtlSec]: {
     env: "PLAYBACK_SESSION_TTL_SEC",
@@ -251,17 +268,35 @@ const SECRET_META: Record<SettingSecretKey, SecretMeta> = {
 function assertKnownKey(key: string): void {
   const known =
     key === SETTING_KEYS.setupCompleted ||
-    key in PLAIN_META ||
+    Object.hasOwn(PLAIN_META, key) ||
     (SETTING_SECRET_KEYS as readonly string[]).includes(key);
   if (!known) {
     throw new SettingsError("bad_request", `未登记的设置键：${key}（白名单外拒绝写入）`);
   }
 }
 
+export function isSecretSetting(key: string): key is SettingSecretKey {
+  return (SETTING_SECRET_KEYS as readonly string[]).includes(key);
+}
+
+export function normalizeSettingValue(key: string, raw: unknown): string {
+  assertKnownKey(key);
+  if (typeof raw !== "string" || raw.length > 8192) throw new SettingsError("bad_request", "设置值必须是不超过 8192 字符的字符串");
+  if (isSecretSetting(key)) return SECRET_META[key].validate?.(raw) ?? raw.trim();
+  return PLAIN_META[key]!.validate(raw);
+}
+
+export function settingFallback(key: string, env: Record<string, string | undefined> = process.env): { value: string; source: "env" | "default" } {
+  assertKnownKey(key);
+  const envName = isSecretSetting(key) ? SECRET_META[key].env : PLAIN_META[key]?.env;
+  const value = envName ? env[envName]?.trim() : undefined;
+  return value ? { value, source: "env" } : { value: SETTING_DEFAULTS[key] ?? "", source: "default" };
+}
+
 // ---- 读侧：DB → env → 默认 ----
 
 async function readRow(key: string): Promise<string | null> {
-  const row = await db.systemSetting.findUnique({ where: { key }, select: { value: true } });
+  const row = await database().systemSetting.findUnique({ where: { key }, select: { value: true } });
   return row?.value ?? null;
 }
 
@@ -310,46 +345,41 @@ export async function resolveWithSource(key: string): Promise<{ value: string; s
 /** upsert 明文键（空串 = 删除行，回退 env/默认） */
 async function writePlain(key: string, value: string): Promise<void> {
   if (value) {
-    await db.systemSetting.upsert({
+    await database().systemSetting.upsert({
       where: { key },
       create: { key, value },
       update: { value },
     });
   } else {
-    await db.systemSetting.deleteMany({ where: { key } });
+    await database().systemSetting.deleteMany({ where: { key } });
   }
 }
 
 /** upsert 密钥键：明文先经 MK 封装再落库（空串 = 删除行回退 env） */
 async function writeSecret(key: SettingSecretKey, plain: string): Promise<void> {
   if (plain) {
-    await db.systemSetting.upsert({
+    await database().systemSetting.upsert({
       where: { key },
       create: { key, value: wrapSecretValue(plain) },
       update: { value: wrapSecretValue(plain) },
     });
   } else {
-    await db.systemSetting.deleteMany({ where: { key } });
+    await database().systemSetting.deleteMany({ where: { key } });
   }
 }
 
 /** 校验并写入一批设置（values: 键 → 值；密钥键传明文，内部封装） */
 export async function writeSettings(values: Record<string, string>): Promise<void> {
-  for (const [key, raw] of Object.entries(values)) {
-    assertKnownKey(key);
-    const secret = (SETTING_SECRET_KEYS as readonly string[]).includes(key);
-    if (secret) {
-      const meta = SECRET_META[key as SettingSecretKey];
-      const v = meta.validate ? meta.validate(raw) : raw.trim();
-      await writeSecret(key as SettingSecretKey, v);
-    } else if (key === SETTING_KEYS.setupCompleted) {
-      await writePlain(key, raw ? "1" : "");
-    } else {
-      const meta = PLAIN_META[key];
-      if (!meta) throw new SettingsError("bad_request", `未登记的设置键：${key}`);
-      await writePlain(key, meta.validate(raw));
+  const entries = Object.entries(values).map(([key, raw]) => {
+    const value = normalizeSettingValue(key, raw);
+    return [key, value && isSecretSetting(key) ? wrapSecretValue(value) : value] as const;
+  });
+  await database().$transaction(async (tx: any) => {
+    for (const [key, value] of entries) {
+      if (value) await tx.systemSetting.upsert({ where: { key }, create: { key, value }, update: { value } });
+      else await tx.systemSetting.deleteMany({ where: { key } });
     }
-  }
+  });
   bustCache();
 }
 
@@ -384,6 +414,7 @@ export interface SettingsSnapshot {
     baseUrl: string;
     trustedOrigins: string;
     sessionTtlSec: number;
+    sessionSecret: string;
     mediaIdLength: number;
     previewUsername: string;
     previewPassword: string;
@@ -393,11 +424,10 @@ export interface SettingsSnapshot {
   };
 }
 
-let cache: { snap: SettingsSnapshot; until: number } | null = null;
 const CACHE_TTL_MS = 30_000;
 
-function bustCache(): void {
-  cache = null;
+export function bustCache(): void {
+  settingsCache.invalidate();
 }
 
 function toInt(v: string, fallback: number): number {
@@ -405,13 +435,8 @@ function toInt(v: string, fallback: number): number {
   return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
-/** 全量快照：一次读表（DB 无该键回退 env / 默认），30s 缓存；读失败回退 env（不阻塞调用方） */
-export async function getSettingsSnapshot(): Promise<SettingsSnapshot> {
-  if (cache && cache.until > Date.now()) return cache.snap;
+function buildSettingsSnapshot(rows: Array<{ key: string; value: string }>): SettingsSnapshot {
   const env = process.env;
-  const rows = (await db.systemSetting
-    .findMany({ select: { key: true, value: true } })
-    .catch(() => [])) as Array<{ key: string; value: string }>;
   const map = new Map(rows.map((r) => [r.key, r.value]));
 
   const get = (key: string): string => {
@@ -467,6 +492,7 @@ export async function getSettingsSnapshot(): Promise<SettingsSnapshot> {
       baseUrl: get(SETTING_KEYS.adminBaseUrl).replace(/\/+$/, ""),
       trustedOrigins: get(SETTING_KEYS.adminTrustedOrigins),
       sessionTtlSec: toInt(get(SETTING_KEYS.adminSessionTtlSec), 8 * 3600),
+      sessionSecret: getSecret("better_auth_secret"),
       mediaIdLength: resolveMediaIdLength(get(SETTING_KEYS.mediaIdLength)),
       previewUsername: get(SETTING_KEYS.deliveryPreviewUsername),
       previewPassword: getSecret("delivery_preview_password"),
@@ -475,8 +501,16 @@ export async function getSettingsSnapshot(): Promise<SettingsSnapshot> {
       oidcClientSecret: getSecret("oidc_client_secret"),
     },
   };
-  cache = { snap, until: Date.now() + CACHE_TTL_MS };
   return snap;
+}
+
+const settingsCache = snapshotCache(async () => buildSettingsSnapshot(
+  await database().systemSetting.findMany({ select: { key: true, value: true } }),
+), CACHE_TTL_MS);
+
+/** 30s 快照；运行期故障沿用最后有效值，冷启动无快照才尝试 env 兜底。 */
+export async function getSettingsSnapshot(): Promise<SettingsSnapshot> {
+  return settingsCache.read().catch(() => buildSettingsSnapshot([]));
 }
 
 // ---- 首次启动向导（/setup） ----
@@ -555,39 +589,12 @@ export async function completeSetup(payload: SetupPayload): Promise<{ setup_comp
   return { setup_completed: true };
 }
 
-// ---- 旧 API 兼容（/api/admin/settings 播放设置页） ----
-
-/** GET /api/admin/settings 响应体（含 env 回退值供 UI 提示） */
-export async function getSettings(): Promise<{
-  playback_base_url: string;
-  env_public_base_url: string;
-}> {
-  const snap = await getSettingsSnapshot();
-  return {
-    playback_base_url: snap.playbackBaseUrl,
-    env_public_base_url: process.env.DELIVERY_PUBLIC_BASE_URL?.trim() || "",
-  };
-}
-
-/** PUT /api/admin/settings：归一化后 upsert（空串删除行 = 回退 env） */
-export async function updateSettings(body: unknown): Promise<{ playback_base_url: string }> {
-  const input = (body ?? {}) as { playback_base_url?: unknown };
-  if (!("playback_base_url" in input)) {
-    throw new SettingsError("bad_request", "缺少 playback_base_url 字段");
-  }
-  const meta = PLAIN_META[SETTING_KEYS.playbackBaseUrl];
-  if (!meta) throw new SettingsError("internal", "设置键注册表损坏", 500);
-  const value = meta.validate(String(input.playback_base_url ?? ""));
-  await writePlain(SETTING_KEYS.playbackBaseUrl, value);
-  bustCache();
-  return { playback_base_url: value };
-}
-
 /** 路由统一错误映射 */
 export function settingsErrorResponse(e: unknown) {
   if (e instanceof SettingsError) {
     return apiError(e.code, e.message, e.status);
   }
-  console.error("[settings] unexpected error:", e);
+  // Prisma/驱动错误可能包含 SQL 参数（包括封装值），只记录类别。
+  console.error("[settings] unexpected error:", e instanceof Error ? e.name : "unknown");
   return apiError("internal", "系统设置操作失败", 500);
 }

@@ -229,7 +229,7 @@ func (s *Store) DefaultTemplateID(ctx context.Context) (string, error) {
 
 /**
  * SettingValue 读单个设置值（key 为 MySQL 保留字风格的列名，必须反引号）。
- * 调用方（server 的 baseResolver）自带 60s 进程内缓存，DB 故障回退 env，不阻塞播放热路径。
+ * 返回原始字符串；配置刷新与失败回退由装配层负责。
  */
 func (s *Store) SettingValue(ctx context.Context, key string) (string, error) {
 	var v string
@@ -245,7 +245,7 @@ func (s *Store) SettingValue(ctx context.Context, key string) (string, error) {
 
 /**
  * AllSettings 全量设置（key -> value 原始值；密钥键为封装 hex，由 internal/settings 解封）。
- * ADR-0015：分发端启动时一次读取，env 同名键兜底。
+ * ADR-0015：分发端启动与 60s 热刷新时读取，env 同名键兜底。
  */
 func (s *Store) AllSettings(ctx context.Context) (map[string]string, error) {
 	rows := []struct {

@@ -31,7 +31,7 @@ type Config struct {
 	DatabaseURL string // go-sql-driver DSN（由 DELIVERY_DATABASE_URL 归一，见 ParseDatabaseURL）
 
 	// 资源 URL 基址：拼清单 / 密钥 / 字幕 URL（ADR-0006 §3）。
-	// 运行时可被 system_settings.playback_base_url 覆盖（分发端 60s 缓存读取，env 兜底）。
+	// 运行时由 system_settings 覆盖（与其余设置一起 60s 刷新，env 兜底）。
 	PublicBaseURL string
 
 	// 允许跨域访问的源（管理端产物预览用 hls.js 需要；`*` = 全部）。

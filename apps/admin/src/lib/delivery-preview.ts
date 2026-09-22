@@ -27,7 +27,7 @@ function baseUrl(): string {
   return (process.env.DELIVERY_BASE_URL?.trim() || "http://127.0.0.1:9000").replace(/\/+$/, "");
 }
 
-type TokenCache = { value: string; expiresAtSec: number };
+type TokenCache = { value: string; expiresAtSec: number; credentials: string };
 let cached: TokenCache | null = null;
 
 /** 取预览账号 JWT（进程内缓存到过期前 60s，避免每次点击都 login，ADR-0007 无 refresh） */
@@ -43,7 +43,8 @@ async function previewToken(): Promise<string> {
     );
   }
   const nowSec = Math.floor(Date.now() / 1000);
-  if (cached && cached.expiresAtSec - 60 > nowSec) return cached.value;
+  const credentials = JSON.stringify([baseUrl(), username, password]);
+  if (cached && cached.credentials === credentials && cached.expiresAtSec - 60 > nowSec) return cached.value;
 
   let res: Response;
   try {
@@ -66,7 +67,7 @@ async function previewToken(): Promise<string> {
       502,
     );
   }
-  cached = { value: body.access_token, expiresAtSec: nowSec + (body.expires_in ?? 3600) };
+  cached = { value: body.access_token, expiresAtSec: nowSec + (body.expires_in ?? 3600), credentials };
   return cached.value;
 }
 

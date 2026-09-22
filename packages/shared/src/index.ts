@@ -214,7 +214,8 @@ export const SETTING_DEFAULTS: Record<string, string> = {
 export const SETTING_TTL_LIMITS = {
   [SETTING_KEYS.jwtTtlSec]: { min: 300, max: 30 * 24 * 3600 },
   [SETTING_KEYS.playbackSessionTtlSec]: { min: 300, max: 30 * 24 * 3600 },
-  [SETTING_KEYS.playbackManifestTtlSec]: { min: 60, max: 30 * 24 * 3600 },
+  // 同时用于 S3 SigV4 预签名，其有效期上限为 7 天。
+  [SETTING_KEYS.playbackManifestTtlSec]: { min: 60, max: 7 * 24 * 3600 },
   [SETTING_KEYS.playbackSubtitleTtlSec]: { min: 60, max: 30 * 24 * 3600 },
   [SETTING_KEYS.adminSessionTtlSec]: { min: 600, max: 30 * 24 * 3600 },
 } as const;

@@ -15,7 +15,7 @@ export default async function PlaybackSettingsPage() {
   const session = await requireConsoleSession();
   return (
     <ConsoleShell userName={session.user.name} version={pkg.version}>
-      <SettingsManager />
+      <SettingsManager group="playback" />
     </ConsoleShell>
   );
 }

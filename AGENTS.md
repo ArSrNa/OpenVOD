@@ -12,6 +12,12 @@ OpenVOD：自建云点播系统（媒资 → 转码加密 → 元数据 / 字幕
 
 ## 常用命令
 
+### 执行约束（用户要求）
+
+- Node.js 生态相关操作统一使用 Bun 运行时，包括依赖安装、脚本执行、开发、构建和测试。
+- 安装依赖使用 `bun install` / `bun add`；执行 CLI 使用 `bunx --bun`、`bun run --bun` 或 `bun <脚本路径>`。不要使用 npm、npx、pnpm、yarn 或直接调用 node；工具的 Node shebang 也须显式由 Bun 执行。
+- Go 等非 Node.js 工具继续使用原生工具链。
+
 工具链要求：Bun ≥1.4、Go 1.26、Node 22+、ffmpeg/ffprobe、Task（可选，无 Task 时直接看 `Taskfile.yml` / `package.json` 里的原始命令）；云原生开发镜像 `.ide/Dockerfile` 已内置全部工具。
 
 | 命令 | 说明 |

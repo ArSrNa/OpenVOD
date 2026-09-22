@@ -9,7 +9,8 @@ import { APIError, createAuthMiddleware } from "better-auth/api";
 import { currentProvider, getDb } from "@openvod/db";
 import { clientIp, recordLoginAudit } from "./audit";
 import { resolveOidcProviders } from "./oidc";
-import { getSettingsSnapshot, resolveSecret } from "./settings";
+import { getSettingsSnapshot } from "./settings";
+import { reloadable } from "./reloadable";
 
 const adminPort = process.env.ADMIN_PORT ?? process.env.PORT ?? 8787;
 
@@ -51,11 +52,15 @@ function normalizeTrustedOrigins(raw: string | undefined, baseURL: string): stri
   return list.includes(httpTwin) ? list : [...list, httpTwin];
 }
 
-async function buildAuth() {
+interface AuthSettings {
+  baseUrl: string; trustedOrigins: string; sessionTtlSec: number; sessionSecret: string;
+  oidcIssuer: string; oidcClientId: string; oidcClientSecret: string;
+}
+
+async function buildAuth(settings: AuthSettings) {
   const prisma = getDb<any>();
   // 设置快照（30s 缓存）：基址 / 信任来源 / 会话 TTL / OIDC 皆为明文键
-  const snap = await getSettingsSnapshot().catch(() => null);
-  const secret = await resolveSecret("better_auth_secret");
+  const secret = settings.sessionSecret;
   if (!secret) {
     throw new Error(
       "管理端会话密钥未配置：请完成首次启动向导（/setup）或设置环境变量 BETTER_AUTH_SECRET",
@@ -65,23 +70,23 @@ async function buildAuth() {
   // 基址优先级：CNB 平台注入 > system_settings.admin_base_url > env > localhost
   const adminBaseURL =
     cnbBaseURL ||
-    snap?.admin.baseUrl ||
+    settings.baseUrl ||
     process.env.ADMIN_BASE_URL?.trim() ||
     `http://localhost:${adminPort}`;
 
   // 通用 OIDC（ADR-0012 决策保留）：未配置 issuer → 零触网、零等待地不注册 SSO；
   // 已配置 → 带超时预检后再注册。判定与降级语义集中在 lib/oidc（含单测），见其顶部注释。
   const oidcConfig = await resolveOidcProviders({
-    issuer: snap?.admin.oidcIssuer || "",
-    clientId: snap?.admin.oidcClientId || "",
-    clientSecret: snap?.admin.oidcClientSecret || "",
+    issuer: settings.oidcIssuer,
+    clientId: settings.oidcClientId,
+    clientSecret: settings.oidcClientSecret,
   });
 
   return betterAuth({
     baseURL: adminBaseURL,
     secret,
     trustedOrigins: normalizeTrustedOrigins(
-      snap?.admin.trustedOrigins ?? process.env.ADMIN_TRUSTED_ORIGINS,
+      settings.trustedOrigins,
       adminBaseURL,
     ),
     advanced: {
@@ -98,8 +103,8 @@ async function buildAuth() {
     },
     session: {
       modelName: "adminSession",
-      expiresIn: snap?.admin.sessionTtlSec ?? 8 * 3600,
-      updateAge: 3600, // 每小时滚动续期
+      expiresIn: settings.sessionTtlSec,
+      updateAge: Math.min(3600, Math.floor(settings.sessionTtlSec / 2)),
     },
     user: {
       modelName: "adminUser",
@@ -111,6 +116,12 @@ async function buildAuth() {
     verification: { modelName: "adminVerification" },
     // 登录事件审计（ADR-0012 §3）：本地 / OAuth 成败均落 audit_logs
     hooks: {
+      before: createAuthMiddleware(async (ctx) => {
+        // 管理员由 setup/部署脚本创建（服务端 API 无 Request）；公开注册不授予控制台权限。
+        if (ctx.path === "/sign-up/email" && ctx.request) {
+          throw new APIError("FORBIDDEN", { message: "管理端不开放注册，请联系部署管理员" });
+        }
+      }),
       after: createAuthMiddleware(async (ctx) => {
         const isLocal = ctx.path === "/sign-in/email";
         const OAUTH_CB = "/callback/"; // 1.7.x genericOAuth 回调：/api/auth/callback/<providerId>
@@ -163,17 +174,16 @@ async function buildAuth() {
   });
 }
 
-let instance: Awaited<ReturnType<typeof buildAuth>> | null = null;
-let building: Promise<Awaited<ReturnType<typeof buildAuth>>> | null = null;
-
 export type AuthInstance = Awaited<ReturnType<typeof buildAuth>>;
+const authForConfig = reloadable<AuthInstance>((key) => buildAuth(JSON.parse(key) as AuthSettings));
 
 /** 惰性获取 better-auth 实例（进程内单例；首次调用从 system_settings 解封会话密钥） */
-export function getAuth(): Promise<AuthInstance> {
-  if (instance) return Promise.resolve(instance);
-  building ??= buildAuth().then((a) => {
-    instance = a;
-    return a;
-  });
-  return building;
+export async function getAuth(): Promise<AuthInstance> {
+  const { admin } = await getSettingsSnapshot();
+  const settings: AuthSettings = {
+    baseUrl: admin.baseUrl, trustedOrigins: admin.trustedOrigins, sessionTtlSec: admin.sessionTtlSec,
+    sessionSecret: admin.sessionSecret, oidcIssuer: admin.oidcIssuer, oidcClientId: admin.oidcClientId, oidcClientSecret: admin.oidcClientSecret,
+  };
+  // 指纹只在进程内存中，不输出到日志；快照刷新后按需重建实例。
+  return authForConfig(JSON.stringify(settings));
 }

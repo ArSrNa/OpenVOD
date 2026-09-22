@@ -94,7 +94,8 @@
 
 - **解析顺序即迁移语义**：未做一次性 env→DB 导入脚本，"升级兼容"由统一的解析链（DB > env > 默认）天然覆盖——老部署 env 照常兜底，向导 / 设置页写入 DB 后即覆盖，清空 DB 行自动回退 env；
 - **密钥封装形态**：与 `signing_keys` 同构（`hex(iv‖ct‖tag)`，无版本前缀，逐版本尝试解封），Go/TS 各一侧实现，靠既有 crypto 向量保证互通；
-- **生效时延**：delivery 启动全量加载（存储 / 签名密钥 / TTL / CORS / kid），运行期仅 `playback_base_url` 保持 60s 缓存热更新；worker 30s 缓存逐 tick 刷新（存储凭据变更自动重建适配器）；admin 快照 30s 缓存、better-auth 惰性初始化（`getAuth()`）；
+- **生效时延（系统设置补全）**：delivery 启动加载并约 60s 刷新（存储 / 签名密钥 / TTL / CORS / kid / 播放域名），整体替换不可变 handler，刷新失败保留最后有效配置；worker 30s 缓存，在下一次空闲 tick 刷新；admin 快照 30s 缓存，保存时清本进程缓存，better-auth 随认证配置变化按需重建；
+- **设置页**：播放 / 存储 / 安全 / 任务四个子页复用现有注册表。保存先整批校验，再在 Serializable 事务中校验分组版本、写值与脱敏审计；密钥在响应中仅提供配置状态。编辑端数据库失败明确报错，消费端保持各自降级行为；
 - **落地位置**：键注册表 `packages/shared`（SETTING_KEYS / SETTING_SECRET_KEYS / SETTING_DEFAULTS / TTL 上限）；admin 侧 `apps/admin/src/lib/settings.ts`（注册表 / 校验 / 封装 / 快照 / `completeSetup`）+ `/setup` 向导 + `/api/setup`；Go 侧 `apps/delivery/internal/settings`（`Load` + `ApplyTo`）；worker 侧 `apps/worker/src/settings.ts`；必需键收敛见 `scripts/gen-env.sh` 的 `REQUIRED_KEYS`（4 个）与 `.env.example`；
 - **安全门禁不变**：设置表白名单外拒绝写入、密钥键明文入库直接拒绝（写入侧强制封装），delivery 受限账号对 `system_settings` 仅 SELECT（ADR-0011 追加授权在部署侧执行）。
 

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"reflect"
 	"syscall"
 	"time"
 
@@ -22,7 +23,6 @@ import (
 	"openvod/apps/delivery/internal/config"
 	"openvod/apps/delivery/internal/mk"
 	"openvod/apps/delivery/internal/server"
-	"openvod/apps/delivery/internal/settings"
 	"openvod/apps/delivery/internal/store"
 )
 
@@ -34,14 +34,14 @@ const shutdownTimeout = 10 * time.Second
  * 返回非 nil 表示启动失败或服务异常退出，由调用方决定退出码（两个部署目标都是非零退出）。
  */
 func Run() error {
-	cfg, err := config.Load()
+	base, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	db, err := store.Open(cfg.DatabaseURL)
+	db, err := store.Open(base.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("数据库不可用: %w", err)
 	}
@@ -49,18 +49,9 @@ func Run() error {
 
 	// ADR-0015：启动只依赖 DELIVERY_DATABASE_URL + MASTER_KEYS；存储凭据 / 播放签名密钥 /
 	// TTL / CORS 从 system_settings 加载（首次启动向导写入，MK 封装的密钥在此解封），env 兜底。
-	snap, err := settings.Load(context.Background(), db, cfg.MasterKeys)
+	cfg, err := settingsConfig(context.Background(), db, base)
 	if err != nil {
-		return fmt.Errorf("系统设置加载失败: %w", err)
-	}
-	if err := snap.ApplyTo(cfg); err != nil {
-		return fmt.Errorf("系统设置非法: %w", err)
-	}
-	if cfg.Storage.Bucket == "" || cfg.Storage.AccessKeyID == "" || cfg.Storage.SecretAccessKey == "" {
-		return fmt.Errorf("对象存储未配置：请先完成管理台首次启动向导（/setup）或配置 S3_* 环境变量")
-	}
-	if cfg.URLSignKey == nil {
-		return fmt.Errorf("播放签名密钥未配置：请先完成管理台首次启动向导（/setup，url_sign_key_hex）或设置 URL_SIGN_KEY_HEX")
+		return err
 	}
 
 	bl, err := blob.New(cfg.Storage)
@@ -69,10 +60,28 @@ func Run() error {
 	}
 
 	signers := loadJWTSigners(cfg, db, logger)
+	currentCfg := cfg
+	currentHandler := server.New(server.Options{Cfg: cfg, DB: db, Blob: bl, Logger: logger, JWTKeys: signers})
+	handler := newSettingsHandler(currentHandler, func(ctx context.Context) (http.Handler, error) {
+		next, err := settingsConfig(ctx, db, base)
+		if err != nil {
+			return nil, err
+		}
+		if reflect.DeepEqual(next, currentCfg) {
+			return currentHandler, nil
+		}
+		nextBlob, err := blob.New(next.Storage)
+		if err != nil {
+			return nil, err
+		}
+		candidate := server.New(server.Options{Cfg: next, DB: db, Blob: nextBlob, Logger: logger, JWTKeys: signers})
+		currentCfg, currentHandler = next, candidate
+		return candidate, nil
+	}, logger)
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           server.New(server.Options{Cfg: cfg, DB: db, Blob: bl, Logger: logger, JWTKeys: signers}),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

@@ -118,7 +118,7 @@ root 下按资产类别分四个分区，互不嵌套：
 | `/api/admin/media/{id}/subtitles/{trackId}/content` | PUT | 覆盖字幕文本（原始字幕字节流：`.vtt` / `.srt`（自动转 VTT），同一校验）：**就地覆盖同一对象**（trackId / 存储键不变）→ 更新 `bytes` / `updated_at`；审计 `subtitle.update`（detail 含 `content_replaced`） |
 | `/api/admin/media/{id}/subtitles/{trackId}/content` | GET | 读取该轨道 WebVTT（**字幕预览**用，§7.6）：以行内 `storage_key` 读对象，两种驱动均由管理端代理输出（≤5MiB）+ `text/vtt; charset=utf-8` + `no-store`；轨道或对象缺失 404 |
 | `/api/admin/media/{id}/subtitles/{trackId}` | DELETE | 删除轨道：先删存储对象、再删 DB 行（幂等可重试）；删默认轨不自动改派；审计 `subtitle.delete` |
-| `/api/admin/settings` | GET / PUT | 系统设置（`system_settings` key-value，控制台运行时可调项）。GET 返回 `playback_base_url` + `env_delivery_base_url`（回退值提示）；PUT 更新 `playback_base_url`（控制台播放默认域名：**「产物 → 播放」清单 / 密钥请求基址**，归一化为无尾斜杠 http(s) URL，空串 = 清除回退 `DELIVERY_BASE_URL`）。S3 签名播放下分片预签名 URL 由分发端按对象存储端点直签、与该域名无关（ADR-0005 修订）。落 `audit_logs`（`settings.update`） |
+| `/api/admin/settings` | GET / PUT | 按 `group=playback/storage/security/worker` 读写设置、来源与版本。PUT `{group, revision, values}` 仅更新提交键，空串清除覆盖，密钥 MK 封装且不回显；校验、写入、审计同一事务，版本冲突 409。兼容原单字段播放域名请求。详见 §2.1.2 |
 
 ### 2.1.1 播放端用户（ADR-0004 / ADR-0007）
 
@@ -126,23 +126,22 @@ root 下按资产类别分四个分区，互不嵌套：
 - 口令只写不读：接口入参只接受明文口令并即时 bcrypt 摘要，响应与契约**均无口令 / 哈希字段**；`max_concurrent_sessions` 为 `0` 表示不限制（ADR-0007）；
 - 管理端用户（`admin_users` + better-auth Cookie 会话）与播放端用户（`users` + ES256 JWT）是两套体系，切勿混用。
 
-### 2.1.2 系统设置（system_settings，2026-09-20 用户定）
+### 2.1.2 系统设置（system_settings，2026-09-22 按 ADR-0015 修订）
 
-运行时可调的部署配置**落库存储**（`system_settings` key-value，双 schema 同步 + MySQL 迁移），控制台「系统设置」二级菜单按域管理（播放 / 存储 / 安全，随域扩充）；**不再「改 env + 重启」**。与 env 的分层边界（用户定）：
+继续使用现有 key-value 表，不新增配置表或配置文件。页面为 `/settings/playback`、`/settings/storage`、`/settings/security`、`/settings/worker`，分别承载播放策略/预览账号、S3 存储、安全/登录、Worker/新媒资 ID 参数；转码模板保持独立。
 
-| 归属 | 内容 | 理由 |
-|---|---|---|
-| **env（永不落库）** | 数据库连接（`DATABASE_URL` / `DB_PROVIDER`）、敏感材料（`MASTER_KEYS` / `URL_SIGN_KEY_HEX` / S3 SK / `BETTER_AUTH_SECRET`）、分发端热路径参数（`DELIVERY_*`、各 TTL 上限） | 引导依赖（连库本身不能存库里——鸡生蛋）；敏感材料由部署平台 Secret 管控（CNB 密钥仓库）；热路径不新增 DB 读依赖（ADR-0011 失败场景要求 DB 挂时分片仍可播） |
-| **system_settings（落库）** | 运行时可调的非敏感控制面项：`playback_base_url`（播放域名，已实现——覆盖 `DELIVERY_PUBLIC_BASE_URL`，清单 / 密钥 / 字幕基址，分发端 60s 缓存读取；分片为预签名直出，走存储端点 / 加速域名）等 | 免重启生效、UI 可管理、变更落审计、env 不无限膨胀 |
+- **边界**：数据库连接、provider、端口与 MK 根密钥只能由 env 提供。其它登记项按 DB > env > 默认解析。S3 SK、URL 签名密钥、会话密钥、OIDC secret、预览口令仅以 MK 封装值落库。
+- **API**：GET `?group=...` 返回 `{group, revision, fields, restart_required}`；每个 field 包含 `key/label/value/source/secret/configured/overridden`。密钥 `value=null`，不返回明文或密文。PUT `{group, revision, values}`；值为字符串，未提交键保持不变，空串删除覆盖并回退 env/默认。
+- **校验**：仅允许本分组登记键，拒绝 `setup_completed`、MK 及未知字段；64 KiB 请求上限、单值 8192 字符上限；TTL 范围与 `manifest ≤ session`（包括回退值）；URL 不接受凭据/查询/片段；CORS 为 `*` 或标准来源列表；根前缀禁止路径逃逸。不能清空存储必需字段或登录/播放密钥而又没有 env 兜底。
+- **并发与审计**：revision 为该分组已存行（包括 updatedAt）的摘要；在 Serializable 事务中校验版本、修改所有键并写 `settings.update`。冲突 409，校验失败 400，审计失败整批回滚。审计中的密钥值恒为 `[redacted]`。不提供历史版本/自动回滚功能。
+- **鉴权**：管理员 Cookie 会话及初始化门禁；写请求检查当前管理端来源与 JSON Content-Type。管理端 HTTP 自注册关闭，`/setup` 和部署脚本的服务端建号仍可用。
+- **生效**：Admin 本进程保存后清缓存，其余实例约 30s；认证配置变化按需重建 Better Auth，预览账号变化使 JWT 缓存失效。Worker 30s 缓存，在下一次空闲轮询读取，运行中任务继续使用已认领的配置。分发端约 60s 刷新并整体切换不可变服务配置，旧请求用旧配置结束，不改写正在处理的请求。
+- **失败处理**：编辑页读取失败明确报错，不把回退值误报为已保存设置；Admin 与分发端运行期刷新失败保留最后有效配置，冷启动才使用 env 兜底或失败。Admin 保存后使用缓存代次阻止旧在途查询写回；清除覆盖前校验回退值。设置清除成功后正常回退 env/默认。
+- **操作影响**：更换存储位置不迁移历史资产；更换 URL 签名密钥会使旧签名链接失效；更换管理端会话密钥可能要求重新登录。页面明确提示。
 
-工程约束：
+旧 GET 无 group 仍返回 `playback_base_url` 与 `env_public_base_url`；旧 PUT `{playback_base_url}` 通过同样的事务与审计流程兼容。分发端受限数据库账号需要 `system_settings` SELECT 权限。
 
-- **键白名单**：键须在 `apps/admin/src/lib/settings.ts` 的 `SETTING_KEYS` 登记，未登记键拒绝；值为字符串，格式校验在应用层（写入归一化、非法 400）——key-value 天然无类型约束，校验散在应用层是已知代价；
-- **文件形态（2026-09-20 用户定）**：文件配置统一 **env**（平台 Secret 注入 / Compose `env_file` / serverless 控制台全为 env 语义），**不引入 yaml 等结构化配置文件**（双语言解析、文件挂载、密钥注入模板化成本 > 收益；配置树的复杂度已由「env 扁平项 + DB settings」两层消化）；
-- **敏感材料禁入**：settings 表对能连库的账号可读，密钥类绝不明文入库；确需动态密钥走 `signing_keys` 的 MK 封装模式（ADR-0004 / 0006）；分发端受限账号仅授 `system_settings` **只读**（ADR-0011 约束 2），且只读 `playback_base_url` 一个键；
-- **渐进降级**：消费方读取失败（表缺失 / DB 故障）一律回退 env 或内置默认，不阻塞业务；分发端 60s 进程内缓存（与 ADR-0006 §6 吊销收敛窗口同量级，改域名后最长 1 分钟新旧并存），管理端 `previewPlay` 每请求直读；
-- **审计与恢复**：变更落 `audit_logs`（`settings.update`）；key-value 无版本化，回滚 = 写回旧值；跨环境迁移 / 备份恢复时注意**导出表行数据**（schema 迁移不含数据，容易漏迁）；
-- **消费方边界**：管理端（读 + 写）与分发端（只读 `playback_base_url`，60s 缓存）——分发端读取是播放 URL 基址的**唯一生效点**（清单 / 密钥 / 分片 / 字幕全部由分发端生成），管理端 `previewPlay` 的 origin 改写仅作旧版分发端未升级时的控制台预览兜底。
+`playback_manifest_ttl_sec` 同时用于对象预签名，设置上限为 7 天，对齐 [S3 SigV4 预签名有效期](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html)。
 
 ### 2.2 未实现（501 占位，随里程碑落地）
 

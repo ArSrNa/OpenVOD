@@ -5,20 +5,21 @@
 // 只输出状态与原因，永不打印密钥值（ADR-0006 分层根 / ADR-0015）。
 export async function register(): Promise<void> {
   // 仅 nodejs 运行时（edge 编译不加载本逻辑）
-  if (process.env.NEXT_RUNTIME !== "nodejs") return;
-  try {
-    const { masterKeysDiagnostic, masterKeysSummary } = await import("./lib/master-keys");
-    const d = masterKeysDiagnostic();
-    if (d.ok) {
-      console.log(`[admin] ${masterKeysSummary(d)}`);
-      return;
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    try {
+      const { masterKeysDiagnostic, masterKeysSummary } = await import("./lib/master-keys");
+      const d = masterKeysDiagnostic();
+      if (d.ok) {
+        console.log(`[admin] ${masterKeysSummary(d)}`);
+        return;
+      }
+      console.error(`[admin] ${masterKeysSummary(d)}`);
+      console.error(
+        "[admin] MK 是 ADR-0006 分层根：admin / worker / delivery 三端必须由同一份环境变量提供" +
+          "（格式 版本:64位hex，生成 openssl rand -hex 32）；配置后需重启进程。",
+      );
+    } catch (e) {
+      console.error(`[admin] MASTER_KEYS 启动自检未能执行：${(e as Error).message}`);
     }
-    console.error(`[admin] ${masterKeysSummary(d)}`);
-    console.error(
-      "[admin] MK 是 ADR-0006 分层根：admin / worker / delivery 三端必须由同一份环境变量提供" +
-        "（格式 版本:64位hex，生成 openssl rand -hex 32）；配置后需重启进程。",
-    );
-  } catch (e) {
-    console.error(`[admin] MASTER_KEYS 启动自检未能执行：${(e as Error).message}`);
   }
 }

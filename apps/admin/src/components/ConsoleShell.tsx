@@ -36,7 +36,6 @@ const MODULES = [
 // 系统设置二级菜单：设置项按域拆子页（/settings 本身只做重定向到首个子页）
 const SETTINGS_CHILDREN = [
   { key: "/settings/playback", label: "播放设置" },
-  { key: "/settings/storage", label: "存储设置" },
   { key: "/settings/security", label: "安全设置" },
 ];
 
@@ -63,11 +62,11 @@ const ROUTE = {
   routes: MODULES.map(({ key, label, icon }) =>
     key === "/settings"
       ? {
-          path: key,
-          name: label,
-          icon,
-          routes: SETTINGS_CHILDREN.map(({ key: k, label: l }) => ({ path: k, name: l })),
-        }
+        path: key,
+        name: label,
+        icon,
+        routes: SETTINGS_CHILDREN.map(({ key: k, label: l }) => ({ path: k, name: l })),
+      }
       : { path: key, name: label, icon },
   ),
 };

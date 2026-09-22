@@ -8,6 +8,7 @@ import { genericOAuth } from "better-auth/plugins";
 import { APIError, createAuthMiddleware } from "better-auth/api";
 import { currentProvider, getDb } from "@openvod/db";
 import { clientIp, recordLoginAudit } from "./audit";
+import { resolveOidcProviders } from "./oidc";
 import { getSettingsSnapshot, resolveSecret } from "./settings";
 
 const adminPort = process.env.ADMIN_PORT ?? process.env.PORT ?? 8787;
@@ -68,20 +69,13 @@ async function buildAuth() {
     process.env.ADMIN_BASE_URL?.trim() ||
     `http://localhost:${adminPort}`;
 
-  // 通用 OIDC（ADR-0012 决策保留）：不配 issuer 则仅本地邮箱密码登录
-  const oidcIssuer = snap?.admin.oidcIssuer || "";
-  const oidcConfig = oidcIssuer
-    ? [
-        {
-          providerId: "generic-oidc",
-          discoveryUrl: `${oidcIssuer}/.well-known/openid-configuration`,
-          clientId: snap?.admin.oidcClientId || "",
-          clientSecret: snap?.admin.oidcClientSecret || "",
-          scopes: ["openid", "profile", "email"],
-          pkce: true,
-        },
-      ]
-    : [];
+  // 通用 OIDC（ADR-0012 决策保留）：未配置 issuer → 零触网、零等待地不注册 SSO；
+  // 已配置 → 带超时预检后再注册。判定与降级语义集中在 lib/oidc（含单测），见其顶部注释。
+  const oidcConfig = await resolveOidcProviders({
+    issuer: snap?.admin.oidcIssuer || "",
+    clientId: snap?.admin.oidcClientId || "",
+    clientSecret: snap?.admin.oidcClientSecret || "",
+  });
 
   return betterAuth({
     baseURL: adminBaseURL,

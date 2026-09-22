@@ -3,7 +3,7 @@
 # gen-env.sh — 从「环境变量」生成 .env
 #
 # .env 已被 .gitignore，真源是 CNB 密钥仓库：云原生开发启动时由 .cnb.yml 的
-# imports 注入环境变量，再用本脚本把变量落回 .env（start.sh / Taskfile 照旧读取）。
+# imports 注入环境变量，再用本脚本把变量落回 .env（scripts/dev.ts / Taskfile 照旧读取）。
 #
 # 用法：
 #   scripts/gen-env.sh                 生成 <root>/.env（已存在则跳过）

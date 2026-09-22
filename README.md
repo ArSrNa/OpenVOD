@@ -17,16 +17,19 @@ task db:push              # 开发库建表（SQLite）
 task contracts            # zod → JSON Schema → Go struct（生成物入库，ADR-0001 门禁）
 task vectors              # 生成 TS/Go 加密互通测试向量
 
-./start.sh                # 一键启动（后台：管理端 + 分发端 + 转码 Worker，日志在 .run/）
+bun scripts/dev.ts        # 启动服务（交互式选服务 + 前台/后台；日志在 .run/）
 task test                 # bun test + go test
 ```
 
+`bun scripts/dev.ts` 是 TS 版启动器（`scripts/dev.ts`，取代旧 `./start*.sh`）：无参数时交互式勾选要启动的服务与运行方式，
+也可以直接带参数；端口跟随根 `.env` 的 `ADMIN_PORT` / `DELIVERY_LISTEN`。
+
 | 组件 | 端口 | 启动命令 |
 |---|---|---|
-| 管理端 admin（UI + API） | `:8787` | `./start-admin.sh`（**同时后台起 Worker**）或 `task dev:admin` |
-| 分发端 delivery | `:9000` | `./start-delivery.sh` 或 `task dev:delivery` |
-| 转码 Worker | — | `./start-worker.sh` 或 `task dev:worker`（需 ffmpeg / ffprobe）；`./start.sh` 与 `./start-admin.sh` 会一并启动 |
-| 全部（后台） | — | `./start.sh`（admin + delivery + worker），另支持 `stop`、`status`、`logs admin / delivery / worker` |
+| 管理端 admin（UI + API） | `:8787`（`ADMIN_PORT`） | `bun scripts/dev.ts admin`（**同时后台起 Worker**）或 `task dev:admin` |
+| 分发端 delivery | `:9000`（`DELIVERY_LISTEN`） | `bun scripts/dev.ts delivery` 或 `task dev:delivery` |
+| 转码 Worker | — | `bun scripts/dev.ts worker` 或 `task dev:worker`（需 ffmpeg / ffprobe）；起 admin 时自动一并带起 |
+| 全部（后台） | — | `bun scripts/dev.ts all --background`（admin + delivery + worker），另支持 `stop`、`status`、`logs <服务>` |
 
 数据库选择（SQLite / MySQL）、管理员建号、常见报错处理见
 [docs/vod/dev-workflow.md](./docs/vod/dev-workflow.md)；
@@ -38,7 +41,7 @@ task test                 # bun test + go test
 
 ```
 密钥仓库 env.dev.yml ──(imports 注入为环境变量)──> .cnb.yml vscode 流水线
-      └──> scripts/gen-env.sh ──> /workspace/.env（600）──> start.sh / Taskfile / 终端
+      └──> scripts/gen-env.sh ──> /workspace/.env（600）──> scripts/dev.ts / Taskfile / 终端
 ```
 
 `scripts/gen-env.sh` 是零依赖的 POSIX sh 脚本，把「环境变量」还原成 `.env`：

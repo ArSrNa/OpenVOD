@@ -62,9 +62,9 @@ export function SettingsManager() {
         <Card title="控制台播放" loading={loading}>
             <Form<SettingsForm> form={form} layout="vertical" onFinish={onFinish} style={{ maxWidth: 560 }}>
                 <Form.Item
-                    label="播放域名"
+                    label="分发端域名"
                     name="playback_base_url"
-                    extra={`清单 / 密钥 / 字幕 URL 的基址，覆盖环境变量 DELIVERY_PUBLIC_BASE_URL${envBase ? `（当前：${envBase}）` : ""}；分发端 60s 缓存读取，保存后约 1 分钟内生效（分片为预签名直出，走存储端点 / 加速域名）`}
+                    extra={`M3U8清单/密钥/字幕的URL从此处获取，修改此处会覆盖环境变量DELIVERY_PUBLIC_BASE_URL${envBase ? `（当前：${envBase}）` : ""}；保存后约1分钟内生效`}
                     rules={[
                         {
                             validator: (_, value: string) =>
@@ -88,7 +88,7 @@ export function SettingsManager() {
                 message="播放链路说明"
                 description={
                     <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-                        分片由分发端按对象存储端点直接预签名（可配 STORAGE_CDN_BASE_URL 换加速域名），浏览器直连拉取、字节不经过分发端（ADR-0005 修订）；本域名作用于清单（typ=m）、密钥（typ=k）与字幕。播放鉴权全走 URL 签名 token，改域名不影响令牌有效性。
+                        分片由分发端按对象存储端点直接预签名，浏览器拉取分片，从加速域名播放。本域名作用于M3U8清单、密钥与字幕。
                     </Typography.Text>
                 }
             />

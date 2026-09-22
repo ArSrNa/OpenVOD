@@ -98,17 +98,18 @@ func Load() (*Config, error) {
 		if part == "" {
 			continue
 		}
+		// 只报「形态」不报内容：这些错误会进启动日志，密钥值绝不能出现（ADR-0006 红线）
 		seg := strings.SplitN(part, ":", 2)
 		if len(seg) != 2 {
-			return nil, fmt.Errorf("MASTER_KEYS 片段非法: %q", part)
+			return nil, fmt.Errorf("MASTER_KEYS 片段非法（应为 版本:64位hex）：缺少「版本:」分隔符")
 		}
 		var ver int
 		if _, err := fmt.Sscanf(seg[0], "%d", &ver); err != nil {
-			return nil, fmt.Errorf("MASTER_KEYS 版本非法: %q", part)
+			return nil, fmt.Errorf("MASTER_KEYS 片段非法（应为 版本:64位hex）：版本段不是正整数")
 		}
 		key, err := hex.DecodeString(seg[1])
 		if err != nil || len(key) != 32 {
-			return nil, fmt.Errorf("MASTER_KEYS 密钥非法（需 64 位 hex）: %q", part)
+			return nil, fmt.Errorf("MASTER_KEYS 片段非法（应为 版本:64位hex）：密钥段长度 %d 字符（应为 64 位 hex）", len(seg[1]))
 		}
 		cfg.MasterKeys[ver] = key
 	}

@@ -39,7 +39,7 @@ DELIVERY_LISTEN=":9000"
 APP_ENV="dev"
 
 # 分发端接入库：仅支持 mysql://（受限账号：约定表只读 + playback_sessions 读写，ADR-0011）
-# 本地调试若为 127.0.0.1/localhost，./start-delivery.sh 会回退用 DATABASE_URL
+# 本地调试若为 127.0.0.1/localhost，bun scripts/dev.ts delivery 会自动回退用 DATABASE_URL
 DELIVERY_DATABASE_URL="mysql://openvod_ro:changeit@127.0.0.1:3306/openvod"
 
 # 播放 URL 基址（清单 / 密钥 / 字幕）；生产填分发域名
@@ -76,7 +76,7 @@ STORAGE_CDN_BASE_URL=""               # 加速域名（仅替换 GET 预签名 U
 
 | 变量 | 必填 | 默认 | 说明 |
 |---|---|---|---|
-| `DELIVERY_DATABASE_URL` | **是** | 无 | 分发端接入库。**仅支持 `mysql://`**（归一为 go-sql-driver DSN，自动补 `parseTime=true&loc=UTC&charset=utf8mb4`）。使用 ADR-0011 受限账号（约定表只读 + `playback_sessions` 读写）。本地调试 `./start-delivery.sh` 在该值为 127.0.0.1/localhost 时回退用 `DATABASE_URL` |
+| `DELIVERY_DATABASE_URL` | **是** | 无 | 分发端接入库。**仅支持 `mysql://`**（归一为 go-sql-driver DSN，自动补 `parseTime=true&loc=UTC&charset=utf8mb4`）。使用 ADR-0011 受限账号（约定表只读 + `playback_sessions` 读写）。本地调试 `bun scripts/dev.ts delivery` 在该值为空 / 127.0.0.1/localhost 时自动回退用 `DATABASE_URL` |
 | `URL_SIGN_KEY_HEX` | **是** | 无 | 播放 token 的 HMAC 密钥，64 位 hex（32B）。非法 / 缺失直接启动失败 |
 | `MASTER_KEYS` | **是** | 无 | `"版本:64位hex"`，逗号分隔多版本。用于解封 CEK 与 JWT 私钥（ADR-0006） |
 | `DELIVERY_LISTEN` | 否 | `:9000` | 监听地址（SCF Web 函数固定 9000） |

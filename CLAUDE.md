@@ -16,7 +16,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 |---|---|
 | `Cannot find module '../generated/mysql'`（或 sqlite） | Prisma 生成物被 gitignore，未跑 `task db:generate`。**两份都必须生成**——`packages/db/src/index.ts:5-6` 静态导入 mysql + sqlite 两份客户端，缺一份则 Next 打包、`tsc --noEmit`、以及任何 import `@openvod/db` 的 `bun test` 全挂（本次会话实测：未生成时 `bun test` 93 过 2 失败，失败全为此因） |
 | crypto 互通测试 / Go `token`、`mk` 测试被 skip | `packages/crypto/fixtures/crypto-v1.json` 未生成：先 `task vectors` |
-| 转码任务一直停在「排队中」 | worker 没在跑。`./start.sh`（或 `./start-admin.sh`）会一并拉起；判据是任务行 `attempts=0` 且 `lease_until` 为空 |
+| 转码任务一直停在「排队中」 | worker 没在跑。`bun scripts/dev.ts`（或 `bun scripts/dev.ts admin`）会一并拉起；判据是任务行 `attempts=0` 且 `lease_until` 为空 |
 | 改了 zod 契约但 CI 报 diff | `task contracts` 的生成物**必须入库**：`packages/contracts/jsonschema/` 与 `apps/delivery/internal/contracts/`（CI 门禁 `bun run check:contracts-go`） |
 | 某 app 内 `Cannot find module '@openvod/xxx'` | 该 app 的 `package.json` 没声明这个 workspace 依赖（bun 只给声明了依赖的包建软链）；补 `"@openvod/xxx": "workspace:*"` 后 `bun i` |
 
@@ -31,7 +31,7 @@ task db:generate               # Prisma 两份客户端（改 schema 后必跑�
 task db:push                   # SQLite 开发库建表（DB_PROVIDER=sqlite）
 task db:parity                 # 两份 schema 的 enum/model 段逐字一致（CI 门禁）
 task contracts && task vectors # 契约生成物 + 加密互通向量
-./start.sh                     # 后台起 admin(:8787) + delivery(:9000) + worker；stop/status/logs <app>
+bun scripts/dev.ts             # 交互式起服务；all --background 等价旧 ./start.sh；stop/status/logs <app>
 task test                      # bun test + go -C apps/delivery test ./...
 ```
 

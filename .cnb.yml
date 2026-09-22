@@ -98,7 +98,8 @@ $:
         - vscode
       <<: *devenv
       imports:
-        - https://cnb.cool/arsrna/media/openvod-secrets/-/blob/main/env.dev.yml
+        # - https://cnb.cool/arsrna/media/openvod-secrets/-/blob/main/env.dev.yml
+        - https://cnb.cool/arsrna/media/openvod-secrets/-/blob/main/env.dev.v2.yml
       stages:
         - <<: *environ
         - <<: *install

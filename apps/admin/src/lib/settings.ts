@@ -18,6 +18,7 @@ import { parseMasterKeys, pickWrappingMasterKey, unwrap, wrap } from "@openvod/c
 import { getDb } from "@openvod/db";
 
 import { apiError } from "./envelope";
+import { masterKeysDiagnostic, type MasterKeysDiagnostic } from "./master-keys";
 
 const db = getDb<any>();
 
@@ -43,11 +44,12 @@ function masterKeys() {
 
 /** MK 根密钥是否可用（向导自检；MK 永远在 env，ADR-0015） */
 export function hasMasterKeys(): boolean {
-  try {
-    return masterKeys().length > 0;
-  } catch {
-    return false;
-  }
+  return masterKeysDiagnostic().ok;
+}
+
+/** MK 自检详情（失败原因 / 已配置版本 / 形态提示；不回显任何密钥值） */
+export function getMasterKeysDiagnostic(): MasterKeysDiagnostic {
+  return masterKeysDiagnostic();
 }
 
 /** 明文 → MK 封装 hex（用最高版本 MK 封装） */

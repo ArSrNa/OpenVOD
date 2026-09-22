@@ -9,8 +9,8 @@ import { apiJson, apiError } from "@/lib/api";
 import { getAuth } from "@/lib/auth";
 import {
   completeSetup,
+  getMasterKeysDiagnostic,
   getSettingsSnapshot,
-  hasMasterKeys,
   isSetupCompleted,
   settingsErrorResponse,
   type SetupPayload,
@@ -24,10 +24,16 @@ export async function GET(): Promise<NextResponse> {
     if (await isSetupCompleted()) {
       return apiError("forbidden", "系统已完成初始化", 403);
     }
-    // 环境自检（只报状态，不回显任何密钥值）
+    // 环境自检（只报状态与失败原因，不回显任何密钥值）：
+    // master_keys_ok=false 时带上 master_keys_error / hint，区分「env 未配置」与「值格式非法」——
+    // 两者在旧实现里都只显示为“MASTER_KEYS 未配置”，部署侧难以自查（见 docs/vod/dev-workflow.md §8）
+    const mk = getMasterKeysDiagnostic();
     return apiJson({
       setup_completed: false,
-      master_keys_ok: hasMasterKeys(),
+      master_keys_ok: mk.ok,
+      master_keys_error: mk.error,
+      master_keys_hint: mk.hint,
+      master_keys_versions: mk.versions,
       storage_configured: (await getSettingsSnapshot().catch(() => null))?.storage.configured ?? false,
     });
   } catch (e) {

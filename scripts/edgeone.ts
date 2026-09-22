@@ -1,6 +1,7 @@
 /** EdgeOne Makers Go 构建/发布；ADR-0003。Node 生态命令统一由 Bun 执行。 */
-import { cp, mkdir, readdir, rm } from "node:fs/promises";
+import { cp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { fetchRuntimeEnv, runtimeEnvFilename } from "./lib/edgeone-runtime-env";
 
 const root = resolve(import.meta.dir, "..");
 export const projectDir = resolve(root, ".run/edgeone-delivery");
@@ -67,8 +68,21 @@ if (import.meta.main) {
       await checkArtifact();
       const token = process.env.EO_SECRET;
       if (!token) throw new Error("EO_SECRET 未配置，请通过 CNB stage imports 提供");
-      // 显式上传已检查的产物；省略目录会触发另一轮自动构建。
-      run(["bunx", "--bun", `edgeone@${cliVersion}`, "makers", "deploy", ".edgeone", "-n", "openvod-delivery", "-e", "production", "-t", token]);
+      const region = process.env.EO_API_REGION ?? "china";
+      if (region !== "china" && region !== "global") throw new Error("EO_API_REGION 只能为 china 或 global（账号站点，不是加速区域）");
+      const runtimePath = resolve(projectDir, ".edgeone/cloud-functions/api-go", runtimeEnvFilename);
+      // 每次发布重新取 Production 的原始值；不解析 .env，保留密码中的 #、$、引号等字符。
+      // 即使读取失败也清除上一次中断留下的文件，绝不复用旧密钥。
+      await rm(runtimePath, { force: true });
+      try {
+        const runtimeEnv = await fetchRuntimeEnv(token, "openvod-delivery", region);
+        await writeFile(runtimePath, JSON.stringify(runtimeEnv), { mode: 0o600, flag: "wx" });
+        console.log("Makers Production 引导变量已校验并写入私有 Go 函数包（不输出值）");
+        // 显式上传已检查的产物；省略目录会触发另一轮自动构建。
+        run(["bunx", "--bun", `edgeone@${cliVersion}`, "makers", "deploy", ".edgeone", "-n", "openvod-delivery", "-e", "production", "-t", token], { ...process.env, EDGEONE_PAGES_API_REGION: region });
+      } finally {
+        await rm(runtimePath, { force: true });
+      }
     } else {
       throw new Error("用法：bun scripts/edgeone.ts <prepare|build|check|deploy>");
     }

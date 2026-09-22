@@ -84,6 +84,20 @@ CLI 1.6.41 会递归扫描 `cloud-functions/`。旧的源码副本布局
 运行装配仍由 `apps/delivery/app` 单点维护，SCF 与 EdgeOne 入口共用 `app.Run()`。
 完整命令与部署验收见 [分发端部署](../deploy-delivery.md)。
 
+### Go Framework 引导变量补充（2026-09-22）
+
+控制台变量在发布前已保存并对生产生效，但上传 `.edgeone` 的 Go 实例仍读不到
+`DELIVERY_DATABASE_URL`（部署 `dpiljo0vcwwh` 的运行日志），因此不能继续依赖平台隐式注入。
+发布阶段改为使用 `EO_SECRET` 只读查询确切项目的 Production 环境，校验并筛选
+`DELIVERY_DATABASE_URL`、`MASTER_KEYS`，保存为私有函数目录内的 `openvod-runtime-env.json`。
+EdgeOne 入口在 `app.Run()` 前加载该文件，只补齐缺失变量；监听强制为 `:9000`。
+SCF 入口不加载文件。两种目标的业务装配仍共用 `app.Run()`。
+
+该文件是部署时生成的敏感配置，不是源码或静态资源：本地 `0600`、发布完成 / 失败清理，
+禁止入库、日志输出、公开归档及放入 `assets`。私有函数包现在也属于主密钥保管边界，
+应与平台环境变量采用同级访问控制；不将 MK 写入数据库，也不把 admin 全权连接传给 delivery。
+缺少生产配置时在上传前失败，配置变更需重新部署。
+
 ## 理由
 
 - Go 静态二进制是唯一能同时满足「EdgeOne CF 原生」与「SCF 容器」两个目标的形态。

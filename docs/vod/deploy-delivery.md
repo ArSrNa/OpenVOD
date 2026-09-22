@@ -41,8 +41,8 @@ task image:delivery     # docker buildx build --platform linux/amd64（SCF 仅 x
 |---|---|
 | `DELIVERY_DATABASE_URL` | **必须公网可达 + TLS**：Cloud Functions 无 VPC（ADR-0003 P0 结论）。`ParseDatabaseURL` 不做 TLS 兜底，公网库要自带 `?tls=true`（或自签场景 `tls=skip-verify`）。账号用 ADR-0011 的受限只读账号 |
 | `DELIVERY_PUBLIC_BASE_URL` | 最终分发域名（清单 / 密钥 / 字幕 URL 基址）；运行时可被 `system_settings.playback_base_url` 覆盖 |
-| `URL_SIGN_KEY_HEX` / `MASTER_KEYS` | 必填。**环境变量值上限 500 字节**，MK 轮换保留旧版本时注意总量 |
-| `S3_ENDPOINT` / `S3_REGION` / `S3_BUCKET` / `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY`（+ `S3_FORCE_PATH_STYLE=false`、可选 `STORAGE_CDN_BASE_URL`） | **必填**（ADR-0005 2026-09-22 修订：仅 S3 兼容存储，local 驱动已移除）。分片走预签名直出，字节不经过函数 |
+| `MASTER_KEYS` | 必填，与 admin / worker 的现有主密钥一致，格式为 `版本:64位hex`，多个版本用逗号分隔 |
+| `URL_SIGN_KEY_HEX` / `S3_*` 等 | ADR-0015：通过管理台完成初始化后从共享数据库的 `system_settings` 加载；不属于 Makers 上传包的引导变量 |
 | `DELIVERY_CORS_ORIGINS` | 默认 `*`；收敛为管理端源站即可 |
 | `APP_ENV` / `DELIVERY_JWT_*` / `PLAYBACK_*_TTL_SEC` | 按需覆盖默认值。`DELIVERY_LISTEN` 保持默认 `:9000` |
 
@@ -71,10 +71,10 @@ bun --no-env-file scripts/check-delivery-deployment.ts "https://delivery.ovod.sk
 
 `task build:edgeone` 委派 `bun --no-env-file scripts/edgeone.ts build`：先 prepare，再交叉编译 Linux/amd64，
 用 `bunx --bun edgeone@1.6.41 makers build` 生成 `.edgeone/`，最后校验 Framework 为 Chi、
-路由为根 catch-all、函数二进制为 Linux amd64 ELF。`deploy` 子命令重新检查产物，复用脚本内固定的 CLI 版本，
+路由为根 catch-all、函数二进制为 Linux amd64 ELF。`deploy` 子命令重新检查产物，读取 Makers Production 的两个引导变量，复用脚本内固定的 CLI 版本，
 在暂存目录向 `openvod-delivery` 的 `production` 环境发布，显式传入 `.edgeone`，按
 [CLI 文档](https://pages.edgeone.ai/document/edgeone-cli) 上传已有产物，不再次自动构建。
-`--no-env-file` 避免将仓库本地 `.env` 自动带入构建 / 发布进程。
+`--no-env-file` 避免将仓库本地 `.env` 自动带入构建 / 发布进程。运行配置的传递方式见下文。
 
 发布统一走 CNB 的 EdgeOne 按钮或上述命令。直接从仓库根运行 `makers deploy`、
 或配置 Makers Git 自动部署，都不会采用这个受检查的暂存项目与产物，不是本仓库的发布入口。
@@ -109,8 +109,10 @@ API Token 走 **stage 级 `imports`** 引密钥仓库（只对该 stage 生效�
   script: bun --no-env-file scripts/edgeone.ts deploy
 ```
 
-项目名在脚本里写死为 `openvod-delivery`（首次部署时由 CLI 在 global 区自动创建）。
+项目名在脚本里写死为 `openvod-delivery`；发布前必须存在该项目及其 Production 引导配置。
 **密钥一律不进仓库**：改凭据只改密钥仓库的 `tencent.yml`。
+`EO_API_REGION=china` 指腾讯云中国站账号 API（与当前项目所在控制台一致）；国际站账号用 `global`。
+它不是项目的全球 / 海外加速区域。运行配置查询与 CLI 发布使用同一账号站点。
 部署后使用 `EO_DELIVERY_URL` 指定域名验收；未设置时使用 `https://delivery.ovod.skirk.cn`。
 该地址应与管理端配置的分发地址一致，Makers 控制台须把域名绑定到此项目的生产部署。
 
@@ -167,9 +169,25 @@ CLI 1.6.41 支持从项目根读取 Go 模块并带上同模块源码构建，�
 清单与密钥响应必须 `Cache-Control: no-store` 且不进任何边缘缓存（对应 CI 门禁 `assert-no-store`）；
 同时用无签名请求打加速域名，断言 403（`assert-unsigned-403`）。
 
-### 另一个部署前置：函数环境变量
+### Go Framework 上传产物的运行变量修订（2026-09-22）
 
-显式上传 `.edgeone` 不会把本地 `.env` 打包，也不会清空控制台环境变量；运行时仍由 Makers 注入。
-delivery 运行所需的 `DELIVERY_DATABASE_URL` / `DELIVERY_PUBLIC_BASE_URL` / `URL_SIGN_KEY_HEX` /
-`MASTER_KEYS` / `S3_*` 等，必须在 **Makers 控制台按环境（生产 / 预览）配置**，
-否则函数实例启动即 `config` 校验失败。
+实测：控制台已在部署前保存 `DELIVERY_DATABASE_URL`、`MASTER_KEYS` 且范围为全部环境，
+部署 `dpiljo0vcwwh` 的 Go 进程仍报 `DELIVERY_DATABASE_URL 未配置`，外部返回 502。
+因此撤回“控制台配置会自动注入本项目上传的 Go 进程”的保证。CLI 的显式产物上传跳过自动拉取环境变量，
+其 Go Framework 构建器也不为业务变量生成初始化逻辑；不能以发布成功代替启动验收。
+
+当前发布流程显式传递最小引导配置：
+
+1. 以同一个 `EO_SECRET` 查询确切项目，再读取 **Production** 生效的环境变量。接口格式依据官方
+   [`@edgeone/makers-sdk`](https://www.npmjs.com/package/@edgeone/makers-sdk)，环境过滤与固定 CLI 一致。
+2. 只取 `DELIVERY_DATABASE_URL`、`MASTER_KEYS`，缺失 / 为空 / 重复配置即停止发布，不回退到 admin 的 `DATABASE_URL`。
+   不复制整份 `.env`，不携带 admin 密钥或部署 Token。
+3. 以 JSON 原值写入 `.edgeone/cloud-functions/api-go/openvod-runtime-env.json`，本地权限 `0600`。
+   **这是包含明文引导密钥的私有函数配置，仅随函数包上传，禁止进入 assets、Git、日志或公开构建附件。**
+   正常结束或失败时由 `finally` 删除本地文件；CI 工作区也不得对外归档该目录。
+4. EdgeOne 入口调用 `app.LoadEdgeOneEnvironment()`，按可执行文件所在目录读取配置，只补齐缺失的进程变量，
+   并固定监听 `:9000`，随后调用共享的 `app.Run()`。配置读取 / 解析失败时不输出内容。
+   SCF / Compose 入口保持纯环境变量方式。
+
+主密钥仍与数据库分开保存；其分发边界扩展到私有函数包的访问权限，因此该包必须按密钥材料管理。
+其余运行设置由 `system_settings` 加载。控制台修改这两个引导变量后仍需重新执行流水线，生成新的配置快照。

@@ -19,6 +19,10 @@ import (
 )
 
 func main() {
+	if err := app.LoadEdgeOneEnvironment(); err != nil {
+		slog.Error("EdgeOne 运行配置不可用", "err", err)
+		os.Exit(1)
+	}
 	if err := app.Run(); err != nil {
 		slog.Error("delivery 退出", "err", err)
 		os.Exit(1)

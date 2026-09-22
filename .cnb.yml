@@ -48,10 +48,11 @@
     image: docker.cnb.cool/arsrna/media/openvod/dev:latest
   env:
     EO_DELIVERY_URL: https://delivery.ovod.skirk.cn
+    EO_API_REGION: china
   stages:
     - name: 构建 Makers 产物并校验 Go 根路径路由
       script: bun --no-env-file scripts/edgeone.ts build
-    - name: 上传已校验产物到 Makers 生产环境
+    - name: 校验生产引导变量并上传 Makers 产物
       imports: https://cnb.cool/arsrna/env/-/blob/main/tencent.yml
       script: bun --no-env-file scripts/edgeone.ts deploy
     - name: 验证分发域名健康与播放鉴权路由

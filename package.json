@@ -8,7 +8,7 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "bun scripts/dev.ts admin",
+    "dev": "bun scripts/dev.ts",
     "dev:all": "bun scripts/dev.ts all --background",
     "contracts:json": "bun packages/contracts/scripts/gen-json.ts",
     "contracts:go": "bash packages/contracts/scripts/gen-go.sh",

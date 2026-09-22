@@ -43,6 +43,7 @@ flowchart LR
 4. [open-questions.md](./open-questions.md) — 进入 specification 前必须关闭的问题
 5. [dev-workflow.md](./dev-workflow.md) — 本地开发环境与工作流（启动、数据库、建号、排错）
 6. [deploy-delivery.md](./deploy-delivery.md) — 分发端部署（SCF 容器 / EdgeOne Cloud Functions 双目标）
+7. [deploy-apps.md](./deploy-apps.md) — 管理端与 Worker 镜像（构建上下文、Prisma 生成、硬约束）
 
 ## 决策索引
 

@@ -2,13 +2,9 @@
 
 // 控制台总览（管理端主页 /，intent.md「控制台总览」2026-09-18）：
 // 一屏展示常用运营指标，只读、不承载写操作。
-// 真实指标（GET /api/admin/stats）：媒资总数（就绪 / 未入库拆分，spec.md §1.4）、
-// 进行中转码任务（按状态拆分，ADR-0008）、播放端用户（总数 / 可用 / 已封禁，ADR-0007）；
-// 其余指标（存储 / 字幕 / 产物 / 元数据 / 会话）仍为 mock 占位，随各模块里程碑聚合接入
-// （接入即替换，页面结构不变）。
+// 所有指标来自 GET /api/admin/stats；S3 只展示实际已用空间，不设置桶配额。
 import {
   CloudServerOutlined,
-  EyeOutlined,
   FileTextOutlined,
   FontSizeOutlined,
   PlayCircleOutlined,
@@ -18,41 +14,33 @@ import {
   VideoCameraOutlined,
 } from "@ant-design/icons";
 import { ProCard } from "@ant-design/pro-components";
-import { Button, Progress, Space, Statistic, Tag, Typography } from "antd";
+import { DashboardStatsResponse, type DashboardStats } from "@openvod/contracts";
+import { Button, Space, Statistic, Typography } from "antd";
 import { useRouter } from "next/navigation";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
-import type { DashboardStats } from "@/lib/stats";
 
 interface StatItem {
   key: string;
   label: string;
-  value: number;
+  value: number | undefined;
   suffix?: string;
+  precision?: number;
   sub: string;
   icon: ReactNode;
-  /** 真实数据（加载中显示骨架）；false = mock 占位 */
-  real: boolean;
 }
 
-// Mock 指标（接入真实接口时替换为聚合查询）
-const MOCK_STATS: StatItem[] = [
-  { key: "storage", label: "已用存储空间", value: 512.3, suffix: "GB", sub: "配额 1 TB · 已用 50%", icon: <CloudServerOutlined />, real: false },
-  { key: "subtitles", label: "字幕文件", value: 56, sub: "已覆盖 32 个媒资", icon: <FontSizeOutlined />, real: false },
-  { key: "proceed", label: "转码产物", value: 312, sub: "不含 HLS 分片对象", icon: <PlayCircleOutlined />, real: false },
-  { key: "metadata", label: "元数据对象", value: 87, sub: "probe 42 · 自定义 45", icon: <FileTextOutlined />, real: false },
-  { key: "sessions", label: "活跃播放会话", value: 18, sub: "24 小时内签发", icon: <EyeOutlined />, real: false },
-];
-
-// 存储用量 mock：按 spec.md §1 的四个分区拆分（合计与「已用存储空间」一致）
-const MOCK_STORAGE_PARTITIONS = [
-  { label: "original/（原视频）", size: "402.0 GB", pct: 39 },
-  { label: "proceed/（转码产物）", size: "92.0 GB", pct: 9 },
-  { label: "cover/（封面图片）", size: "12.1 GB", pct: 1 },
-  { label: "metadata/（元数据）", size: "6.2 GB", pct: 1 },
-];
-
-const MOCK_TAG = <Tag color="orange">Mock 数据占位</Tag>;
+function storageValue(bytes: number | undefined): Pick<StatItem, "value" | "suffix" | "precision"> {
+  if (bytes === undefined) return { value: undefined };
+  const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return { value, suffix: units[unit], precision: unit === 0 ? 0 : 1 };
+}
 
 export function DashboardOverview() {
   const router = useRouter();
@@ -73,11 +61,11 @@ export function DashboardOverview() {
           router.push("/login");
           return;
         }
-        const body = (await res.json().catch(() => null)) as
-          | (DashboardStats & { error?: { message?: string } })
-          | null;
+        const body = await res.json().catch(() => null);
         if (!res.ok) throw new Error(body?.error?.message ?? `请求失败（HTTP ${res.status}）`);
-        if (!cancelled) setStats(body);
+        const parsed = DashboardStatsResponse.safeParse(body);
+        if (!parsed.success) throw new Error("统计数据格式异常，请刷新重试");
+        if (!cancelled) setStats(parsed.data);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : "统计加载失败");
       } finally {
@@ -89,34 +77,62 @@ export function DashboardOverview() {
     };
   }, [reloadKey, router]);
 
+  const pendingText = loading ? "加载中…" : "暂不可用";
   const items: StatItem[] = [
     {
       key: "media",
       label: "媒资总数",
-      value: stats?.media.total ?? 0,
-      sub: stats ? `就绪 ${stats.media.ready} · 未入库 ${stats.media.not_ingested}` : "加载中…",
+      value: stats?.media.total,
+      sub: stats ? `就绪 ${stats.media.ready} · 未入库 ${stats.media.not_ingested}` : pendingText,
       icon: <VideoCameraOutlined />,
-      real: true,
     },
     {
       key: "jobs",
       label: "进行中任务",
-      value: stats?.jobs.active ?? 0,
+      value: stats?.jobs.active,
       sub: stats
         ? `转码 ${stats.jobs.encoding} · 探测 ${stats.jobs.probing} · 封装 ${stats.jobs.packaging} · 排队 ${stats.jobs.queued}`
-        : "加载中…",
+        : pendingText,
       icon: <ThunderboltOutlined />,
-      real: true,
     },
     {
       key: "users",
       label: "播放端用户",
-      value: stats?.users.total ?? 0,
-      sub: stats ? `可用 ${stats.users.active} · 已封禁 ${stats.users.disabled}` : "加载中…",
+      value: stats?.users.total,
+      sub: stats ? `可用 ${stats.users.active} · 已封禁 ${stats.users.disabled}` : pendingText,
       icon: <TeamOutlined />,
-      real: true,
     },
-    ...MOCK_STATS,
+    {
+      key: "storage",
+      label: "已用存储空间",
+      ...storageValue(stats?.storage.used_bytes),
+      sub: "包含媒体、转码、字幕、元数据等产物",
+      icon: <CloudServerOutlined />,
+    },
+    {
+      key: "subtitles",
+      label: "字幕文件",
+      value: stats?.subtitles.total,
+      sub: stats ? `已覆盖 ${stats.subtitles.media_count} 个媒资` : pendingText,
+      icon: <FontSizeOutlined />,
+    },
+    {
+      key: "products",
+      label: "转码产物",
+      value: stats?.products.total,
+      suffix: stats ? "组" : undefined,
+      sub: stats ? `按模板分组 · 已覆盖 ${stats.products.media_count} 个媒资` : pendingText,
+      icon: <PlayCircleOutlined />,
+    },
+    {
+      key: "metadata",
+      label: "元数据对象",
+      value: stats?.metadata.total,
+      sub: stats
+        ? `探测 ${stats.metadata.probe} · 自定义 ${stats.metadata.custom}${stats.metadata.other ? ` · 其他 ${stats.metadata.other}` : ""}`
+        : pendingText,
+      icon: <FileTextOutlined />,
+    },
   ];
 
   return (
@@ -128,7 +144,7 @@ export function DashboardOverview() {
           <Space size={8} wrap>
             {error && (
               <Typography.Text type="danger" style={{ fontSize: 12 }}>
-                {error}
+                {error}{stats ? "（显示上次统计）" : ""}
               </Typography.Text>
             )}
             <Button
@@ -139,33 +155,21 @@ export function DashboardOverview() {
             >
               刷新
             </Button>
-            <Tag color="blue" style={{ marginInlineEnd: 0 }}>
-              媒资 / 任务 / 用户为实时数据
-            </Tag>
           </Space>
         }
       >
-        <Typography.Paragraph type="secondary" style={{ marginTop: 0, marginBottom: 16, fontSize: 12 }}>
-          媒资总数、进行中任务与播放端用户为实时统计（/api/admin/stats）；存储 / 字幕 / 产物 / 元数据 /
-          会话仍为 mock 占位，随对应模块里程碑聚合接入。
-        </Typography.Paragraph>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 16 }}>
-          {items.map(({ key, label, value, suffix, sub, icon, real }) => (
+          {items.map(({ key, label, value, suffix, precision, sub, icon }) => (
             <ProCard key={key} bordered>
               <Space size={6} style={{ marginBottom: 8 }}>
                 <span style={{ fontSize: 16, display: "inline-flex" }}>{icon}</span>
                 <Typography.Text type="secondary">{label}</Typography.Text>
-                {!real && (
-                  <Tag color="orange" style={{ marginInlineEnd: 0 }}>
-                    Mock
-                  </Tag>
-                )}
               </Space>
               <Statistic
-                value={value}
+                value={value ?? "—"}
                 suffix={suffix}
-                precision={suffix ? 1 : undefined}
-                loading={loading && real}
+                precision={precision}
+                loading={loading}
               />
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 {sub}
@@ -173,23 +177,6 @@ export function DashboardOverview() {
             </ProCard>
           ))}
         </div>
-      </ProCard>
-
-      <ProCard title="存储用量（按分区）" bordered={false} extra={MOCK_TAG}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 }}>
-          {MOCK_STORAGE_PARTITIONS.map(({ label, size, pct }) => (
-            <div key={label}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                <Typography.Text>{label}</Typography.Text>
-                <Typography.Text type="secondary">{size}</Typography.Text>
-              </div>
-              <Progress percent={pct} size="small" />
-            </div>
-          ))}
-        </div>
-        <Typography.Text type="secondary" style={{ fontSize: 12, display: "block", marginTop: 8 }}>
-          百分比为分区占用 / 桶配额（mock：1 TB）；分区布局见 spec.md §1。
-        </Typography.Text>
       </ProCard>
     </div>
   );

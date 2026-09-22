@@ -19,6 +19,8 @@ import {
   type MediaProduct,
 } from "./media-products";
 import { getDb } from "@openvod/db";
+import type { DashboardStats } from "@openvod/contracts";
+import type { StorageObject } from "@openvod/storage";
 import { NextResponse } from "next/server";
 import { getStorage } from "./storage";
 import { getSettingsSnapshot } from "./settings";
@@ -249,27 +251,20 @@ export async function listMedia(): Promise<{ total: number; items: MediaRow[] }>
 
 // ---- 总览统计（intent.md「控制台总览」；spec.md §1.4 媒资集合定义） ----
 
-export interface MediaStats {
-  /** 媒资总数：以 original/ 分区为准（不依赖 DB 行是否存在） */
-  total: number;
-  /** 已入库且状态为 READY 的媒资数 */
-  ready: number;
-  /** 有 original 对象但无数据库行（历史 / 降级数据），列表展示为「未入库」 */
-  not_ingested: number;
-}
+export type MediaStats = DashboardStats["media"];
 
 /**
- * 只列举 original/ 一个分区 + 两次 DB 计数（比 listMedia 轻量：不触碰 proceed/cover/metadata）。
+ * 只列举 original/ 一个分区（总览可传入已有列表）+ 两次 DB 计数。
  * 计数以 original 的媒资集合为准，DB 行只补充状态，与媒资列表口径一致。
  */
-export async function getMediaStats(): Promise<MediaStats> {
-  const storage = await getStorage();
-  const originals = await storage.listObjects(`${STORAGE_PARTITIONS.original}/`);
-  const ids: string[] = [];
+export async function getMediaStats(originals?: StorageObject[]): Promise<MediaStats> {
+  originals ??= await (await getStorage()).listObjects(`${STORAGE_PARTITIONS.original}/`);
+  const mediaIds = new Set<string>();
   for (const o of originals) {
     const m = ORIGINAL_RE.exec(o.key);
-    if (m) ids.push(m[1]); // 非数字文件名 / 异常层级不属于媒资（spec.md §1.4）
+    if (m) mediaIds.add(m[1]); // 同一媒资不同扩展名也只计一次；非数字文件名 / 异常层级忽略
   }
+  const ids = [...mediaIds];
   const [ingested, ready] = await Promise.all([
     db.media.count({ where: { id: { in: ids } } }),
     db.media.count({ where: { id: { in: ids }, status: "READY" } }),

@@ -1,5 +1,18 @@
 # 环境变量清单（按应用拆分）
 
+> **ADR-0015（2026-09-22 起）**：环境变量已收敛为**最小集**，本文件的多数变量降级为
+> **env 兜底**——真正的运行配置存 `system_settings`，由管理台**首次启动向导 `/setup`**
+> 写入（存储凭据、播放域名、TTL、播放签名密钥等），管理台「系统设置」页可随时调整。
+>
+> 解析顺序统一：**DB 设置值 > env 同名键 > 出厂默认**。
+>
+> - **必需 env（仅 4 个）**：`DATABASE_URL`、`DB_PROVIDER`、`MASTER_KEYS`、`DELIVERY_DATABASE_URL`
+>   （外加进程装配期的 `ADMIN_PORT` / `DELIVERY_LISTEN`）；
+> - **密钥类设置**（S3 SecretAccessKey、播放签名密钥等）以 **MK 封装 hex** 入库（ADR-0006 分层），
+>   `MASTER_KEYS` 永远只存在于 env——它是唯一不可入库的密钥；
+> - 下文表格保留作为「env 兜底清单」与旧部署迁移参考；三端对照速查表中的键凡与
+>   `packages/shared` 的 `SETTING_KEYS` 同义者均已被设置覆盖。
+
 本文件按 **delivery / worker / admin** 三个应用分别列出各自运行所需的环境变量。
 三者**共享同一份 `.env`**（`scripts/gen-env.sh` 从密钥仓库 / 进程环境生成，模板见根目录 `.env.example`），
 但**各应用实际读取的键不同**——本文件用于区分「谁真正需要哪个变量」，避免误以为某个键三端通用。

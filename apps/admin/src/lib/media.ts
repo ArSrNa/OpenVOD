@@ -10,7 +10,6 @@ import {
   STORAGE_PARTITIONS,
   TEMPLATE_ID_PATTERN,
   generateMediaId,
-  resolveMediaIdLength,
 } from "@openvod/shared";
 import {
   PRODUCT_LEGACY_ID,
@@ -22,6 +21,7 @@ import {
 import { getDb } from "@openvod/db";
 import { NextResponse } from "next/server";
 import { getStorage } from "./storage";
+import { getSettingsSnapshot } from "./settings";
 import { apiError } from "./api";
 
 const db = getDb<any>();
@@ -120,8 +120,9 @@ export async function uploadOriginal(input: {
   if (!ext) {
     throw new MediaError("bad_request", `无法从文件名识别扩展名：${input.filename}`, 400);
   }
-  const storage = getStorage();
-  const idLen = resolveMediaIdLength(process.env.MEDIA_ID_LENGTH);
+  const storage = await getStorage();
+  // ADR-0015：媒资 ID 位数从 system_settings 解析（DB > env MEDIA_ID_LENGTH > 默认 8）
+  const idLen = (await getSettingsSnapshot()).admin.mediaIdLength;
   const title =
     (input.title ?? "").trim() || input.filename.replace(/\.[^.]+$/, "").trim();
 
@@ -188,7 +189,7 @@ export interface MediaRow {
 }
 
 export async function listMedia(): Promise<{ total: number; items: MediaRow[] }> {
-  const storage = getStorage();
+  const storage = await getStorage();
   type MediaDbRow = { id: string; title: string; status: string; posterKey: string | null };
   // DB 查询失败时降级为纯存储视角（title/status 置 null），保证列表可用
   const rowsTask: Promise<MediaDbRow[]> = db.media
@@ -262,7 +263,7 @@ export interface MediaStats {
  * 计数以 original 的媒资集合为准，DB 行只补充状态，与媒资列表口径一致。
  */
 export async function getMediaStats(): Promise<MediaStats> {
-  const storage = getStorage();
+  const storage = await getStorage();
   const originals = await storage.listObjects(`${STORAGE_PARTITIONS.original}/`);
   const ids: string[] = [];
   for (const o of originals) {
@@ -301,7 +302,7 @@ export interface MediaDetail {
 
 export async function getMediaDetail(id: string): Promise<MediaDetail> {
   assertMediaId(id);
-  const storage = getStorage();
+  const storage = await getStorage();
   const [originals, proceeds, covers, metadatas, row] = await Promise.all([
     storage.listObjects(`${STORAGE_PARTITIONS.original}/`),
     storage.listObjects(`${STORAGE_PARTITIONS.proceed}/${id}/`),
@@ -359,13 +360,13 @@ export async function renameMedia(
 // ---- 删除（存储四分区该 id 全部对象 + DB 行；spec.md §2 级联范围注记） ----
 
 async function findOriginalKey(id: string): Promise<string | null> {
-  const originals = await getStorage().listObjects(`${STORAGE_PARTITIONS.original}/`);
+  const originals = await (await getStorage()).listObjects(`${STORAGE_PARTITIONS.original}/`);
   return originals.find((o) => ORIGINAL_RE.exec(o.key)?.[1] === id)?.key ?? null;
 }
 
 export async function deleteMedia(id: string): Promise<{ removed: boolean }> {
   assertMediaId(id);
-  const storage = getStorage();
+  const storage = await getStorage();
   const row = await db.media
     .findUnique({ where: { id }, select: { sourceKey: true } })
     .catch(() => null);
@@ -429,7 +430,7 @@ export async function deleteMediaProduct(
       );
     }
   }
-  const storage = getStorage();
+  const storage = await getStorage();
   const objs = await storage.listObjects(`${STORAGE_PARTITIONS.proceed}/${id}/`);
   const targets = selectProductObjectKeys(objs, id, tpl);
   if (!targets.length) {
@@ -451,7 +452,7 @@ export async function uploadCover(
   if (!ext || !COVER_EXTS.has(ext)) {
     throw new MediaError("bad_request", "封面仅支持图片格式（jpg/png/webp/gif/avif）", 400);
   }
-  const storage = getStorage();
+  const storage = await getStorage();
   const row = await db.media
     .findUnique({ where: { id }, select: { id: true } })
     .catch(() => null);
@@ -495,7 +496,7 @@ export async function resolvePosterKey(id: string): Promise<string | null> {
     .findUnique({ where: { id }, select: { posterKey: true } })
     .catch(() => null);
   if (row?.posterKey) return row.posterKey;
-  const covers = await getStorage().listObjects(`${STORAGE_PARTITIONS.cover}/${id}/`);
+  const covers = await (await getStorage()).listObjects(`${STORAGE_PARTITIONS.cover}/${id}/`);
   return covers.find((o) => /\/poster\.[a-z0-9]+$/i.test(o.key))?.key ?? null;
 }
 

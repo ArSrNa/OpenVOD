@@ -40,4 +40,4 @@ export function createStorage(cfg: StorageConfig): StorageAdapter {
 
 export { withRootPrefix, relativeTo } from "./prefix";
 export { S3Adapter, type S3Config } from "./s3";
-export { createStorageFromEnv } from "./from-env";
+export { createStorageFromEnv, createStorageFromConfig } from "./from-env";

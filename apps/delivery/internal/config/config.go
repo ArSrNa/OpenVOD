@@ -79,7 +79,9 @@ func Load() (*Config, error) {
 	}
 
 	if key, err := hexKey("URL_SIGN_KEY_HEX"); err != nil {
-		return nil, err
+		// ADR-0015：签名密钥不再强制 env——缺失时由装配层从 system_settings 解封（url_sign_key_hex），
+		// 两处都没有才在启动时报错（安全失败，拒绝签发 token）
+		cfg.URLSignKey = nil
 	} else {
 		cfg.URLSignKey = key
 	}
@@ -114,6 +116,8 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("MASTER_KEYS 未配置")
 	}
 
+	// ADR-0015：存储配置 env 只作兜底——缺失不再启动失败，装配层会先读
+	// system_settings（首次启动向导写入），两处都不完整才报"请先完成管理台首次启动向导"。
 	cfg.Storage = StorageConfig{
 		RootPrefix:      os.Getenv("STORAGE_ROOT_PREFIX"),
 		Endpoint:        os.Getenv("S3_ENDPOINT"),
@@ -124,9 +128,6 @@ func Load() (*Config, error) {
 		// COS 只接受 virtual-hosted-style，必须显式 S3_FORCE_PATH_STYLE="false"；MinIO 默认 true
 		ForcePathStyle: strings.ToLower(getEnv("S3_FORCE_PATH_STYLE", "true")) != "false",
 		CDNBaseURL:     strings.TrimRight(strings.TrimSpace(os.Getenv("STORAGE_CDN_BASE_URL")), "/"),
-	}
-	if cfg.Storage.Bucket == "" || cfg.Storage.AccessKeyID == "" || cfg.Storage.SecretAccessKey == "" {
-		return nil, fmt.Errorf("S3 存储未配置完整（需要 S3_BUCKET / S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY）")
 	}
 
 	return cfg, nil

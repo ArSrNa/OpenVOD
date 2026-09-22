@@ -1,6 +1,6 @@
 # ADR-0015：环境变量与系统设置（system_settings）的边界
 
-- 状态：已接受（2026-09-22，用户委托决策）；**同日修订**：启动引导优先，env 收敛为最小集（见「修订」节，取代原 A 层第 3 条与 B/C 层部分结论）
+- 状态：已接受并实现（2026-09-22，用户委托决策）；**同日修订**：启动引导优先，env 收敛为最小集（见「修订」节，取代原 A 层第 3 条与 B/C 层部分结论）
 - 日期：2026-09-22
 - 关联：ADR-0002（12-factor）、ADR-0004、ADR-0005、ADR-0006（密钥分层）、ADR-0011（受限账号）、ADR-0013、`docs/vod/env-vars.md`
 
@@ -89,6 +89,14 @@
 ### 保留 env 的最终清单与理由
 
 仅两类：① 引导依赖（DB 连接、端口）——物理不可入库；② `MASTER_KEYS`——ADR-0006 分层根，入库即分层坍塌。其余一切（含 storage 与鉴权装配）均属"运行期可配置"，入库。
+
+### 实现备注（2026-09-22，随本决策落地）
+
+- **解析顺序即迁移语义**：未做一次性 env→DB 导入脚本，"升级兼容"由统一的解析链（DB > env > 默认）天然覆盖——老部署 env 照常兜底，向导 / 设置页写入 DB 后即覆盖，清空 DB 行自动回退 env；
+- **密钥封装形态**：与 `signing_keys` 同构（`hex(iv‖ct‖tag)`，无版本前缀，逐版本尝试解封），Go/TS 各一侧实现，靠既有 crypto 向量保证互通；
+- **生效时延**：delivery 启动全量加载（存储 / 签名密钥 / TTL / CORS / kid），运行期仅 `playback_base_url` 保持 60s 缓存热更新；worker 30s 缓存逐 tick 刷新（存储凭据变更自动重建适配器）；admin 快照 30s 缓存、better-auth 惰性初始化（`getAuth()`）；
+- **落地位置**：键注册表 `packages/shared`（SETTING_KEYS / SETTING_SECRET_KEYS / SETTING_DEFAULTS / TTL 上限）；admin 侧 `apps/admin/src/lib/settings.ts`（注册表 / 校验 / 封装 / 快照 / `completeSetup`）+ `/setup` 向导 + `/api/setup`；Go 侧 `apps/delivery/internal/settings`（`Load` + `ApplyTo`）；worker 侧 `apps/worker/src/settings.ts`；必需键收敛见 `scripts/gen-env.sh` 的 `REQUIRED_KEYS`（4 个）与 `.env.example`；
+- **安全门禁不变**：设置表白名单外拒绝写入、密钥键明文入库直接拒绝（写入侧强制封装），delivery 受限账号对 `system_settings` 仅 SELECT（ADR-0011 追加授权在部署侧执行）。
 
 
 

@@ -44,7 +44,7 @@ export interface GenerateMetadataResult {
 export async function generateMetadata(id: string): Promise<GenerateMetadataResult> {
   assertMediaId(id);
   await requireFFprobe();
-  const storage = getStorage();
+  const storage = await getStorage();
   const key = await resolveOriginalKey(id);
   if (!key) throw new MediaError("not_found", `媒资不存在或 original 缺失：${id}`, 404);
   if ((await storage.stat(key)) === null) {

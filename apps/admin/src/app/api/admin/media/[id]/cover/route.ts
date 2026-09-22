@@ -27,7 +27,7 @@ export async function GET(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
         { status: 404 },
       );
     }
-    const url = await getStorage().presignGet(key, PRESIGN_TTL_SEC);
+    const url = await (await getStorage()).presignGet(key, PRESIGN_TTL_SEC);
     return NextResponse.redirect(url, {
       status: 302,
       headers: { "Cache-Control": "no-store" },

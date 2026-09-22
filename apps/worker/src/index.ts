@@ -1,13 +1,15 @@
 // 转码 Worker 常驻容器入口（ADR-0008：禁止上函数，P0）
 // 职责：轮询认领 transcode_jobs → 探测 → 逐档转码（可选 AES-128）→ 上传 → 密钥落库 → 状态联动。
+// ADR-0015：启动只要求 DATABASE_URL / DB_PROVIDER / MASTER_KEYS；存储凭据与队列参数
+// 从 system_settings 读取（首次启动向导写入，MK 封装密钥解封），env 同名键兜底。
 import type { MasterKey } from "@openvod/crypto";
-import { createStorageFromEnv } from "@openvod/storage";
 import { DEFAULT_LADDER } from "@openvod/transcode";
 import { executeClaimedJob } from "./executor";
 import { createPrismaTranscodeJobStore } from "./job-store";
 import { createPrismaMediaKeyStore } from "./media-key-store";
 import { createPrismaMediaStore } from "./media-store";
 import { describeMasterKeys, loadMasterKeys } from "./media-keys";
+import { loadWorkerSettings } from "./settings";
 
 interface ToolCheck {
   name: string;
@@ -47,22 +49,37 @@ try {
   console.warn(`[worker] ${(e as Error).message} —— 加密转码任务将失败（未加密模板不受影响）`);
 }
 
-const intervalMs = Number(process.env.WORKER_POLL_INTERVAL_MS ?? 2000);
-const leaseMs = Number(process.env.WORKER_LEASE_MS ?? 60_000);
-const maxAttempts = Number(process.env.WORKER_MAX_ATTEMPTS ?? 3);
-
 const jobStore = createPrismaTranscodeJobStore();
 const mediaStore = createPrismaMediaStore();
 const keyStore = createPrismaMediaKeyStore();
-const storage = createStorageFromEnv();
+
+// 设置首载（DB > env；30s 缓存，每轮 tick 刷新参数，存储凭据变更自动重建适配器）
+const boot = await loadWorkerSettings();
+if (!boot.storageConfigured) {
+  console.error(
+    "[worker] 对象存储未配置：请先完成管理台首次启动向导（/setup）或配置 S3_* 环境变量后重启",
+  );
+  process.exit(1);
+}
+let storage = boot.storage;
 
 let running = true;
 process.on("SIGTERM", () => (running = false));
 process.on("SIGINT", () => (running = false));
 
-/** 单轮：认领一个任务并执行（无可认领任务立即返回） */
+let pollIntervalMs = boot.pollIntervalMs;
+
+/** 单轮：刷新设置（30s 缓存）→ 认领一个任务并执行（无可认领任务立即返回） */
 async function tick(): Promise<void> {
-  const job = await jobStore.claim({ leaseMs, maxAttempts });
+  const s = await loadWorkerSettings().catch((e) => {
+    console.error("[worker] 读取系统设置失败（沿用上次配置）:", (e as Error).message);
+    return null;
+  });
+  if (s) {
+    pollIntervalMs = s.pollIntervalMs;
+    if (s.storageConfigured) storage = s.storage;
+  }
+  const job = await jobStore.claim({ leaseMs: s?.leaseMs ?? boot.leaseMs, maxAttempts: s?.maxAttempts ?? boot.maxAttempts });
   if (!job) return;
 
   console.log(`[worker] 认领任务 ${job.id}（媒资 ${job.mediaId}，第 ${job.attempts} 次尝试）`);
@@ -73,7 +90,7 @@ async function tick(): Promise<void> {
       keyStore,
       storage,
       masterKeys,
-      leaseMs,
+      leaseMs: s?.leaseMs ?? boot.leaseMs,
       log: (msg) => console.log(`[worker] ${msg}`),
     });
     const variants = result.variants.map((v) => `${v.name}(${v.files} 文件)`).join(" / ");
@@ -93,10 +110,10 @@ async function tick(): Promise<void> {
 }
 
 console.log(
-  `[worker] polling every ${intervalMs}ms（lease ${leaseMs}ms，最大尝试 ${maxAttempts} 次）`,
+  `[worker] polling every ${pollIntervalMs}ms（lease ${boot.leaseMs}ms，最大尝试 ${boot.maxAttempts} 次）`,
 );
 while (running) {
   await tick().catch((e) => console.error("[worker] tick error:", (e as Error).message));
-  await Bun.sleep(intervalMs);
+  await Bun.sleep(pollIntervalMs);
 }
 console.log("[worker] bye");

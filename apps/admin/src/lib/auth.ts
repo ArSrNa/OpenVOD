@@ -1,18 +1,22 @@
 // better-auth 服务端实例（ADR-0013：Prisma adapter + genericOAuth，双轨账号）
+// ADR-0015：改为惰性初始化（getAuth()）——启动只依赖 DATABASE_URL + MASTER_KEYS（env），
+// 会话密钥 / 基址 / OIDC 等在首次请求时从 system_settings 解封读取（env 兜底），
+// 从而支持「首次启动向导」：未跑 /setup 前不要求配置 BETTER_AUTH_SECRET。
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { genericOAuth } from "better-auth/plugins";
 import { APIError, createAuthMiddleware } from "better-auth/api";
 import { currentProvider, getDb } from "@openvod/db";
 import { clientIp, recordLoginAudit } from "./audit";
+import { getSettingsSnapshot, resolveSecret } from "./settings";
 
 const adminPort = process.env.ADMIN_PORT ?? process.env.PORT ?? 8787;
 
 /**
  * CNB 运行环境识别：云原生开发/WebIDE 注入 CNB_VSCODE_PROXY_URI
  * （形如 https://wy8gx4ck6i-{{port}}.cnb.run），把 {{port}} 换成 ADMIN_PORT
- * 即管理端的对外访问基址。检测到即以它**覆盖** ADMIN_BASE_URL /
- * ADMIN_TRUSTED_ORIGINS（CNB 端口映射固定，无需手工维护这两个变量）。
+ * 即管理端的对外访问基址。检测到即以它**覆盖**基址与信任来源（CNB 端口映射固定，
+ * 无需手工维护；平台注入值优先于 system_settings / env）。
  */
 function resolveCnbBaseURL(): string | undefined {
   const proxyUri = process.env.CNB_VSCODE_PROXY_URI?.trim();
@@ -46,102 +50,136 @@ function normalizeTrustedOrigins(raw: string | undefined, baseURL: string): stri
   return list.includes(httpTwin) ? list : [...list, httpTwin];
 }
 
-const prisma = getDb<any>();
+async function buildAuth() {
+  const prisma = getDb<any>();
+  // 设置快照（30s 缓存）：基址 / 信任来源 / 会话 TTL / OIDC 皆为明文键
+  const snap = await getSettingsSnapshot().catch(() => null);
+  const secret = await resolveSecret("better_auth_secret");
+  if (!secret) {
+    throw new Error(
+      "管理端会话密钥未配置：请完成首次启动向导（/setup）或设置环境变量 BETTER_AUTH_SECRET",
+    );
+  }
 
-// 通用 OIDC（ADR-0012 决策保留）：不配 OIDC_ISSUER 则仅本地邮箱密码登录
-const oidcConfig = process.env.OIDC_ISSUER
-  ? [
-      {
-        providerId: "generic-oidc",
-        discoveryUrl: `${process.env.OIDC_ISSUER.replace(/\/+$/, "")}/.well-known/openid-configuration`,
-        clientId: process.env.OIDC_CLIENT_ID ?? "",
-        clientSecret: process.env.OIDC_CLIENT_SECRET ?? "",
-        scopes: ["openid", "profile", "email"],
-        pkce: true,
-      },
-    ]
-  : [];
+  // 基址优先级：CNB 平台注入 > system_settings.admin_base_url > env > localhost
+  const adminBaseURL =
+    cnbBaseURL ||
+    snap?.admin.baseUrl ||
+    process.env.ADMIN_BASE_URL?.trim() ||
+    `http://localhost:${adminPort}`;
 
-const adminBaseURL = process.env.ADMIN_BASE_URL ?? `http://localhost:${adminPort}`;
+  // 通用 OIDC（ADR-0012 决策保留）：不配 issuer 则仅本地邮箱密码登录
+  const oidcIssuer = snap?.admin.oidcIssuer || "";
+  const oidcConfig = oidcIssuer
+    ? [
+        {
+          providerId: "generic-oidc",
+          discoveryUrl: `${oidcIssuer}/.well-known/openid-configuration`,
+          clientId: snap?.admin.oidcClientId || "",
+          clientSecret: snap?.admin.oidcClientSecret || "",
+          scopes: ["openid", "profile", "email"],
+          pkce: true,
+        },
+      ]
+    : [];
 
-export const auth = betterAuth({
-  baseURL: adminBaseURL,
-  secret: process.env.BETTER_AUTH_SECRET,
-  trustedOrigins: normalizeTrustedOrigins(process.env.ADMIN_TRUSTED_ORIGINS, adminBaseURL),
-  advanced: {
-    // 网关（CNB 预览域）TLS 终止后回源是 http：开启后 better-auth 按 x-forwarded-host/proto
-    // 推导 origin，否则浏览器未带 Origin（预览面板沙箱 iframe 发 Origin: null + Sec-Fetch-Site:
-    // same-origin）时会推出 http://<host>，与 https 的 baseURL 不匹配而 403。前提：必须在网关后部署。
-    trustedProxyHeaders: true,
-  },
-  // better-auth 1.7 prismaAdapter 与 PrismaClient 泛型联合推断过深，此处断言（运行时无影响）
-  database: prismaAdapter(prisma, { provider: currentProvider() }) as any,
-  emailAndPassword: {
-    enabled: true, // 本地兜底账号（双轨，ADR-0012 §3）
-    minPasswordLength: 8,
-  },
-  session: {
-    modelName: "adminSession",
-    expiresIn: Number(process.env.ADMIN_SESSION_TTL_SEC ?? 8 * 3600),
-    updateAge: 3600, // 每小时滚动续期
-  },
-  user: {
-    modelName: "adminUser",
-    additionalFields: {
-      username: { type: "string", required: false, input: false },
+  return betterAuth({
+    baseURL: adminBaseURL,
+    secret,
+    trustedOrigins: normalizeTrustedOrigins(
+      snap?.admin.trustedOrigins ?? process.env.ADMIN_TRUSTED_ORIGINS,
+      adminBaseURL,
+    ),
+    advanced: {
+      // 网关（CNB 预览域）TLS 终止后回源是 http：开启后 better-auth 按 x-forwarded-host/proto
+      // 推导 origin，否则浏览器未带 Origin（预览面板沙箱 iframe 发 Origin: null + Sec-Fetch-Site:
+      // same-origin）时会推出 http://<host>，与 https 的 baseURL 不匹配而 403。前提：必须在网关后部署。
+      trustedProxyHeaders: true,
     },
-  },
-  account: { modelName: "adminAccount" },
-  verification: { modelName: "adminVerification" },
-  // 登录事件审计（ADR-0012 §3）：本地 / OAuth 成败均落 audit_logs
-  hooks: {
-    after: createAuthMiddleware(async (ctx) => {
-      const isLocal = ctx.path === "/sign-in/email";
-      const OAUTH_CB = "/callback/"; // 1.7.x genericOAuth 回调：/api/auth/callback/<providerId>
-      const isOAuthCb = ctx.path.startsWith(OAUTH_CB);
-      if (!isLocal && !isOAuthCb) return; // SSO 发起（/sign-in/social）不算登录结果
+    // better-auth 1.7 prismaAdapter 与 PrismaClient 泛型联合推断过深，此处断言（运行时无影响）
+    database: prismaAdapter(prisma, { provider: currentProvider() }) as any,
+    emailAndPassword: {
+      enabled: true, // 本地兜底账号（双轨，ADR-0012 §3）
+      minPasswordLength: 8,
+    },
+    session: {
+      modelName: "adminSession",
+      expiresIn: snap?.admin.sessionTtlSec ?? 8 * 3600,
+      updateAge: 3600, // 每小时滚动续期
+    },
+    user: {
+      modelName: "adminUser",
+      additionalFields: {
+        username: { type: "string", required: false, input: false },
+      },
+    },
+    account: { modelName: "adminAccount" },
+    verification: { modelName: "adminVerification" },
+    // 登录事件审计（ADR-0012 §3）：本地 / OAuth 成败均落 audit_logs
+    hooks: {
+      after: createAuthMiddleware(async (ctx) => {
+        const isLocal = ctx.path === "/sign-in/email";
+        const OAUTH_CB = "/callback/"; // 1.7.x genericOAuth 回调：/api/auth/callback/<providerId>
+        const isOAuthCb = ctx.path.startsWith(OAUTH_CB);
+        if (!isLocal && !isOAuthCb) return; // SSO 发起（/sign-in/social）不算登录结果
 
-      const ip = clientIp(ctx.headers);
-      // 回调为参数化路由，ctx.path 是模板（/callback/:id），真实 providerId 在 params
-      const provider = isLocal
-        ? "local"
-        : ((ctx as any).params?.id as string | undefined) ??
-          ctx.path.slice(OAUTH_CB.length);
-      const newSession = (ctx.context as any).newSession as
-        | { user?: { id?: string; email?: string }; session?: { userId?: string } }
-        | null
-        | undefined;
+        const ip = clientIp(ctx.headers);
+        // 回调为参数化路由，ctx.path 是模板（/callback/:id），真实 providerId 在 params
+        const provider = isLocal
+          ? "local"
+          : ((ctx as any).params?.id as string | undefined) ??
+            ctx.path.slice(OAUTH_CB.length);
+        const newSession = (ctx.context as any).newSession as
+          | { user?: { id?: string; email?: string }; session?: { userId?: string } }
+          | null
+          | undefined;
 
-      if (newSession) {
+        if (newSession) {
+          await recordLoginAudit({
+            actorType: "admin_user",
+            actorId: String(newSession.user?.id ?? newSession.session?.userId ?? ""),
+            action: "console.login",
+            target: newSession.user?.email ?? null,
+            detail: { provider },
+            ip,
+          });
+          return;
+        }
+
+        // 失败：returned 为 APIError（本地口令错误 / IdP 拒绝）或重定向 Response
+        const returned = (ctx.context as any).returned;
+        const reason =
+          returned instanceof APIError
+            ? returned.message
+            : returned instanceof Response
+              ? `http_${returned.status}`
+              : "unknown";
+        const email = ((ctx as any).body?.email as string | undefined) ?? null;
         await recordLoginAudit({
-          actorType: "admin_user",
-          actorId: String(newSession.user?.id ?? newSession.session?.userId ?? ""),
-          action: "console.login",
-          target: newSession.user?.email ?? null,
-          detail: { provider },
+          actorType: "anonymous",
+          actorId: email ?? "unknown",
+          action: "console.login_failed",
+          target: email,
+          detail: { provider, reason },
           ip,
         });
-        return;
-      }
+      }),
+    },
+    plugins: oidcConfig.length ? [genericOAuth({ config: oidcConfig })] : [],
+  });
+}
 
-      // 失败：returned 为 APIError（本地口令错误 / IdP 拒绝）或重定向 Response
-      const returned = (ctx.context as any).returned;
-      const reason =
-        returned instanceof APIError
-          ? returned.message
-          : returned instanceof Response
-            ? `http_${returned.status}`
-            : "unknown";
-      const email = ((ctx as any).body?.email as string | undefined) ?? null;
-      await recordLoginAudit({
-        actorType: "anonymous",
-        actorId: email ?? "unknown",
-        action: "console.login_failed",
-        target: email,
-        detail: { provider, reason },
-        ip,
-      });
-    }),
-  },
-  plugins: oidcConfig.length ? [genericOAuth({ config: oidcConfig })] : [],
-});
+let instance: Awaited<ReturnType<typeof buildAuth>> | null = null;
+let building: Promise<Awaited<ReturnType<typeof buildAuth>>> | null = null;
+
+export type AuthInstance = Awaited<ReturnType<typeof buildAuth>>;
+
+/** 惰性获取 better-auth 实例（进程内单例；首次调用从 system_settings 解封会话密钥） */
+export function getAuth(): Promise<AuthInstance> {
+  if (instance) return Promise.resolve(instance);
+  building ??= buildAuth().then((a) => {
+    instance = a;
+    return a;
+  });
+  return building;
+}

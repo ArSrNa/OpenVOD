@@ -1,7 +1,5 @@
 import type { Metadata } from "next";
-import { headers } from "next/headers";
-import { redirect } from "next/navigation";
-import { auth } from "@/lib/auth";
+import { requireConsoleSession } from "@/lib/console";
 import { MediaList } from "@/components/MediaList";
 import { ConsoleShell } from "@/components/ConsoleShell";
 // 版本号唯一来源：本包 package.json（服务端读取后传入，避免整份 JSON 进入客户端 bundle）
@@ -12,8 +10,7 @@ export const metadata: Metadata = {
 };
 
 export default async function MediaPage() {
-  const session = await auth.api.getSession({ headers: await headers() });
-  if (!session) redirect("/login");
+  const session = await requireConsoleSession();
   return (
     <ConsoleShell userName={session.user.name} version={pkg.version} initialPath="/media">
       <MediaList />

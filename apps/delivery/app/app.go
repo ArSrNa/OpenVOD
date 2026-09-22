@@ -22,6 +22,7 @@ import (
 	"openvod/apps/delivery/internal/config"
 	"openvod/apps/delivery/internal/mk"
 	"openvod/apps/delivery/internal/server"
+	"openvod/apps/delivery/internal/settings"
 	"openvod/apps/delivery/internal/store"
 )
 
@@ -45,6 +46,22 @@ func Run() error {
 		return fmt.Errorf("数据库不可用: %w", err)
 	}
 	defer func() { _ = db.Close() }()
+
+	// ADR-0015：启动只依赖 DELIVERY_DATABASE_URL + MASTER_KEYS；存储凭据 / 播放签名密钥 /
+	// TTL / CORS 从 system_settings 加载（首次启动向导写入，MK 封装的密钥在此解封），env 兜底。
+	snap, err := settings.Load(context.Background(), db, cfg.MasterKeys)
+	if err != nil {
+		return fmt.Errorf("系统设置加载失败: %w", err)
+	}
+	if err := snap.ApplyTo(cfg); err != nil {
+		return fmt.Errorf("系统设置非法: %w", err)
+	}
+	if cfg.Storage.Bucket == "" || cfg.Storage.AccessKeyID == "" || cfg.Storage.SecretAccessKey == "" {
+		return fmt.Errorf("对象存储未配置：请先完成管理台首次启动向导（/setup）或配置 S3_* 环境变量")
+	}
+	if cfg.URLSignKey == nil {
+		return fmt.Errorf("播放签名密钥未配置：请先完成管理台首次启动向导（/setup，url_sign_key_hex）或设置 URL_SIGN_KEY_HEX")
+	}
 
 	bl, err := blob.New(cfg.Storage)
 	if err != nil {

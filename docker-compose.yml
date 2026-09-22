@@ -1,0 +1,62 @@
+# OpenVOD 单机 Compose 编排（ADR-0011「两应用 + N 进程」中的常驻侧：admin + worker）
+#
+# 形态：镜像**预先构建**、由流水线推送（仓库页「构建admin（Docker）」/「构建worker（Docker）」
+#       按钮 → ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/{admin,worker}:latest；
+#       本地等价命令 `task image:admin` / `task image:worker`），本文件只 pull + up，不在运行时构建。
+#       适用于任意 Docker 宿主：CNB 云原生开发环境 / CVM / 轻量应用服务器。
+#
+# 前置：仓库根 .env 已生成（`sh scripts/gen-env.sh`；CNB 开发环境启动任务已自动注入）。
+#
+# 用法：
+#   docker compose pull && docker compose up -d
+#   docker compose ps / logs -f worker / down
+#   或封装脚本：`scripts/compose.sh {up|down|ps|logs [服务]|restart [服务]|url}`
+#
+# 须知：
+#   - admin 端口：容器内外同取 .env 的 ADMIN_PORT（默认 8787）。CNB 上管理端读
+#     CNB_VSCODE_PROXY_URI 自动推导对外基址与 trustedOrigins（apps/admin/src/lib/auth.ts），
+#     故此处必须把该变量显式传进容器——容器不继承宿主环境。
+#   - worker 无端口（轮询 transcode_jobs 认领任务）；转码临时目录（os.tmpdir()）挂到
+#     ./.run/worker-tmp，需大磁盘（ADR-0003：源片 + 全档产物 + 加密重写）。
+#   - delivery 不在本编排内：它按 ADR-0003 部署到 EdgeOne Cloud Functions / SCF；admin 的
+#     DELIVERY_BASE_URL 必须指向分发端**实际可达地址**（容器内写 127.0.0.1 会指向 admin 自己）。
+#   - 停止 worker 会中断当前转码：任务经 lease 过期自动重派（ADR-0008），attempts 会 +1。
+name: openvod
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  admin:
+    image: ${OPENVOD_ADMIN_IMAGE:-docker.cnb.cool/arsrna/media/openvod/admin:latest}
+    env_file:
+      - .env
+    environment:
+      # CNB 预览：容器不继承宿主环境变量，显式透传（为空也不影响非 CNB 宿主）
+      CNB_VSCODE_PROXY_URI: ${CNB_VSCODE_PROXY_URI:-}
+    ports:
+      # 宿主与容器同端口；CNB 预览地址 = CNB_VSCODE_PROXY_URI 的 {{port}} 换成本端口
+      - "${ADMIN_PORT:-8787}:${ADMIN_PORT:-8787}"
+    healthcheck:
+      # /healthz 语义：进程存活即 200（db 字段仅观测，见 apps/admin/src/app/healthz/route.ts）
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:'+(process.env.ADMIN_PORT||8787)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    init: true
+    restart: unless-stopped
+    logging: *logging
+
+  worker:
+    image: ${OPENVOD_WORKER_IMAGE:-docker.cnb.cool/arsrna/media/openvod/worker:latest}
+    env_file:
+      - .env
+    volumes:
+      - ${OPENVOD_WORKER_TMP:-./.run/worker-tmp}:/tmp
+    init: true
+    restart: unless-stopped
+    logging: *logging

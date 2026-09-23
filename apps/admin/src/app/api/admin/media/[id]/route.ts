@@ -1,20 +1,33 @@
-// /api/admin/media/[id]：媒资详情 / 重命名 / 删除（intent.md 媒资管理操作，M1）
-//   GET    详情：存储资产 + DB 元数据合并展示（probe 随转码流水线落地，当前 null）
-//   PATCH  重命名：仅修改数据库展示名，绝不改动 original 文件名与媒资 ID
+// /api/admin/media/[id]：媒资详情 / 字段更新（重命名 + 自定义元数据）/ 删除（intent.md 媒资管理操作，M1）
+//   GET    详情：存储资产 + DB 元数据合并展示（含自定义元数据三项，spec.md §8.3）
+//   PATCH  部分字段更新（contracts UpdateMediaRequest）：
+//            title                重命名（仅改展示名，绝不动 original 文件名与媒资 ID）
+//            description / tags / category_id
+//                                 自定义元数据设置 → 重算 media.custom_data 投影
+//                                 （分类 / 描述 / 标签，spec.md §8.2/§8.3），并导出 metadata/{id}/custom.json
 //   DELETE 删除：存储四分区该 id 全部对象 + DB 行（级联范围注记见 spec.md §2）
 // POST [id]/transcode、[id]/subtitles、[id]/metadata 未实现 → 由 /api/admin/[...path] 返回 501。
 import { NextRequest, NextResponse } from "next/server";
-import { apiJson, auditAction, getAdminSession, unauthorized } from "@/lib/api";
+import { UpdateMediaRequest, z } from "@openvod/contracts";
+import { apiError, apiJson, auditAction, getAdminSession, unauthorized } from "@/lib/api";
 import {
   deleteMedia,
   getMediaDetail,
   mediaErrorResponse,
   renameMedia,
+  updateMediaMetadata,
 } from "@/lib/media";
 
 export const dynamic = "force-dynamic";
 
 type Ctx = { params: Promise<{ id: string }> };
+
+/** zod 校验失败 → 400（取首条 issue，带字段路径） */
+function firstIssue(error: z.ZodError): string {
+  const issue = error.issues[0];
+  const path = issue?.path?.length ? `${issue.path.join(".")}: ` : "";
+  return `${path}${issue?.message ?? "请求体校验失败"}`;
+}
 
 export async function GET(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
   const session = await getAdminSession(req);
@@ -32,16 +45,40 @@ export async function PATCH(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
   if (!session) return unauthorized();
   try {
     const { id } = await ctx.params;
-    const body = (await req.json().catch(() => null)) as { title?: unknown } | null;
-    if (typeof body?.title !== "string") {
-      return NextResponse.json(
-        { error: { code: "bad_request", message: "缺少 title 字段" } },
-        { status: 400 },
-      );
+    const parsed = UpdateMediaRequest.safeParse(await req.json().catch(() => null));
+    if (!parsed.success) return apiError("bad_request", firstIssue(parsed.error), 400);
+    const input = parsed.data;
+
+    const result: Record<string, unknown> = { id };
+    if (input.title !== undefined) {
+      const row = await renameMedia(id, input.title);
+      await auditAction(req, session, "media.rename", id, { title: row.title });
+      result.title = row.title;
     }
-    const row = await renameMedia(id, body.title);
-    await auditAction(req, session, "media.rename", id, { title: row.title });
-    return apiJson(row);
+
+    // 自定义元数据三项任一命中即重算投影（spec.md §8.2）
+    if (
+      input.description !== undefined ||
+      input.tags !== undefined ||
+      input.category_id !== undefined
+    ) {
+      const updated = await updateMediaMetadata(id, {
+        description: input.description,
+        tags: input.tags,
+        categoryId: input.category_id,
+      });
+      await auditAction(req, session, "media.metadata_update", id, {
+        category_id: updated.custom.category?.id ?? null,
+        tags: updated.custom.tags,
+        has_description: Boolean(updated.custom.description),
+        custom_object_written: updated.customObjectWritten,
+      });
+      result.custom = updated.custom;
+      result.customData = updated.customData;
+      result.customDataKey = updated.customObjectKey;
+      result.customDataWritten = updated.customObjectWritten;
+    }
+    return apiJson(result);
   } catch (e) {
     return mediaErrorResponse(e);
   }

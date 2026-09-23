@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  ApartmentOutlined,
   DashboardOutlined,
   FontSizeOutlined,
   InfoCircleOutlined,
@@ -24,6 +25,7 @@ import { authClient } from "@/lib/auth-client";
 const MODULES = [
   { key: "/", label: "总览", icon: <DashboardOutlined /> },
   { key: "/media", label: "媒资管理", icon: <VideoCameraOutlined /> },
+  { key: "/categories", label: "分类管理", icon: <ApartmentOutlined /> },
   { key: "/templates", label: "转码模板", icon: <SlidersOutlined /> },
   { key: "/subtitles", label: "字幕管理", icon: <FontSizeOutlined /> },
   { key: "/users", label: "用户管理", icon: <TeamOutlined /> },
@@ -48,6 +50,7 @@ const ALL_ENTRIES = [...MODULES, ...SETTINGS_CHILDREN];
 const ROUTE_PAGES = new Set([
   "/",
   "/media",
+  "/categories",
   "/templates",
   "/subtitles",
   "/users",

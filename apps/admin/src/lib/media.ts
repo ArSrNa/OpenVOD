@@ -4,12 +4,19 @@
 // 转码产物按 `proceed/{id}/{模板id}/` 分组展示（spec.md §1.3），模板名来自 transcode_templates；
 // 元数据探测（ffprobe）见 lib/probe.ts。
 import {
+  MEDIA_CATEGORY_ID_PATTERN,
+  MEDIA_CATEGORY_SORT_MAX,
+  MEDIA_DEFAULT_CATEGORY_DESCRIPTION,
+  MEDIA_DEFAULT_CATEGORY_ID,
+  MEDIA_DEFAULT_CATEGORY_NAME,
   MEDIA_ID_CHARS,
   MEDIA_ID_PATTERN,
   STORAGE_KEYS,
   STORAGE_PARTITIONS,
   TEMPLATE_ID_PATTERN,
   generateMediaId,
+  normalizeMediaTags,
+  type MediaCustomCategory,
 } from "@openvod/shared";
 import {
   PRODUCT_LEGACY_ID,
@@ -18,8 +25,17 @@ import {
   selectProductObjectKeys,
   type MediaProduct,
 } from "./media-products";
+import {
+  buildCategoryLookup,
+  categoryRefById,
+  pickCategoryRef,
+  type CategoryLookup,
+  type CategoryNode,
+} from "./category-tree";
+import { mergeCustomData, parseMediaTags, serializeCustomData } from "./custom-metadata";
 import { getDb } from "@openvod/db";
-import type { DashboardStats } from "@openvod/contracts";
+import type { DashboardStats, MediaCustomMetadataDTO } from "@openvod/contracts";
+import type { z } from "@openvod/contracts";
 import type { StorageObject } from "@openvod/storage";
 import { NextResponse } from "next/server";
 import { getStorage } from "./storage";
@@ -128,14 +144,30 @@ export async function uploadOriginal(input: {
   const title =
     (input.title ?? "").trim() || input.filename.replace(/\.[^.]+$/, "").trim();
 
+  // 新媒资默认归入系统默认分类「其他」（spec.md §8.1 修订）：未设置分类的媒资即「其他」，
+  // 因此上传时就把 category_id 与自定义元数据投影一起写好（分发端读投影，不留空）
+  const defaultCategory = pickCategoryRef(await loadCategoryLookup(), null);
+
   // 先落库占位（主键唯一性冲突即重取 ID，spec.md §1.3），再流式写存储；存储失败回滚 DB 行
   for (let attempt = 0; attempt < 5; attempt++) {
     const id = generateMediaId(idLen);
     const key = STORAGE_KEYS.original(id, ext);
     const displayName = title || id;
+    const customData = mergeCustomData(null, {
+      category: defaultCategory,
+      description: null,
+      tags: [],
+    });
     try {
       await db.media.create({
-        data: { id, title: displayName, status: "UPLOADED", sourceKey: key },
+        data: {
+          id,
+          title: displayName,
+          status: "UPLOADED",
+          sourceKey: key,
+          categoryId: defaultCategory?.id ?? null,
+          customData,
+        },
       });
     } catch (e) {
       if (isUniqueViolation(e)) continue; // ID 冲突：重取（spec.md §1.3）
@@ -146,6 +178,12 @@ export async function uploadOriginal(input: {
     } catch (e) {
       await db.media.delete({ where: { id } }).catch(() => {}); // 回滚占位行
       throw new MediaError("internal", `对象存储写入失败：${(e as Error).message}`, 500);
+    }
+    // 投影导出（`metadata/{id}/custom.json`）：best-effort，失败只告警（spec.md §8.3）
+    try {
+      await storage.put(STORAGE_KEYS.metadataCustom(id), serializeCustomData(customData), "application/json");
+    } catch (e) {
+      console.warn(`[media] custom.json 导出失败（${id}）：${(e as Error).message}`);
     }
     const stat = await storage.stat(key);
     return { id, title: displayName, ext, key, size: stat?.size ?? 0 };
@@ -169,6 +207,66 @@ async function attachTemplateNames(products: MediaProduct[]): Promise<void> {
   }
 }
 
+// ---- 分类读取与默认分类（spec.md §8.1；分类 CRUD 见 lib/categories.ts） ----
+
+/** 一次性取全部分类（分类表规模小；列表 / 详情 / 投影共用；查询失败降级为空 → 一律显示未分类） */
+async function loadCategoryNodes(): Promise<CategoryNode[]> {
+  return await db.mediaCategory
+    .findMany({ select: { id: true, name: true, parentId: true, sortOrder: true } })
+    .catch(() => [] as CategoryNode[]);
+}
+
+/**
+ * 幂等确保系统默认分类「其他」存在（spec.md §8.1 修订 2026-09-24）：
+ * MySQL 由迁移插入；SQLite 开发库（`db push`，无种子）与历史库靠这里补齐，
+ * 冲突（并发创建 / 迁移已插入）时重读。创建失败降级为 null（读路径不阻断）。
+ */
+export async function ensureDefaultCategory(): Promise<{ id: string; name: string } | null> {
+  const existing = await db.mediaCategory
+    .findFirst({ where: { isSystem: true }, select: { id: true, name: true } })
+    .catch(() => null);
+  if (existing) return existing;
+  try {
+    return await db.mediaCategory.create({
+      data: {
+        id: MEDIA_DEFAULT_CATEGORY_ID,
+        name: MEDIA_DEFAULT_CATEGORY_NAME,
+        description: MEDIA_DEFAULT_CATEGORY_DESCRIPTION,
+        parentId: null,
+        // 默认排在顶级末尾（sort_order 越小越靠前）
+        sortOrder: MEDIA_CATEGORY_SORT_MAX,
+        isSystem: true,
+      },
+      select: { id: true, name: true },
+    });
+  } catch (e) {
+    const again = await db.mediaCategory
+      .findFirst({ where: { isSystem: true }, select: { id: true, name: true } })
+      .catch(() => null);
+    if (again) return again;
+    console.warn(
+      `[media] 默认分类「${MEDIA_DEFAULT_CATEGORY_NAME}」创建失败：${(e as Error).message}`,
+    );
+    return null;
+  }
+}
+
+/** 分类解析表：确保默认分类 → 全部分类 → 路径表（列表 / 详情 / 投影共用） */
+async function loadCategoryLookup(): Promise<CategoryLookup> {
+  const [defaultCategory, nodes] = await Promise.all([ensureDefaultCategory(), loadCategoryNodes()]);
+  return buildCategoryLookup(nodes, defaultCategory?.id ?? null);
+}
+
+/** 写入路径（严格）：分类不存在 / 形状非法直接报错（spec.md §8.2；**不做默认回退**） */
+async function requireCategoryRef(categoryId: string): Promise<MediaCustomCategory> {
+  if (!MEDIA_CATEGORY_ID_PATTERN.test(categoryId)) {
+    throw new MediaError("bad_request", `分类 ID 形状非法：${categoryId}`, 400);
+  }
+  const ref = categoryRefById(await loadCategoryLookup(), categoryId);
+  if (!ref) throw new MediaError("not_found", `分类不存在：${categoryId}`, 404);
+  return ref;
+}
+
 // ---- 列表（存储视角 + DB 合并；spec.md §1.4） ----
 
 export interface MediaRow {
@@ -179,6 +277,12 @@ export interface MediaRow {
   status: string | null;
   /** 封面对象键（数据库 posterKey；列表首列缩略图展示用） */
   posterKey: string | null;
+  /** 归属分类（含路径快照；未分类 / 未入库为 null，spec.md §8） */
+  category: MediaCustomCategory | null;
+  /** 业务描述（spec.md §8） */
+  description: string | null;
+  /** 业务标签（spec.md §8） */
+  tags: string[];
   ext: string;
   key: string;
   size: number;
@@ -192,17 +296,36 @@ export interface MediaRow {
 
 export async function listMedia(): Promise<{ total: number; items: MediaRow[] }> {
   const storage = await getStorage();
-  type MediaDbRow = { id: string; title: string; status: string; posterKey: string | null };
+  type MediaDbRow = {
+    id: string;
+    title: string;
+    status: string;
+    posterKey: string | null;
+    categoryId: string | null;
+    description: string | null;
+    tags: unknown;
+  };
   // DB 查询失败时降级为纯存储视角（title/status 置 null），保证列表可用
   const rowsTask: Promise<MediaDbRow[]> = db.media
-    .findMany({ select: { id: true, title: true, status: true, posterKey: true } })
+    .findMany({
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        posterKey: true,
+        categoryId: true,
+        description: true,
+        tags: true,
+      },
+    })
     .catch(() => [] as MediaDbRow[]);
-  const [originals, proceeds, covers, metadatas, rows] = await Promise.all([
+  const [originals, proceeds, covers, metadatas, rows, categoryLookup] = await Promise.all([
     storage.listObjects(`${STORAGE_PARTITIONS.original}/`),
     storage.listObjects(`${STORAGE_PARTITIONS.proceed}/`),
     storage.listObjects(`${STORAGE_PARTITIONS.cover}/`),
     storage.listObjects(`${STORAGE_PARTITIONS.metadata}/`),
     rowsTask,
+    loadCategoryLookup(),
   ]);
   const rowMap = new Map<string, MediaDbRow>(rows.map((r) => [r.id, r]));
 
@@ -232,6 +355,10 @@ export async function listMedia(): Promise<{ total: number; items: MediaRow[] }>
       title: row?.title ?? null,
       status: row?.status ?? null,
       posterKey: row?.posterKey ?? null,
+      // 未设置分类 → 回退系统默认分类「其他」（spec.md §8.1 修订）
+      category: pickCategoryRef(categoryLookup, row?.categoryId ?? null),
+      description: row?.description ?? null,
+      tags: parseMediaTags(row?.tags),
       ext: m[2].toLowerCase(),
       key: o.key,
       size: o.size,
@@ -285,7 +412,9 @@ export interface MediaDetail {
   updatedAt: string | null;
   /** ffprobe 系统元数据（转码流水线写入，未实现时为 null） */
   probe: unknown;
-  /** 业务自定义数据 */
+  /** 自定义元数据（**恒三项**：分类 / 描述 / 标签，空值 null / null / []，便于表单回填；spec.md §8.3） */
+  custom: z.infer<typeof MediaCustomMetadataDTO>;
+  /** 自定义元数据投影原文（**稀疏** JSON；= metadata/{id}/custom.json 的内容） */
   customData: unknown;
   durationMs: number | null;
   posterKey: string | null;
@@ -298,12 +427,13 @@ export interface MediaDetail {
 export async function getMediaDetail(id: string): Promise<MediaDetail> {
   assertMediaId(id);
   const storage = await getStorage();
-  const [originals, proceeds, covers, metadatas, row] = await Promise.all([
+  const [originals, proceeds, covers, metadatas, row, categoryLookup] = await Promise.all([
     storage.listObjects(`${STORAGE_PARTITIONS.original}/`),
     storage.listObjects(`${STORAGE_PARTITIONS.proceed}/${id}/`),
     storage.listObjects(`${STORAGE_PARTITIONS.cover}/${id}/`),
     storage.listObjects(`${STORAGE_PARTITIONS.metadata}/${id}/`),
     db.media.findUnique({ where: { id } }).catch(() => null),
+    loadCategoryLookup(),
   ]);
   const original = originals.find((o) => ORIGINAL_RE.exec(o.key)?.[1] === id);
   const ext = original ? ORIGINAL_RE.exec(original.key)?.[2]?.toLowerCase() ?? null : null;
@@ -319,6 +449,12 @@ export async function getMediaDetail(id: string): Promise<MediaDetail> {
     createdAt: row?.createdAt?.toISOString() ?? null,
     updatedAt: row?.updatedAt?.toISOString() ?? null,
     probe: row?.probe ?? null,
+    custom: {
+      // 未设置分类 → 回退系统默认分类「其他」（spec.md §8.1 修订）
+      category: pickCategoryRef(categoryLookup, row?.categoryId ?? null),
+      description: row?.description ?? null,
+      tags: parseMediaTags(row?.tags),
+    },
     customData: row?.customData ?? null,
     durationMs: row?.durationMs ?? null,
     posterKey: row?.posterKey ?? null,
@@ -350,6 +486,155 @@ export async function renameMedia(
     }
     throw new MediaError("internal", `重命名失败：${(e as Error).message}`, 500);
   }
+}
+
+// ---- 自定义元数据：分类 / 描述 / 标签 → custom_data 投影（spec.md §8.2/§8.3） ----
+
+export interface UpdateMediaMetadataInput {
+  /** 缺省 = 不修改；null = 清空描述 */
+  description?: string | null;
+  /** 缺省 = 不修改；null / 空数组 = 清空标签 */
+  tags?: string[] | null;
+  /** 缺省 = 不修改；null = 移出分类（分类必须存在，否则 404） */
+  categoryId?: string | null;
+}
+
+export interface UpdateMediaMetadataResult {
+  id: string;
+  /** 管理端读取形态（恒三项） */
+  custom: z.infer<typeof MediaCustomMetadataDTO>;
+  /** custom_data 投影（稀疏 JSON；= metadata/{id}/custom.json 的内容） */
+  customData: Record<string, unknown>;
+  customObjectKey: string;
+  /** custom.json 导出是否成功（DB 已保存，导出失败仅告警、不回滚） */
+  customObjectWritten: boolean;
+}
+
+/**
+ * 更新媒资自定义元数据（分类 / 描述 / 标签任一或多项，spec.md §8.2）：
+ * 1. 读取当前行 → 分类引用（写入严格校验存在性）；
+ * 2. 重算 custom_data 投影（保留白名单外扩展键）；
+ * 3. 落库（description / tags / category_id / custom_data 同写）；
+ * 4. 导出 `metadata/{id}/custom.json`（best-effort：失败不回滚 DB，下一次保存补齐）。
+ */
+export async function updateMediaMetadata(
+  id: string,
+  input: UpdateMediaMetadataInput,
+): Promise<UpdateMediaMetadataResult> {
+  assertMediaId(id);
+  const row = await db.media
+    .findUnique({
+      where: { id },
+      select: { id: true, description: true, tags: true, customData: true, categoryId: true },
+    })
+    .catch(() => null);
+  if (!row) throw new MediaError("not_found", `媒资不存在或未入库：${id}`, 404);
+
+  const category =
+    input.categoryId === undefined
+      ? // 现状：显式分类 → 该分类；未设置（历史数据）→ 系统默认分类「其他」
+        pickCategoryRef(await loadCategoryLookup(), row.categoryId)
+      : input.categoryId === null
+        ? // 移出分类 → 归入默认分类「其他」（spec.md §8.1 修订）
+          pickCategoryRef(await loadCategoryLookup(), null)
+        : await requireCategoryRef(input.categoryId);
+  const description =
+    (input.description !== undefined ? input.description : row.description)?.trim() || null;
+  const tags = normalizeMediaTags(
+    input.tags !== undefined ? (input.tags ?? []) : parseMediaTags(row.tags),
+  );
+  const customData = mergeCustomData(row.customData, { category, description, tags });
+
+  try {
+    await db.media.update({
+      where: { id },
+      data: {
+        description,
+        tags: tags.length ? tags : null,
+        categoryId: category?.id ?? null,
+        customData,
+      },
+      select: { id: true },
+    });
+  } catch (e) {
+    if (isRecordNotFound(e)) {
+      throw new MediaError("not_found", `媒资不存在或未入库：${id}`, 404);
+    }
+    throw new MediaError("internal", `元数据回写数据库失败：${(e as Error).message}`, 500);
+  }
+
+  const customObjectKey = STORAGE_KEYS.metadataCustom(id);
+  let customObjectWritten = false;
+  try {
+    await (await getStorage()).put(customObjectKey, serializeCustomData(customData), "application/json");
+    customObjectWritten = true;
+  } catch (e) {
+    // 导出物是投影的副本：DB 为准，失败只告警（spec.md §8.3）
+    console.warn(`[media] custom.json 导出失败（${customObjectKey}）：${(e as Error).message}`);
+  }
+  return { id, custom: { category, description, tags }, customData, customObjectKey, customObjectWritten };
+}
+
+/**
+ * 指定分类（含子孙，由调用方展开）下的媒资 ID（分类改名 / 移动 / 删除前的受影响集合）。
+ * `defaultCategoryId` 命中 `categoryIds` 时**一并包含未设置分类的历史媒资**（`category_id IS NULL`）——
+ * 它们的分类投影等同默认分类「其他」，默认分类改名 / 移动时必须一起刷新（spec.md §8.1 修订）。
+ */
+export async function listMediaIdsByCategories(
+  categoryIds: readonly string[],
+  defaultCategoryId?: string | null,
+): Promise<string[]> {
+  if (!categoryIds.length) return [];
+  const scope: Record<string, unknown>[] = [{ categoryId: { in: [...categoryIds] } }];
+  if (defaultCategoryId && categoryIds.includes(defaultCategoryId)) {
+    scope.push({ categoryId: null });
+  }
+  const rows = (await db.media.findMany({
+    where: scope.length > 1 ? { OR: scope } : scope[0],
+    select: { id: true },
+  })) as Array<{ id: string }>;
+  return rows.map((r) => r.id);
+}
+
+/**
+ * 重算并落库指定媒资的自定义元数据投影（分类改名 / 移动 / 删除后同步，spec.md §8.3）：
+ * 分类投影含 name / path 快照，不刷新会与分类表漂移；v1 同步逐条执行
+ * （分类 + 受影响媒资规模小），超大规模演进为异步任务。
+ */
+export async function refreshMediaCustomProjections(mediaIds: readonly string[]): Promise<number> {
+  if (!mediaIds.length) return 0;
+  const lookup = await loadCategoryLookup();
+  const storage = await getStorage().catch(() => null);
+  let refreshed = 0;
+  for (const mediaId of mediaIds) {
+    const row = await db.media
+      .findUnique({
+        where: { id: mediaId },
+        select: { description: true, tags: true, customData: true, categoryId: true },
+      })
+      .catch(() => null);
+    if (!row) continue;
+    const customData = mergeCustomData(row.customData, {
+      // 未设置分类 → 回退系统默认分类「其他」（spec.md §8.1 修订）
+      category: pickCategoryRef(lookup, row.categoryId),
+      description: row.description,
+      tags: parseMediaTags(row.tags),
+    });
+    await db.media.update({ where: { id: mediaId }, data: { customData } });
+    refreshed += 1;
+    if (storage) {
+      try {
+        await storage.put(
+          STORAGE_KEYS.metadataCustom(mediaId),
+          serializeCustomData(customData),
+          "application/json",
+        );
+      } catch (e) {
+        console.warn(`[media] custom.json 导出失败（${mediaId}）：${(e as Error).message}`);
+      }
+    }
+  }
+  return refreshed;
 }
 
 // ---- 删除（存储四分区该 id 全部对象 + DB 行；spec.md §2 级联范围注记） ----

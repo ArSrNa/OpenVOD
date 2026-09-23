@@ -205,8 +205,8 @@ func (a *api) handleMediaDetail(w http.ResponseWriter, r *http.Request) {
 		DurationMS: nullableInt(media.DurationMs),
 		Probe:      parseProbe(media.Probe),
 		Subtitles:  make([]contracts.Subtitle, 0, len(subs)),
-		// 公开白名单尚未定义（ADR-0004）：先不回传 custom_data，避免泄露内部字段
-		Custom:    map[string]interface{}{},
+		// 自定义元数据按**公开白名单**输出（category / description / tags，spec.md §8.4）
+		Custom:    parseCustomMetadata(media.CustomData),
 		PosterURL: a.posterURL(r.Context(), media.PosterKey.String),
 	}
 	for _, s := range subs {
@@ -223,7 +223,8 @@ func (a *api) mediaListItem(ctx context.Context, m *store.Media) contracts.Item 
 		Title:      m.Title,
 		DurationMS: nullableInt(m.DurationMs),
 		PosterURL:  a.posterURL(ctx, m.PosterKey.String),
-		Custom:     map[string]interface{}{},
+		// 自定义元数据按公开白名单输出（与详情一致，spec.md §8.4）
+		Custom: parseCustomMetadata(m.CustomData),
 	}
 }
 

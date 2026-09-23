@@ -180,14 +180,21 @@ model Media {
   sourceKey   String?     @map("source_key")
   /// ffprobe 系统元数据（ADR-0008）
   probe       Json?
-  /// 业务自定义数据（标题/扩展字段，分发端按公开白名单输出，ADR-0004）
+  /// 自定义元数据投影（分类 / 描述 / 标签；分发端按公开白名单输出，spec.md §8 / ADR-0004）
   customData  Json?       @map("custom_data")
+  /// 业务描述（spec.md §8）；与分类 / 标签一起投影进 custom_data
+  description String?
+  /// 业务标签（JSON 字符串数组，≤20 个 / 每个 ≤32 字符；spec.md §8）
+  tags        Json?
+  /// 媒资分类（可空；分类删除时置空，spec.md §8 / ADR-0016）
+  categoryId  String?     @map("category_id")
   durationMs  Int?        @map("duration_ms")
   posterKey   String?     @map("poster_key")
   publishedAt DateTime?   @map("published_at")
   createdAt   DateTime    @default(now()) @map("created_at")
   updatedAt   DateTime    @updatedAt @map("updated_at")
 
+  category  MediaCategory?  @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   subtitles MediaSubtitle[]
   /// 每媒资一份 HLS 密钥（spec.md §4.1）；一对一，重转码整行替换
   hlsKey    HlsKey?
@@ -195,7 +202,33 @@ model Media {
   sessions  PlaybackSession[]
 
   @@index([status])
+  @@index([categoryId])
   @@map("media")
+}
+
+/// 媒资分类（**无限层级**邻接表，spec.md §8 / ADR-0016）：
+/// 管理端独立模块维护（/categories）；`media.category_id` 外键引用，删除分类只置空引用、不删媒资
+model MediaCategory {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  parentId    String?  @map("parent_id")
+  /// 同级排序权重（越小越靠前；同级同名不允许）
+  sortOrder   Int      @default(0) @map("sort_order")
+  /// 系统内置分类标记（v1 仅「其他」一条）：未设置分类的媒资默认归属，**不可删除**（spec.md §8.1）
+  isSystem    Boolean  @default(false) @map("is_system")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  parent   MediaCategory?  @relation("MediaCategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children MediaCategory[] @relation("MediaCategoryTree")
+  media    Media[]
+
+  /// 同一上级下分类名唯一（顶级 parent_id 为 NULL，MySQL / SQLite 均视 NULL 互不相等，
+  /// 故顶级重名由应用层校验兜底）
+  @@unique([parentId, name])
+  @@index([parentId])
+  @@map("media_categories")
 }
 
 /// WebVTT 字幕轨道（ADR-0009）

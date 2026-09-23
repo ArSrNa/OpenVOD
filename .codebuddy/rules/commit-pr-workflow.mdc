@@ -1,0 +1,33 @@
+---
+description: OpenVOD 项目 commit 与 PR 工作流约定（何时建分支提 PR、何时仅本地 commit）
+alwaysApply: true
+enabled: true
+---
+
+# commit 与 PR 工作流约定
+
+收到用户的 commit / PR 指令时，先判断指令类型，再走对应流程：
+
+## 场景一：用户说 "commit + 提交 PR"（或明确要求提 PR）
+
+1. **新建功能分支**：以 `demo` 分支为基线，为当前对话实现的功能创建分支，命名遵循项目现有习惯（`feat/<功能关键词>` 等）。
+   ```bash
+   git checkout demo && git pull origin demo
+   git checkout -b feat/<功能关键词>
+   ```
+2. **提交代码**：conventional commits 规范（`feat:` / `fix:` / `chore:` / `docs:` / `refactor:`）。
+3. **推送并创建 PR**：使用 CNB 的 skill（`cnb-code-commit`）流程推送并用 `cnb pulls post-pull` 创建 PR，**PR base 为 `demo`**。
+4. **PR 创建完成后切回 `demo` 分支**，以便继续开发下一个功能。
+
+## 场景二：用户只说 "commit"
+
+直接在**当前分支**提交即可：
+
+- 不新建分支
+- 不推送、不创建 PR（除非用户额外要求）
+
+## 注意事项
+
+- 两个场景都使用 conventional commits 提交信息。
+- PR 标题保持语义化提交格式；描述区写背景、改动点、验证方式。
+- 合并 PR 由人工执行，AI 只负责提交。

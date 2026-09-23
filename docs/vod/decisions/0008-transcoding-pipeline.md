@@ -2,7 +2,8 @@
 
 - 状态：提议（待复核）
 - 日期：2026-09-17
-- 关联：ADR-0004、ADR-0005、ADR-0006、ADR-0014（模板存储）
+- 修订：2026-09-24 —— Worker 运行形态由「常驻容器」修订为双模式（resident 轮询 / http 门铃），见 ADR-0017
+- 关联：ADR-0004、ADR-0005、ADR-0006、ADR-0014（模板存储）、ADR-0017（Worker 部署双模式）
 
 ## 背景
 
@@ -19,7 +20,7 @@ queued/probing/encoding/packaging 带 lease_until（Worker 心跳续期，崩溃
 media 状态与 job 状态联动（ready / transcoding / failed / archived…）
 ```
 
-### Worker（apps/worker，常驻容器）
+### Worker（apps/worker；2026-09-24 修订：常驻轮询 / HTTP 门铃双模式，见 ADR-0017）
 
 1. 认领任务：**v1 统一用 CAS 条件更新**（`status ∈ 未终结 且 lease 为空/已过期` → 条件置 `PROBING`，受影响行数 = 1 才算认领成功）——MySQL 与 SQLite 语义一致、可测；本 ADR 原本设想的 MySQL `FOR UPDATE SKIP LOCKED`（`$queryRaw`）作为**高并发演进项**保留（CAS 已保证不重复认领，仅并发吞吐略低）。实现记录见 spec.md §5.1；
 2. 预取源片到 `/tmp/jobs/{jobId}/`（本地卷）；

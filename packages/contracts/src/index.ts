@@ -3,7 +3,16 @@
 // 生成物提交入库，CI 以 `bun run check:contracts-go` 门禁防漂移。
 
 import { z } from "zod";
-import { ERROR_CODES, SUBTITLE_LABEL_MAX } from "@openvod/shared";
+import {
+  ERROR_CODES,
+  MEDIA_CATEGORY_DESCRIPTION_MAX,
+  MEDIA_CATEGORY_NAME_MAX,
+  MEDIA_CATEGORY_SORT_MAX,
+  MEDIA_DESCRIPTION_MAX,
+  MEDIA_TAGS_MAX,
+  MEDIA_TAG_LENGTH_MAX,
+  SUBTITLE_LABEL_MAX,
+} from "@openvod/shared";
 
 // ---- 错误信封（ADR-0010：失败统一 { error: { code, message } }） ----
 export const ErrorCode = z.enum(ERROR_CODES);
@@ -45,7 +54,7 @@ export const MediaListItem = z.object({
   title: z.string(),
   poster_url: z.string().nullable(),
   duration_ms: z.number().int().nullable(),
-  /** 自定义公开字段白名单（管理端配置，ADR-0004 media.customData） */
+  /** 自定义元数据公开白名单（`category` / `description` / `tags`，spec.md §8.4；ADR-0004 media.customData） */
   custom: z.record(z.string(), z.unknown()).nullable(),
 });
 
@@ -425,6 +434,102 @@ export const UpdateSubtitleTrackRequest = z
     is_default: z.boolean().optional(),
   })
   .refine((v) => Object.keys(v).length > 0, { message: "没有需要更新的字段" });
+
+// ---- 媒资分类与自定义元数据（spec.md §8；ADR-0016）----
+// 仅管理端消费：分发端不消费分类 DTO（自定义元数据经 `media.custom_data` 的**公开白名单**
+// 输出，Go 侧手工对齐，见 spec.md §8.4）→ 本节**不进 gen-json.ts 清单、不生成 Go struct**
+// （同转码模板 / 密钥 / 用户组）。
+
+/** 分类节点 DTO（管理端「分类管理」页；层级由 `parent_id` 表达，客户端组树，spec.md §8.1） */
+export const MediaCategoryDTO = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string().nullable(),
+  /** 上级分类 ID；null = 顶级 */
+  parent_id: z.string().nullable(),
+  sort_order: z.number().int(),
+  /** 系统内置分类（默认分类「其他」）：**不可删除**；未设置分类的媒资默认归入它（spec.md §8.1） */
+  is_system: z.boolean(),
+  /** 直属该分类的媒资数（不含子孙） */
+  media_count: z.number().int(),
+  /** 含子孙分类的媒资数（删除确认提示用） */
+  descendant_media_count: z.number().int(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+
+export const MediaCategoryListResponse = z.object({
+  total: z.number().int(),
+  items: z.array(MediaCategoryDTO),
+});
+
+/** 分类字段基对象（无默认值；create 附加默认值，update 取 partial —— zod v4 禁止对带 refine 的 schema 调 .partial()） */
+const MediaCategoryInput = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1, "分类名不能为空")
+    .max(MEDIA_CATEGORY_NAME_MAX, `分类名最多 ${MEDIA_CATEGORY_NAME_MAX} 个字符`),
+  description: z
+    .string()
+    .trim()
+    .max(MEDIA_CATEGORY_DESCRIPTION_MAX, `分类描述最多 ${MEDIA_CATEGORY_DESCRIPTION_MAX} 个字符`)
+    .nullable()
+    .optional(),
+  /** 上级分类 ID；null / 缺省 = 顶级（移动时服务端校验环路，spec.md §8.1） */
+  parent_id: z.string().nullable().optional(),
+  sort_order: z.number().int().min(0).max(MEDIA_CATEGORY_SORT_MAX).optional(),
+});
+
+export const CreateMediaCategoryRequest = MediaCategoryInput.extend({
+  sort_order: z.number().int().min(0).max(MEDIA_CATEGORY_SORT_MAX).default(0),
+});
+
+/** PATCH 语义：字段缺省 = 不修改；`description: null` = 清空描述；`parent_id: null` = 移到顶级 */
+export const UpdateMediaCategoryRequest = MediaCategoryInput.partial().refine(
+  (v) => Object.keys(v).length > 0,
+  { message: "没有需要更新的字段" },
+);
+
+/** 标签数组（空白与去重由服务端 `normalizeMediaTags` 归一化；null / 空数组 = 清空） */
+export const MediaTagsRequest = z
+  .array(
+    z
+      .string()
+      .trim()
+      .min(1, "标签不能为空")
+      .max(MEDIA_TAG_LENGTH_MAX, `单个标签最多 ${MEDIA_TAG_LENGTH_MAX} 个字符`),
+  )
+  .max(MEDIA_TAGS_MAX, `最多 ${MEDIA_TAGS_MAX} 个标签`);
+
+/**
+ * PATCH /api/admin/media/{id}：媒资字段部分更新（spec.md §8.2）。
+ * `title` 走重命名语义（只改展示名）；其余三项即「自定义元数据」设置。
+ */
+export const UpdateMediaRequest = z
+  .object({
+    title: z.string().trim().min(1, "展示名不能为空").max(191, "展示名过长（≤191 字符）").optional(),
+    description: z
+      .string()
+      .trim()
+      .max(MEDIA_DESCRIPTION_MAX, `描述最多 ${MEDIA_DESCRIPTION_MAX} 个字符`)
+      .nullable()
+      .optional(),
+    tags: MediaTagsRequest.nullable().optional(),
+    /** 归属分类 ID；null = 移出分类（分类必须存在，服务端校验） */
+    category_id: z.string().nullable().optional(),
+  })
+  .refine((v) => Object.keys(v).length > 0, { message: "没有需要更新的字段" });
+
+/**
+ * 自定义元数据（管理端读取形态：三项**恒在**，空值分别为 null / null / []，便于表单回填）；
+ * 下发形态（`custom_data` / 分发端 `custom`）为**稀疏投影**：空项不出现在 JSON 里（spec.md §8.3）。
+ */
+export const MediaCustomMetadataDTO = z.object({
+  category: z.object({ id: z.string(), name: z.string(), path: z.string() }).nullable(),
+  description: z.string().nullable(),
+  tags: z.array(z.string()),
+});
 
 // ---- 控制台总览（spec.md §2.1；仅管理端使用，不生成 Go struct） ----
 const DashboardCount = z.number().int().nonnegative();

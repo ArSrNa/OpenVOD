@@ -15,6 +15,9 @@
 //   已实现（字幕管理，spec.md §7 / ADR-0009）：/media/[id]/subtitles（GET 列表 / POST 新建）、
 //                         /media/[id]/subtitles/[trackId]（PATCH 元信息 / DELETE 轨道）、
 //                         /media/[id]/subtitles/[trackId]/content（PUT 覆盖文本）
+//   已实现（分类与自定义元数据，spec.md §8 / ADR-0016）：/api/admin/categories（GET 列表 / POST 新建）、
+//                         /categories/[id]（PATCH 更新 / DELETE 删除）；
+//                         /media/[id] 的 PATCH 已扩展为「重命名 + 描述 / 标签 / 分类」
 import { NextRequest, NextResponse } from "next/server";
 import { getAuth } from "@/lib/auth";
 

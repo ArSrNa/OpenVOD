@@ -49,6 +49,28 @@ OpenVOD：自建云点播系统（媒资 → 转码加密 → 元数据 / 字幕
 
 测试前置：先 `task vectors`，否则 crypto 互通与 Go token 测试均以 fixture 缺失跳过。
 
+### 本地开发与 `apps/admin/.next` 占用（用户要求）
+
+用户开发期**常驻 `bun dev`（= `bun scripts/dev.ts`：admin / delivery / worker）**，它会长期占用 `apps/admin/.next`。
+Agent 需要「看到改动」而与 dev server 冲突时（典型：`next build` / `task build:admin`、清理 `.next`、重启 dev），
+**先帮用户停掉，做完再恢复**，不要与它在 `.next` 上抢锁：
+
+```bash
+bun scripts/dev.ts status          # 先看是否在跑（含 worker；pid 在 .run/）
+bun scripts/dev.ts stop            # 停全部（也可只停 admin / delivery / worker）
+# … 构建 / 清理 / 验证 …
+bun scripts/dev.ts all --background   # 需要恢复时按原样起回（含 worker），或提示用户自行重启
+```
+
+- **不需要停 dev 的操作**：`tsc --noEmit`、`bun test`、`go test`、`task db:*`、`task contracts`、`task vectors` 都不碰 `.next`，直接跑。
+- **需要先停**：`next build`（`task build:admin` / `bun run --cwd apps/admin build`）、任何 `rm -rf apps/admin/.next`、
+  改 `next.config.ts` 或需重启 dev 的改动（环境变量、依赖变更）。
+- `next build` 会清理 `.next`：本机上可能触发环境的批量删除保护（`[safe-delete] SAFE_DELETE_BULK_CONFIRM_REQUIRED`），
+  此时先 `rm -rf apps/admin/.next` 再构建（同 `docs/vod/dev-workflow.md §8`）。
+- 占用者不是启动器起的进程时（`status` 显示 `pid -`，典型是 compose 容器），用对应方式停：
+  `docker compose stop admin`（注意 worker 必须单实例，别与容器 worker 抢队列）。
+- Agent 停掉用户的 dev server 后若不再需要它（例如只跑一次构建），**在回复里明确告知已停与如何恢复**，不要静默停服务。
+
 ## 架构
 
 ### 组件与播放链路
@@ -109,4 +131,4 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可轮换）
 
 - **生成物入库规则**：`packages/contracts/jsonschema/` 与 `apps/delivery/internal/contracts/` 必须提交；`packages/db/generated/`、`.env`、`.run/`、`packages/db/prisma/*.db` 已忽略。改契约不提交生成物 = CI 失败。
 - 提交规范 conventional commits；v1 不引入 changesets（ADR-0001）。
-- 文档索引：`docs/vod/README.md`（架构图 + ADR 索引 + 术语表）、`intent.md`（目标 / 非目标 / 验收里程碑）、`open-questions.md`（specification 前待关闭项）、`dev-workflow.md`（启动 / 数据库 / 建号 / 排错）。
+- 文档索引：`docs/vod/README.md`（架构图 + ADR 索引 + 术语表）、`intent.md`（目标 / 非目标 / 验收里程碑）、`api.md`（**HTTP API 参考**：管理端 + 分发端全部端点与错误码）、`open-questions.md`（specification 前待关闭项）、`dev-workflow.md`（启动 / 数据库 / 建号 / 排错）。

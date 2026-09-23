@@ -1255,13 +1255,13 @@ export function MediaList() {
           size="small"
           pagination={false}
           scroll={{ y: "calc(100vh - 320px)" }}
-          locale={{ emptyText: <Empty description="尚无转码产物（「更多 → 转码」发起，按模板落在 proceed/{id}/{模板id}/）" /> }}
+          locale={{ emptyText: <Empty description="尚无转码产物，请在「更多 → 转码」发起" /> }}
         />
         <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 12, marginBottom: 0 }}>
           播放：管理端只向分发端换一个签名主清单 URL，清单 / 密钥 / 分片直达浏览器——
           明文密钥（CEK）只由分发端下发、浏览器本地解密。若画面不加载：多为分发端 CORS
           （<Typography.Text code>DELIVERY_CORS_ORIGINS</Typography.Text>）或对象桶 CORS 未放行管理端源站；
-          预览账号未配置时接口返回 501（见 dev-workflow §5.3）。
+          预览账号未配置时接口返回 501
           删除：仅移除该模板子树的存储对象；加密密钥与转码任务历史保留。存在进行中的同模板任务时拒绝删除。
         </Typography.Paragraph>
       </Drawer>
@@ -1297,13 +1297,12 @@ export function MediaList() {
                 <Tag>旧布局产物</Tag>
               )}
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                签名清单 / 密钥 / 分片由分发端与对象存储直达浏览器（不经管理端）
+                签名清单 / 密钥 / 分片由分发端与对象存储直达浏览器
               </Typography.Text>
             </Space>
             {playing.corsOk === false && (
               <Typography.Paragraph type="warning" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
-                对象桶未放行当前管理端源站的 CORS：浏览器直连分片会被拦，表现为「有总时长但一直转圈」。
-                请在对象桶加 CORS 规则（Origin 含本页源站、Method GET/HEAD、Header *）（见 dev-workflow §8）。
+                对象桶需放行当前管理端源站的CORS，否则无法播放。
               </Typography.Paragraph>
             )}
             {playError && (

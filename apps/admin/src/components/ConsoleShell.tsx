@@ -39,6 +39,7 @@ const MODULES = [
 const SETTINGS_CHILDREN = [
   { key: "/settings/playback", label: "播放设置" },
   { key: "/settings/storage", label: "存储设置" },
+  { key: "/settings/login", label: "登录设置" },
   { key: "/settings/security", label: "安全设置" },
   { key: "/settings/worker", label: "任务设置" },
 ];
@@ -58,6 +59,7 @@ const ROUTE_PAGES = new Set([
   "/jobs",
   "/settings/playback",
   "/settings/storage",
+  "/settings/login",
   "/settings/security",
   "/settings/worker",
   "/about",

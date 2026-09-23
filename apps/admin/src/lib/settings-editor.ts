@@ -72,6 +72,8 @@ function checkEffective(group: SettingsGroup, values: Map<string, string>, env: 
     for (const key of ["better_auth_secret", "url_sign_key_hex"]) {
       if (!get(key)) throw new SettingsError("bad_request", "管理端会话密钥和播放签名密钥不能清空；请先配置环境变量兜底");
     }
+  }
+  if (group === "login") {
     if (get("oidc_issuer") && (!get("oidc_client_id") || !get("oidc_client_secret"))) {
       throw new SettingsError("bad_request", "启用 OIDC 需要同时配置 Issuer、Client ID 和 Client Secret");
     }

@@ -67,7 +67,7 @@
 | `GET /healthz` | 无 | `200 {"ok":true,"db":<bool>}`（`db` 仅观测，不影响状态码） |
 | `GET /api/setup` | 无 | 未初始化：`200 {setup_completed:false, master_keys_ok, master_keys_error, master_keys_hint, master_keys_versions, storage_configured}`；已完成：`403 forbidden`「系统已完成初始化」 |
 | `POST /api/setup` | 无 | 首次启动向导：JSON body 必填 `s3_endpoint / s3_bucket / s3_access_key_id / s3_secret_access_key`，可选 `s3_region / s3_force_path_style / storage_root_prefix / storage_cdn_base_url / playback_base_url / admin_email / admin_password / admin_name`；返回 `200 {setup_completed:true, admin_error:null\|string}`；已完成再调用 → `403 forbidden` |
-| `/api/auth/*` | — | better-auth 挂载点（`GET`/`POST`）。登录页用 `POST /api/auth/sign-in/email`（审计 `console.login` / 失败 `console.login_failed`）；`sign-up` 被显式拒绝（`FORBIDDEN`「管理端不开放注册」）；OIDC 走 `POST /api/auth/sign-in/social` + `GET /api/auth/callback/generic-oidc`；`sign-out` / `get-session` 为 better-auth 默认路径 |
+| `/api/auth/*` | — | better-auth 挂载点（`GET`/`POST`）。登录页用 `POST /api/auth/sign-in/email`（审计 `console.login` / 失败 `console.login_failed`）；`sign-up` 被显式拒绝（`FORBIDDEN`「管理端不开放注册」）；OIDC 走 `POST /api/auth/sign-in/social` + `GET /api/auth/callback/generic-oidc`；登录设置页用 `GET /api/auth/list-accounts`（探测本地密码账号）与 `POST /api/auth/change-password`（body `{currentPassword, newPassword, revokeOtherSessions:true}`，管理员自助重置密码、吊销其他会话）；`sign-out` / `get-session` 为 better-auth 默认路径 |
 | `/api/admin/*`（未实现路径） | 会话 | `501 {error:{code:"not_implemented", ...}}`（catch-all 占位） |
 
 **`/api/admin/*` 守卫**（`apps/admin/src/lib/api.ts getAdminSession`）：无 Cookie 会话 **或** 首次启动向导未完成
@@ -274,14 +274,15 @@ DELETE /api/admin/categories/cother00000000000000000    # 默认分类
 | 端点 | 请求 | 成功响应 | 主要错误 |
 |---|---|---|---|
 | `GET /api/admin/stats` | — | `200 {media{total,ready,not_ingested}, jobs{active,queued,probing,encoding,packaging}, users{total,active,disabled}, storage{used_bytes}, subtitles{total,media_count}, products{total,media_count}, metadata{total,probe,custom,other}}` | `500` |
-| `GET /api/admin/settings?group=<playback\|storage\|security\|worker>` | — | `200 {group, revision, fields[{key,label,value\|null,source:"db"\|"env"\|"default",secret,configured,overridden}], restart_required[]}`（`secret` 字段 `value` 恒 `null`）；`group=playback` 另附兼容字段 `playback_base_url` / `env_public_base_url` | `400` 未知分组；`500` |
+| `GET /api/admin/settings?group=<playback\|storage\|login\|security\|worker>` | — | `200 {group, revision, fields[{key,label,value\|null,source:"db"\|"env"\|"default",secret,configured,overridden}], restart_required[]}`（`secret` 字段 `value` 恒 `null`）；`group=playback` 另附兼容字段 `playback_base_url` / `env_public_base_url` | `400` 未知分组；`500` |
 | `PUT /api/admin/settings` | `Content-Type: application/json`；`{group, revision, values{key:value}}`（≤64 KiB；兼容旧调用 `{playback_base_url}`） | `200` 同 GET 结构 | `400` 未知分组 / 缺 revision / 未登记键 / 无修改 / 约束不满足；`403` Origin 或 `sec-fetch-site: cross-site`；`409` revision 冲突；`413` / `415`；`500` |
 
 分组字段：`playback`（`playback_base_url, jwt_ttl_sec, playback_session_ttl_sec, playback_manifest_ttl_sec,
 playback_subtitle_ttl_sec, cors_origins, delivery_preview_username, delivery_preview_password`）、
 `storage`（`s3_endpoint, s3_region, s3_bucket, s3_access_key_id, s3_secret_access_key, s3_force_path_style,
-storage_root_prefix, storage_cdn_base_url`）、`security`（`admin_base_url, admin_trusted_origins,
-admin_session_ttl_sec, oidc_issuer, oidc_client_id, oidc_client_secret, url_sign_key_kid, url_sign_key_hex,
+storage_root_prefix, storage_cdn_base_url`）、`login`（`oidc_issuer, oidc_client_id, oidc_client_secret`；
+登录方式与「重置登录密码」UI 同页维护，密码走 better-auth `/api/auth/change-password`）、
+`security`（`admin_base_url, admin_trusted_origins, admin_session_ttl_sec, url_sign_key_kid, url_sign_key_hex,
 better_auth_secret`）、`worker`（`worker_poll_interval_ms, worker_lease_ms, worker_max_attempts, media_id_length`）。
 敏感值经 MK 封装后入库；写入审计 `settings.update`（secret 值标记 `[redacted]`）。
 

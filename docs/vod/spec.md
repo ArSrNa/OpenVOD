@@ -24,7 +24,7 @@ root 下按资产类别分四个分区，互不嵌套：
 | `original/` | 原始上传视频，一个媒资一个文件 | 管理端 | Worker（转码源） |
 | `proceed/` | 转码与处理产物：HLS 主/子清单、分片、字幕等 | Worker / 管理端 | 分发端（预签名直出）、管理端 |
 | `cover/` | 封面与图片资产（poster、缩略图等） | Worker / 管理端 | 分发端、管理端 |
-| `metadata/` | 元数据：ffprobe 结果、业务扩展元数据等 | 管理端 / Worker | 管理端 / 分发端 |
+| `metadata/` | 元数据：ffprobe 结果、业务扩展元数据（自定义元数据投影 `custom.json`，§8.3） | 管理端 / Worker | 管理端 / 分发端 |
 
 - P0 纪律不变：**密钥材料绝不入对象存储**（wrapped CEK、JWT 私钥仅入数据库，ADR-0006）；
 - 原视频与转码产物分区分开的动机：`original/` 只增不改（审计友好、误删可恢复），产物可随时按 ladder 重转并整体重建。
@@ -45,7 +45,7 @@ root 下按资产类别分四个分区，互不嵌套：
 {root}/proceed/{id}/subtitles/{trackId}.vtt                 # 字幕（保留段；trackId = 轨道唯一 ID，规则见 §7）
 {root}/cover/{id}/poster.jpg                                # 海报 / 封面图
 {root}/metadata/{id}/probe.json                             # ffprobe 系统元数据
-{root}/metadata/{id}/custom.json                            # 业务扩展元数据
+{root}/metadata/{id}/custom.json                            # 业务扩展元数据（自定义元数据投影，§8.3）
 ```
 
 `proceed/` 的**两级分组**（2026-09-18 定，M2 落地）：
@@ -78,14 +78,21 @@ root 下按资产类别分四个分区，互不嵌套：
 - 上传协议（M1）：原视频 / 封面上传以**原始文件字节流**为请求体（`Content-Type: application/octet-stream`），文件名 / 展示名走查询参数——流式直传不经过 multipart 缓冲，服务端内存占用与文件大小无关；
 - 管理端 API 响应一律 `Cache-Control: no-store`；敏感操作（上传 / 重命名 / 删除 / 封面）落 `audit_logs`（open-questions #14）。
 
+> **端到端接口清单**（全部端点的方法 / 请求 / 响应 / 错误码 / 示例，含 2026-09-24 新增的分类与自定义元数据）
+> 见 [api.md](./api.md)；本节记录规范语义与实现细节。
+
 ### 2.1 已实现（M1 媒资 / M2 转码 / M3 播放产物 / M4 字幕 / 用户 / 密钥，2026-09-20）
 
 | 端点 | 方法 | 说明 |
 |---|---|---|
-| `/api/admin/media` | GET | 媒资列表（§1.4 存储视角 + DB 展示名/状态合并）；每条含 `products[]`——按模板分组的转码产物（模板名 / 对象数 / 体积 / 变体），旧布局产物归入 `template_id=""`；另含 `subtitleCount`（该媒资字幕对象数，§7.2） |
+| `/api/admin/media` | GET | 媒资列表（§1.4 存储视角 + DB 展示名/状态合并）；每条含 `products[]`——按模板分组的转码产物（模板名 / 对象数 / 体积 / 变体），旧布局产物归入 `template_id=""`；另含 `subtitleCount`（该媒资字幕对象数，§7.2）与 `category`（分类引用含路径）/ `description` / `tags`（自定义元数据，§8.3） |
 | `/api/admin/media/upload` | POST | 原视频上传（§1.3）：生成数字 ID（主键冲突即重取）→ 流式写 `original/{id}.{ext}` → `media` 行落库；存储失败回滚 DB 行 |
-| `/api/admin/media/{id}` | GET | 详情：存储资产计数 + DB 元数据合并 + `products[]`（每套模板产物的模板名 / 变体 / 对象数 / 体积，模板 ID 可追溯到 `proceed/{id}/{模板id}/`） |
-| `/api/admin/media/{id}` | PATCH | 重命名：仅修改 `media.title`，绝不改动 original 文件名与媒资 ID |
+| `/api/admin/media/{id}` | GET | 详情：存储资产计数 + DB 元数据合并 + `products[]`（每套模板产物的模板名 / 变体 / 对象数 / 体积，模板 ID 可追溯到 `proceed/{id}/{模板id}/`）+ `custom`（自定义元数据**恒三项**：分类含 `id/name/path` / 描述 / 标签，§8.3）+ `customData`（稀疏投影原文） |
+| `/api/admin/media/{id}` | PATCH | 媒资字段部分更新（`contracts UpdateMediaRequest`）：`title` = 重命名（仅改 `media.title`，绝不改动 original 文件名与媒资 ID）；`description` / `tags` / `category_id` = 自定义元数据设置（§8.2：服务端重算 `custom_data` 投影并导出 `metadata/{id}/custom.json`；**`category_id: null` = 归入默认分类「其他」**）；至少一个字段，否则 400。审计 `media.rename` / `media.metadata_update` |
+| `/api/admin/categories` | GET | 分类扁平列表（§8.1）：`id` / `name` / `description` / `parent_id`（层级由它表达，客户端组树）/ `sort_order` / `is_system`（系统默认分类「其他」= true，前端禁用删除）/ `media_count`（直属，含未设置分类的历史媒资计入「其他」）/ `descendant_media_count`（含子孙；**保留字段，当前 UI 不展示**）/ 时间戳；**默认分类缺失时幂等补建** |
+| `/api/admin/categories` | POST | 新建分类（§8.1）：`name` 必填（≤64）、`description`（≤191）、`parent_id`（缺省 / `null` = 顶级，不限层级）、`sort_order`；上级不存在 404；**同级重名 409**（顶级重名也拦，DB 唯一索引对 NULL 不生效）；审计 `category.create` |
+| `/api/admin/categories/{id}` | PATCH | 更新分类：改名 / 描述 / 移动（`parent_id`，禁止环路 → 409）/ 排序；上级不存在 404；同级重名 409；**改名或移动后刷新该分类子树下全部媒资的自定义元数据投影**（`path` 快照，§8.3），响应 `refreshed_media` 回报刷新条数；审计 `category.update` |
+| `/api/admin/categories/{id}` | DELETE | 删除分类：**系统默认分类「其他」→ 409**（不可删除）；有子分类 → 409（先删 / 先移走）；该分类下的媒资**迁入默认分类「其他」**（不删媒资），删除后刷新这些媒资的投影（分类快照换成「其他」），响应 `affected_media` / `moved_to` / `refreshed_media`；审计 `category.delete` |
 | `/api/admin/media/{id}` | DELETE | 删除：original 对象 + proceed/cover/metadata 三分区该 id 全部对象 + DB 行（级联 subtitles / transcode_jobs / hls_keys / playback_sessions）；幂等可重试。**级联范围说明**：open-questions #13 决议（软删 + 保留期 GC）之前的 v1 临时策略为**硬删除全级联** |
 | `/api/admin/media/{id}/original` | GET | 原视频预览：预签名 GET 302 重定向（字节不经管理端；配置 `STORAGE_CDN_BASE_URL` 时 302 目标 origin 替换为加速域名，ADR-0005）；no-store |
 | `/api/admin/media/{id}/cover` | POST | 上传封面：`cover/{id}/poster.{ext}`（jpg/png/webp/gif/avif）+ 回写 `media.poster_key`；手动上传 / 视频截帧双模式共用此端点（§2.3） |
@@ -175,11 +182,11 @@ root 下按资产类别分四个分区，互不嵌套：
 - 所有管理相关表格**必须**「表体限高、内部纵向滚动、表头固定」，页面本身不随条目数增长；内容超长必须滚动，不得撑开页面；
 - 超宽表格同时横向滚动（antd `scroll.x` = 各列宽合计）；
 - 统一复用 `apps/admin/src/components/tableScroll.ts` 的 `useTableBodyHeight`（视口高度推算 + resize 重算 + 极窄视口兜底），**不得各自实现**；
-- 已实现页面：`/media`（媒资列表）、`/templates`（转码模板）、`/subtitles`（字幕管理）、`/users`（播放端用户）、`/keys`（密钥）、`/jobs`（转码任务）；后续所有表格页面同样遵循。
+- 已实现页面：`/media`（媒资列表）、`/categories`（分类管理，树形表格）、`/templates`（转码模板）、`/subtitles`（字幕管理）、`/users`（播放端用户）、`/keys`（密钥）、`/jobs`（转码任务）；后续所有表格页面同样遵循。
 
 ### 3.1 已实现页面
 
-- `/media`（媒资管理，M1/M2 已实现，M3 增产物操作）：媒资列表表格——**封面缩略图（首列，antd Image，经 GET `/cover` 读取，点击预览大图；未设置显示「未设置」）**、**展示名（第一行为展示名，第二行为媒资 ID 代码样式；右侧复制按钮一键复制 ID + 重命名按钮）**、生命周期状态、原始文件（格式 / 大小 / 上传时间）、**转码产物（按模板分组：`N 组产物 · M 个对象`，悬停列出每套产物的模板名与档位，点击打开产物列表）**；详情弹窗显示产物组数并提供「产物列表（播放 / 删除）」入口（不再逐套平铺）；
+- `/media`（媒资管理，M1/M2 已实现，M3 增产物操作，2026-09-24 增分类 / 标签）：媒资列表表格——**封面缩略图（首列，antd Image，经 GET `/cover` 读取，点击预览大图；未设置显示「未设置」）**、**展示名（第一行为展示名，第二行为媒资 ID 代码样式；右侧复制按钮一键复制 ID + 重命名按钮）**、生命周期状态、原始文件（格式 / 大小 / 上传时间）、**分类 / 标签（分类完整路径或「未分类」Tag；标签最多平铺 2 个 + 「+N」悬停全量，§8.5）**、**描述（视频描述列：媒资自身描述，空显示「—」，§8.5）**、**转码产物（按模板分组：`N 组产物 · M 个对象`，悬停列出每套产物的模板名与档位，点击打开产物列表）**；详情弹窗显示产物组数并提供「产物列表（播放 / 删除）」入口（不再逐套平铺）；
   - **产物列表（抽屉，按模板一行）**：模板名（已删显示「模板已删除（id 前缀）」；旧布局显示「未分组（旧布局）」）、存储前缀 `proceed/{id}/{模板id}/`、变体（`1080p / 720p`）、对象数、体积；操作：
     - **播放** = 解密播放预览（`POST /media/{id}/preview-play` → 分发端签名主清单 URL → hls.js / Safari 原生播放，浏览器本地解密；管理端不出密钥，§4.3），播放弹窗标注「AES-128 加密（浏览器本地解密）」或「未加密」与模板 ID；
     - **删除** = 按模板删除该套产物（`DELETE /media/{id}/products/{templateId}`；确认弹窗给出前缀 / 对象数 / 体积与不可恢复警告；同模板有进行中任务时 409，需等待其结束）；
@@ -189,7 +196,8 @@ root 下按资产类别分四个分区，互不嵌套：
 - `/users`（播放端用户，ADR-0004 `users` 表 / ADR-0007 账户域）：用户列表表格——用户名（加粗，已封禁标红 Tag）、展示名、状态（可用 / 封禁 Tag）、并发上限（`0` 悬停提示「0 = 不限制」）、进行中会话数、最近登录、注册时间；操作：新建 / 编辑（弹窗表单：用户名创建后为只读，口令仅新建时可填，状态用 Switch，并发上限 0–10000）、重置密码（独立弹窗，双口令确认，提示将吊销全部会话）、吊销会话（有会话时才可点）、封禁 / 启用、删除（确认弹窗区分「级联删除会话」与「封禁后可恢复」）。页面**不提供口令 / 哈希的查看与导出入口**；API 见 §2.1.1。
 - `/keys`（密钥管理，已实现）：密钥列表表格——媒资 ID、展示名、媒资状态、kid（截断 + Tooltip 全量）、算法、MK 版本（非当前版本标「待轮换」）、加密产物对象数、生成时间；顶部条展示当前封装版本与各版本密钥用量；操作：详情（弹窗：kid / IV / mk_ver / 生成时间 / 使用中会话数，并明确标注「明文密钥不展示」）、删除（确认弹窗警告需重转码才能恢复可播）、「轮换 MK」（确认后重封装旧版本，无需重转码）；API 见 §2.1 与 §4.3。**页面不提供任何明文密钥的展示 / 导出入口**。
 - `/jobs`（转码任务，M2 已实现，M3 增停止 / 重启）：任务列表表格——任务 ID、媒资（ID + 展示名）、状态（排队 / 探测中 / 转码中 / 封装上传中 / 完成 / 失败；worker 失联的执行中任务标「中断」）、模板名（取任务快照）、尝试次数、耗时、失败原因、创建时间；**操作列**：停止（取消）/ 重启（重新入队），规则见 §5.1；**实时推送（SSE）**——连接即回放全量快照，任务变化由服务端主动推送（客户端零轮询），断线自动重连并展示连接状态；「刷新」= 重建连接（服务端随即回放最新快照），「耗时」列由本地时钟每秒重算（不发请求）；API 见 §2.1（`/api/admin/jobs`、`/api/admin/jobs/stream`、`/api/admin/jobs/{id}/stop|restart`），执行规则见 §5。
-- 操作（对应 §2.1）：上传视频（原始字节流直传，带进度）、预览（弹窗 `<video>` 播放 original，local 支持 Range 拖动）、详情（弹窗展示元数据：probe 摘要结构化展示——容器 / 分辨率 / 帧率 / 编码 / 像素格式 / 色彩空间 / 码率 / 音轨等 + 摘要 JSON 折叠块）、重命名（仅展示名）、删除（确认后硬删除全级联）、设置封面（弹窗双模式：手动上传 / 视频截帧，§2.3）、「更多 → 生成元数据」（ffprobe 探测，§2.1）、「更多 → 转码」（M2 已实现：弹窗**多选**模板（默认勾选默认模板）→ 逐个展示所选模板的模式 / 加密 / 输出格式 → 一次发起入队多条 `transcode_jobs`（每个模板各一条、各落 `proceed/{id}/{模板id}/`），进度跳「转码任务」页查看）；「更多 → 字幕管理」打开**字幕管理抽屉**（M4 已实现：多轨 VTT 列表 / 上传 / 编辑元信息 / 替换文本 / 删除，语言按 BCP-47 归一化；规范见 §7.6）。
+- 操作（对应 §2.1）：上传视频（原始字节流直传，带进度）、预览（弹窗 `<video>` 播放 original，local 支持 Range 拖动）、详情（弹窗展示元数据：probe 摘要结构化展示——容器 / 分辨率 / 帧率 / 编码 / 像素格式 / 色彩空间 / 码率 / 音轨等 + 摘要 JSON 折叠块）、重命名（仅展示名）、删除（确认后硬删除全级联）、设置封面（弹窗双模式：手动上传 / 视频截帧，§2.3）、「更多 → 生成元数据」（ffprobe 探测，§2.1）、「更多 → 转码」（M2 已实现：弹窗**多选**模板（默认勾选默认模板）→ 逐个展示所选模板的模式 / 加密 / 输出格式 → 一次发起入队多条 `transcode_jobs`（每个模板各一条、各落 `proceed/{id}/{模板id}/`），进度跳「转码任务」页查看）；「更多 → 字幕管理」打开**字幕管理抽屉**（M4 已实现：多轨 VTT 列表 / 上传 / 编辑元信息 / 替换文本 / 删除，语言按 BCP-47 归一化；规范见 §7.6）；「更多 → 分类、描述与标签」与详情弹窗的「编辑自定义元数据」打开**自定义元数据弹窗**（分类 TreeSelect 无限层级 + 视频描述 + 标签，§8.5）。
+- `/categories`（分类管理，2026-09-24 已实现，独立模块）：**树形表格**（antd `children` 层级，默认展开全部父节点，遵循 §3.0 滚动约定）——分类名（系统默认分类「其他」带「默认」标记）、描述、直属媒资、排序、更新时间；操作：**新建子分类**（行内，预设上级）、**编辑**（弹窗：上级 TreeSelect（自身与子孙禁选，防环路）/ 分类名 / 描述 / 同级排序）、**删除**（Popconfirm 提示：直属媒资将归入默认分类「其他」、媒资不被删除；系统默认分类按钮禁用）；顶部「新建顶级分类」与「刷新」；规范见 §8.1 / §8.5。
 
 ## 4. 密钥管理与视频加密（以 ADR-0006 为决策源）
 
@@ -318,13 +326,20 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `WORKER_POLL_INTERVAL_MS` | `2000` | 轮询间隔（毫秒） |
+| `WORKER_MODE` | `resident` | 运行模式（ADR-0017）：`resident` = 常驻轮询；`http` = HTTP 门铃（`POST /wake` 触发 claim-drain，空闲可退出）。DB `worker_mode` > env |
+| `WORKER_HTTP_PORT` | `9001` | http 模式监听端口（含 `GET /healthz`） |
+| `WORKER_IDLE_EXIT_MINUTES` | `0`（不退出） | http 模式空闲退出阈值 |
+| `WORKER_NOTIFY_SECRET` | 空（http 模式必填） | `/wake` Bearer 密钥；缺失拒绝启动 |
+| `WORKER_POLL_INTERVAL_MS` | `2000` | 轮询间隔（毫秒，仅 resident 模式） |
 | `WORKER_LEASE_MS` | `60000` | 任务 lease 时长（执行期按 1/3 续期） |
 | `WORKER_MAX_ATTEMPTS` | `3` | 单任务最大尝试次数 |
 
+http 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_settings，ADR-0015）在发起转码 / 重启后 fire-and-forget `POST {url}/wake` 加速认领；通知可丢，任务留存队列兜底。详见 ADR-0017 与 [env-vars.md](./env-vars.md)。
+
 ## 6. 播放链路（分发端，M3）
 
-> 决策源 ADR-0006（加密与密钥下发）/ ADR-0010（API 面）；**本节即分发端（数据面）API 参考**，记录实现细节与 M3 落地范围。与 ADR 冲突时以本节为准并回写 ADR。
+> 决策源 ADR-0006（加密与密钥下发）/ ADR-0010（API 面）；本节记录分发端（数据面）规范语义、实现细节与 M3 落地范围，与 ADR 冲突时以本节为准并回写 ADR。
+> 端到端接口清单（每个端点的方法 / 鉴权 / 请求 / 响应字段 / 失败码 / 示例，含 `custom` 自定义元数据白名单）见 [api.md](./api.md) §2。
 
 ### 6.1 端点与 token 传递
 
@@ -345,8 +360,8 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 **请求 / 响应字段（2026-09-23 按实现核对）**：
 
 - `login`：请求 `{username, password}`；成功写 `users.last_login_at`，返回 `{access_token, token_type:"Bearer", expires_in, kid}`；
-- `GET /v1/media`：`limit` 缺省 50、上限 200（非法 / 越界静默回退缺省值）；返回 `{items[], next_cursor}`，条目 = `{id, title, duration_ms, poster_url, custom}`，排序 `COALESCE(published_at, created_at) DESC, id DESC`；**cursor 分页未实现，`next_cursor` 恒为 `null`**（v1 只返回前 `limit` 条，ADR-0010 的 cursor 契约留待后续）；
-- `GET /v1/media/{id}`：`{id, title, status, playable, duration_ms, poster_url, probe, subtitles[], custom}`——`probe` 仅含宽 / 高 / 视频编码 / 音频编码 / 码率（未探测为 `null`）；`subtitles[]` = `{id, lang, label, is_default}`（`status=READY`，顺序 `is_default DESC, created_at ASC`，**不含 URL**）；`custom` 恒为 `{}`；未入库 404（非 READY 仍返回详情，仅 `playable=false`）；
+- `GET /v1/media`：`limit` 缺省 50、上限 200（非法 / 越界静默回退缺省值）；返回 `{items[], next_cursor}`，条目 = `{id, title, duration_ms, poster_url, custom}`，排序 `COALESCE(published_at, created_at) DESC, id DESC`；**cursor 分页未实现，`next_cursor` 恒为 `null`**（v1 只返回前 `limit` 条，ADR-0010 的 cursor 契约留待后续）；`custom` = 自定义元数据公开白名单（§8.4；无内容时为空对象）；
+- `GET /v1/media/{id}`：`{id, title, status, playable, duration_ms, poster_url, probe, subtitles[], custom}`——`probe` 仅含宽 / 高 / 视频编码 / 音频编码 / 码率（未探测为 `null`）；`subtitles[]` = `{id, lang, label, is_default}`（`status=READY`，顺序 `is_default DESC, created_at ASC`，**不含 URL**）；`custom` 与列表同口径（公开白名单，§8.4；无内容时为空对象）；未入库 404（非 READY 仍返回详情，仅 `playable=false`）；
 - `POST /v1/media/{id}/play`：请求体**可整体省略**（仅在 `Content-Length>0` 时解析）；返回 `{sid, manifest_url, expires_at, template_id, subtitles[]}`，`expires_at` 为 RFC3339 UTC（会话到期时间），`subtitles[].url` 各轨共用同一枚 typ=v token。
 
 **请求体与错误信封**：请求体上限 64 KiB，超限 / 非法 JSON / 空体 → 400 `bad_request`；错误响应统一 `{ "error": { "code", "message" } }`（HTTP 状态与 `code` 双通道）。
@@ -427,7 +442,7 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 - 登录 / play **限频**（ADR-0010）；严格模式（key 一次性 nonce、IP / UA 绑定、并发上限的踢下线，ADR-0006 §7 默认关）；
 - 会话吊销的进程内 60s 缓存（当前每请求查库，语义更严格、量级可接受）；
 - SQLite 自托管驱动（当前 Go 侧仅 MySQL；ADR-0004 的单机同卷形态待补）；
-- `custom_data` **公开白名单**（当前返回空对象，避免泄露内部字段）；`poster_url` 已随仅-S3 决策全量预签名直出；
+- ~~`custom_data` **公开白名单**~~ —— **已实现（2026-09-24，ADR-0016 / §8.4）**：`custom` 按白名单输出 `category` / `description` / `tags`（管理端写入投影，分发端做类型校验后下发），其余键一律丢弃；`poster_url` 已随仅-S3 决策全量预签名直出；
 - **cursor 分页**（ADR-0010 契约）：`GET /v1/media` 当前只支持 `limit`（缺省 50 / 上限 200）、`next_cursor` 恒为 `null`，媒资规模需要时再实现；
 - 字幕链路（M4）**已实现（2026-09-20）**：规范见 §7.5；字幕进 CDN 缓存（ADR-0009 原始设想）仍为演进项，前置条件是引入内容版本号 / 共享 token 形态。
 
@@ -546,3 +561,90 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 - 双端已就位、无需新增：`TOKEN_TYPES.subtitle = "v"`（`@openvod/shared`）与 Go `token.TypeSubtitle`、`STORAGE_KEYS.proceedSubtitle`、`PROCEED_RESERVED_SEGMENTS`、`DEFAULTS.subtitleTtlSec`；
 - Go 侧新增：`store.SubtitleByID`（读 `storage_key`，限定 `status=READY`）与 `internal/server` 的 `.vtt` handler；
 - Prisma：`media_subtitles` 表已存在（ADR-0009 / ADR-0004）；本功能仅需补 `@@unique([media_id, lang])` 约束（迁移）。
+
+## 8. 媒资分类、描述与标签（自定义元数据，2026-09-24）
+
+> 决策源 ADR-0016（分类模型 / 投影 / 公开白名单）；本节按实现细化，冲突时以本节为准并回写 ADR。
+> 一句话：**分类是独立实体（无限层级树），描述与标签是媒资属性，三者一起构成 v1 的「自定义元数据」**——
+> 写入 `media.custom_data` 的**稀疏投影** + 导出 `metadata/{id}/custom.json`，并由分发端按**公开白名单**下发。
+
+### 8.1 数据模型与分类树规则
+
+- `media_categories`（分类，管理端独立模块）：`id`（cuid）、`name`（≤64）、`description`（≤191）、`parent_id`（自关联，可空 = 顶级）、`sort_order`（同级排序，越小越靠前）、`is_system`（系统内置标记）、时间戳；
+  - **无限层级**：邻接表表达层级，不限制深度；树在应用层组装（管理端 `apps/admin/src/lib/category-tree.ts`），接口返回**扁平列表**（层级由 `parent_id` 表达）；
+  - **同级重名不允许**：DB 唯一索引 `(parent_id, name)` + 应用层同级查询（顶级 `parent_id IS NULL` 在 MySQL / SQLite 中互不相等，必须应用层兜底）→ 409；
+  - **环路禁止**：移动时拒绝「目标上级 = 自身或自身子孙」→ 409；所有树递归都带 visited 集合（脏数据不无限递归）；
+  - **删除**：有子分类 → 409（先删 / 先移走）；删除**不删媒资**，该分类下的媒资**迁入默认分类「其他」**（见下条；DB 层 `ON DELETE SetNull` 仅作兜底）；
+- **系统默认分类「其他」**（`is_system = true`，固定 id `cother00000000000000000` = `@openvod/shared MEDIA_DEFAULT_CATEGORY_ID`）：
+  - **「未设置分类」不是合法终态**：未设置分类的媒资默认归入「其他」，三条路径保证 —— ① **上传**即落 `category_id` + 投影；② `PATCH /api/admin/media/{id}` 的 `category_id: null`（移出分类）等同归入「其他」；③ 读取路径对历史 `NULL` 值仍**回退**为「其他」（`pickCategoryRef`）；
+  - **不可删除**（409：系统默认分类）；改名 / 描述 / 排序可改（id 不变）；默认 `sort_order = 10000`，即顶级末尾；
+  - **幂等确保存在**：MySQL 由迁移插入（`20260924130000_default_category`）+ 回填历史行（`20260924140000_backfill_default_category`）；SQLite 开发库（`db push`，无种子）与任何缺口由读取路径 `ensureDefaultCategory()` 补齐（主键固定 → 并发创建安全）；
+  - 分类名「其他」在顶级下唯一（同级重名校验照常生效）；
+- `media` 新增三列：`category_id`（可空外键 → `media_categories.id`，`SetNull`）、`description`（`String?`，≤191，**视频 / 媒资自身的描述**——与分类描述 `media_categories.description` 是两回事，界面统一叫「视频描述」）、`tags`（`Json?`，字符串数组）；
+  - **标签**：≤20 个、每个 ≤32 字符；服务端 `normalizeMediaTags` 去首尾空白、丢弃空串、按首次出现去重（大小写敏感）；空数组按 `NULL` 落库；
+  - **长度上限口径**：`description` 的 191 字符与 `name` / `title` 一致，对齐 Prisma `String` 在 MySQL 的 `VARCHAR(191)`（双方言 schema 必须逐字一致，不能引入 `@db.Text` 这类单方言属性）；
+- 分类**只决定归属与展示路径，不参与播放鉴权**（分发端不查该表）。
+
+### 8.2 管理端 API（分类 CRUD + 媒资自定义元数据）
+
+- 分类：`GET/POST /api/admin/categories`、`PATCH/DELETE /api/admin/categories/{id}`（端点与错误码明细见 §2.1）；
+  - 写操作审计 `category.create` / `category.update` / `category.delete`（`category.update` 的 detail 含 `refreshed_media`）；
+  - `GET` 的 `media_count` 为**直属**媒资数（未设置分类的历史媒资计入默认分类「其他」）；`descendant_media_count` 为**含子孙**媒资数（**保留字段**：当前管理端不展示，仅 API 返回）；条目含 `is_system`（前端据此禁用删除）；
+- 媒资字段：`PATCH /api/admin/media/{id}`（`contracts UpdateMediaRequest`）支持 `title`（重命名）/ `description` / `tags` / `category_id` 任意组合，字段缺省 = 不修改；
+  - `description: null` = 清空；`tags: null` 或 `[]` = 清空；`category_id: null` = **归入默认分类「其他」**（显式给 id 时该分类必须存在，否则 404）；至少一个字段，否则 400；
+  - 校验失败 400（zod 首条 issue 带字段路径）；媒资未入库 404；审计 `media.rename`（title）与 `media.metadata_update`（其余三项，detail 含 `custom_object_written`）；
+- 读取：`GET /api/admin/media`（列表）与 `GET /api/admin/media/{id}`（详情）都附分类引用（含路径）/ 描述 / 标签；详情另有 `custom`（**恒三项**，`null` / `null` / `[]` 表示空，便于表单回填）与 `customData`（稀疏投影原文）。
+
+### 8.3 自定义元数据投影（`custom_data` 与 `custom.json`）
+
+- **形态（稀疏）**：只出现非空项（无分类 / 空描述 / 空标签数组都不出现该键）：
+
+  ```json
+  {
+    "category":    { "id": "c…", "name": "科幻", "path": "电影 / 科幻" },
+    "description": "简介文本",
+    "tags":        ["4K", "科幻"]
+  }
+  ```
+
+- **写入**：**上传**新媒资即写入默认分类「其他」的投影（新媒资不留空），此后每次保存分类 / 描述 / 标签时由管理端重算（`mergeCustomData`）→ 落 `media.custom_data` → 导出 `metadata/{id}/custom.json`（同内容、2 空格缩进、幂等覆盖）；
+  - 投影**保留白名单之外的扩展键**（历史 / 手工写入的键不被一次保存抹掉）；
+  - 导出物是**投影副本**：写失败只告警并在响应中标记（`customDataWritten=false`），**不回滚 DB**（DB 为准，下次保存补齐）；
+  - `custom_data.category` 的 `name` / `path` 是**快照**（分发端零 join 输出的前提）；
+- **刷新时机**（分类结构变化 → `path` 快照必须跟着变）：
+  - 分类**改名 / 移动**：刷新该分类**子树**下全部媒资（`updateCategory` 内同步执行，响应 `refreshed_media` 回报条数）；**默认分类「其他」改名 / 移动时，未设置分类的历史媒资（`category_id IS NULL`）一并刷新**；
+  - 分类**删除**：删除前收集受影响媒资并**迁入默认分类「其他」**（`updateMany`），删除后再刷新（分类键换成「其他」）；
+  - 删除媒资：`metadata/{id}/` 整目录随 `deleteMedia` 一并删除（§2.1），无需单独处理；
+  - v1 **同步逐条**执行（分类与受影响媒资规模小）；超大规模演进为异步任务；
+- 仅分类**不改名 / 不移动**时投影不重算（描述与标签写入自身即重算）；
+- **历史数据回填**：迁移 `20260924140000_backfill_default_category` 把升级前 `category_id IS NULL` 的媒资补齐分类与投影（只落 DB；`metadata/{id}/custom.json` 由下一次保存补齐）。
+
+### 8.4 分发端下发（公开白名单）
+
+- `GET /v1/media`（列表）与 `GET /v1/media/{id}`（详情）的 `custom` = 白名单对象 `{ category?, description?, tags? }`（**缺省键不出现**；无内容时 `{}`）：
+  - `category`：仅保留 `id` / `name` / `path` 三个非空字符串（`id` 或 `path` 缺失则整项丢弃）；
+  - `description`：仅保留非空字符串（trim 后为空则丢弃）；
+  - `tags`：字符串数组（逐项 trim、去重、上限 20；结果为空则丢弃）；
+  - **白名单之外的键一律丢弃**（如内部备注 / 运维字段），避免把内部字段暴露给播放端；
+- 解析容错：列为 `NULL` / 空串 / 非法 JSON / 非对象 → `{}`，**播放链路不因元数据脏数据中断**；
+- 实现：`apps/delivery/internal/server/custom.go`（键名与 `@openvod/shared MEDIA_CUSTOM_KEYS` 手工对齐），单测 `custom_test.go` 覆盖白名单裁剪与类型容错；
+- 分发端**不查 `media_categories`**（受限 DB 账号无需该表授权，ADR-0011）：分类信息完全来自投影快照。
+
+### 8.5 管理端页面
+
+- **`/categories`（分类管理，独立模块）**：树形表格（antd `children` 层级，默认展开有子节点的行，遵循 §3.0 滚动约定）+ 新建顶级分类 / 刷新；列：分类名（默认分类「其他」带「默认」标记）/ 描述 / 直属媒资 / 排序 / 更新时间；行操作：新建子分类（表单预设上级）/ 编辑 / 删除（Popconfirm 提示「直属媒资将归入默认分类「其他」、媒资不被删除」）；
+  - **默认分类「其他」**行带「默认」标记（Tooltip 说明），删除按钮**禁用**（服务端同样 409）；
+  - 编辑弹窗：上级分类（TreeSelect，含「顶级分类」项；**自身与子孙禁选**，服务端仍会二次校验环路）/ 分类名（≤64）/ 描述（≤191）/ 同级排序（0–10000）；
+- **`/media`（媒资页）**：
+  - 列表新增「分类 / 标签」列（分类完整路径或「未分类」Tag；标签最多 2 个 + 「+N」悬停全量）与**独立的「描述」列**（**视频描述**，即 `media.description` —— 与「分类管理」页里分类的描述 `media_categories.description` 是两回事，空显示「—」，超长省略号 + 悬停全文）；
+  - 「更多 → 分类、描述与标签」与详情弹窗「编辑自定义元数据」打开**同一弹窗**：分类 TreeSelect（无限层级、可搜索，**留空 = 归入默认分类「其他」**，占位提示同义）/ **视频描述**（TextArea，191 上限，带计数）/ 标签（`Select mode="tags"`，回车或逗号分隔，客户端校验单标签 ≤32 字符，服务端去重）；
+  - 保存成功提示；`metadata/{id}/custom.json` 导出失败时给出**黄色告警**（元数据已保存，不影响播放端下发）；
+  - 详情弹窗「自定义元数据」区块：分类路径 Tag / 描述 / 标签，附投影 JSON 折叠块（标注分发端按白名单下发）。
+
+### 8.6 契约与生成物
+
+- 分类与媒资更新 DTO（`MediaCategoryDTO` / `MediaCategoryListResponse` / `CreateMediaCategoryRequest` / `UpdateMediaCategoryRequest` / `MediaTagsRequest` / `UpdateMediaRequest` / `MediaCustomMetadataDTO`）**仅管理端消费**：**不进 `gen-json.ts` 清单、不生成 Go struct**（同模板 / 密钥 / 用户组 / 字幕管理端 DTO）；
+- 分发端消费的 `custom` 仍是 `z.record(z.string(), z.unknown())`（**结构由本节 §8.4 定义，不在 Go 侧生成类型**）——白名单键名在 `@openvod/shared MEDIA_CUSTOM_KEYS` 与 Go `internal/server/custom.go` 手工对齐；
+- `packages/shared` 新增常量与纯函数：`MEDIA_CATEGORY_ID_PATTERN` / `MEDIA_CATEGORY_NAME_MAX` / `MEDIA_CATEGORY_DESCRIPTION_MAX` / `MEDIA_CATEGORY_SORT_MAX` / `MEDIA_CATEGORY_PATH_SEPARATOR` / `MEDIA_DESCRIPTION_MAX` / `MEDIA_TAGS_MAX` / `MEDIA_TAG_LENGTH_MAX` / `MEDIA_CUSTOM_KEYS` / `mediaCategoryPath` / `normalizeMediaTags` / `buildMediaCustomData`（含单测）；
+- Prisma：新增 `media_categories` 模型（含 `is_system`）与 `media.category_id` / `description` / `tags` 列；迁移三条 —— `20260924120000_media_categories`（建表 / 加列）、`20260924130000_default_category`（`is_system` + 插入默认分类「其他」）、`20260924140000_backfill_default_category`（历史行回填分类与投影）；双方言 schema 的 enum/model 段必须逐字一致（`task db:parity` 门禁）；SQLite 开发库 `db push` 后由运行时 `ensureDefaultCategory()` 补建默认分类；
+- Go 侧：`internal/server/custom.go`（白名单解析）+ `mediaListItem` / `handleMediaDetail` 使用它；`store.Media.CustomData` 列早已读取，SQL 无改动。

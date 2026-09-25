@@ -89,7 +89,9 @@ bun --no-env-file scripts/check-delivery-deployment.ts "https://delivery.ovod.sk
 | **构建delivery（Docker）** | `web_trigger_delivery_docker` | `cd apps/delivery && docker build -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:latest . --push` |
 | **构建delivery（Edgeone）** | `web_trigger_delivery_edgeone` | 构建并检查 `.run/edgeone-delivery/.edgeone` → 固定版本 CLI 上传生产环境 → 真实域名冒烟 |
 
-（其余三个：开发环境镜像、admin、worker —— 见 [deploy-apps.md](./deploy-apps.md)。）
+（其余三个：开发环境镜像、admin、worker —— 见 [deploy-apps.md](./deploy-apps.md)。
+发版另有 `tag_push` 事件：一次性串行构建 worker / admin / delivery 三镜像推送制品库，
+各打 `:latest` 与 `:<tag名>` 双标签，见 deploy-apps.md「CNB 一键构建」。）
 
 两处容易踩的点：
 

@@ -40,10 +40,11 @@ flowchart LR
 1. [intent.md](./intent.md) — 项目意图、目标与非目标、成功标准
 2. `decisions/` 按编号阅读；**ADR-0006（视频加密与播放密钥）为核心**
 3. [spec.md](./spec.md) — 功能规范（媒资存储布局 / 媒资 ID / 控制面 API / 分发端 API）
-4. [open-questions.md](./open-questions.md) — 进入 specification 前必须关闭的问题
-5. [dev-workflow.md](./dev-workflow.md) — 本地开发环境与工作流（启动、数据库、建号、排错）
-6. [deploy-delivery.md](./deploy-delivery.md) — 分发端部署（SCF 容器 / EdgeOne Cloud Functions 双目标）
-7. [deploy-apps.md](./deploy-apps.md) — 管理端与 Worker 镜像（构建上下文、Prisma 生成、硬约束）
+4. [api.md](./api.md) — **HTTP API 参考**（管理端 `/api/admin/*` + 分发端 `/v1/*` 全部端点、请求 / 响应 / 错误码）
+5. [open-questions.md](./open-questions.md) — 进入 specification 前必须关闭的问题
+6. [dev-workflow.md](./dev-workflow.md) — 本地开发环境与工作流（启动、数据库、建号、排错）
+7. [deploy-delivery.md](./deploy-delivery.md) — 分发端部署（SCF 容器 / EdgeOne Cloud Functions 双目标）
+8. [deploy-apps.md](./deploy-apps.md) — 管理端与 Worker 镜像（构建上下文、Prisma 生成、硬约束）
 
 ## 决策索引
 
@@ -64,6 +65,8 @@ flowchart LR
 | [ADR-0013](./decisions/0013-admin-nextjs-betterauth.md) | 管理端迁移 Next.js 全栈 + better-auth | 已接受 |
 | [ADR-0014](./decisions/0014-transcode-template-storage.md) | 转码模板的存储位置（DB 表 + 任务快照） | 已接受 |
 | [ADR-0015](./decisions/0015-env-vs-admin-settings.md) | 环境变量与系统设置的边界（env 最小集 + 启动向导 + MK 封装入库） | 已接受（同日修订） |
+| [ADR-0016](./decisions/0016-media-categories-and-custom-metadata.md) | 媒资分类、描述与标签（自定义元数据投影 + 分发端公开白名单） | 已接受 |
+| [ADR-0017](./decisions/0017-worker-deployment-modes.md) | Worker 部署双模式（常驻轮询 / HTTP 门铃）与 serverless 数据库适配 | 已接受 |
 
 状态语义：**已接受** = 用户已拍板，或沿用仓库既有决策（开发镜像 / 前期文档）；**提议（待复核）** = 本文档给出的推荐方案，specification 前需确认。
 

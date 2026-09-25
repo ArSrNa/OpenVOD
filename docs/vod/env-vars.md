@@ -124,10 +124,17 @@ MASTER_KEYS="1:0000000000000000000000000000000000000000000000000000000000000000"
 # 转码期写 key_info 的密钥 URI 占位基址（应与 delivery 同值；留空用内建占位）
 DELIVERY_PUBLIC_BASE_URL=""
 
-# ---- 队列认领（ADR-0008）----
-WORKER_POLL_INTERVAL_MS="2000"   # 轮询间隔（毫秒）
+# ---- 运行模式与队列认领（ADR-0008 / ADR-0017）----
+WORKER_MODE="resident"           # resident = 常驻轮询；http = HTTP 门铃（serverless，/wake 触发认领）
+WORKER_HTTP_PORT="9001"          # http 模式监听端口（仅 http 模式）
+WORKER_IDLE_EXIT_MINUTES="0"     # http 模式空闲退出分钟数；0 = 不退出
+WORKER_POLL_INTERVAL_MS="2000"   # 轮询间隔（毫秒，仅 resident 模式）
 WORKER_LEASE_MS="60000"          # 任务 lease 时长（执行期按 1/3 续期，崩溃后过期重派）
 WORKER_MAX_ATTEMPTS="3"          # 单任务最大尝试次数，超过判 FAILED
+
+# ---- HTTP 门铃（ADR-0017；http 模式必填，admin 的 worker_notify_url / worker_notify_secret 须同值）----
+WORKER_NOTIFY_URL="https://worker.example.com"   # admin 侧配置：发起转码/重启后 POST {URL}/wake
+WORKER_NOTIFY_SECRET=""                          # /wake Bearer 密钥；http 模式缺失则拒绝启动
 
 # ---- 对象存储（S3 兼容：COS / MinIO 等；仅 S3，local 驱动已移除）----
 STORAGE_ROOT_PREFIX=""                # 全局 root 前缀，空 = 桶顶层
@@ -148,7 +155,11 @@ STORAGE_CDN_BASE_URL=""               # 加速域名（可选）
 | `DB_PROVIDER` | 否 | `mysql` | `mysql` \| `sqlite`，决定实例化哪份 Prisma 客户端（`@openvod/db`） |
 | `MASTER_KEYS` | **加密任务必填** | 无 | 加密封装 CEK 的 MK。缺失时启动自检告警，**加密模板任务将失败**（未加密模板不受影响） |
 | `DELIVERY_PUBLIC_BASE_URL` | 否 | 内建占位 | 转码期写 `key_info` 的密钥 URI 占位基址（ADR-0006 §2/§3）；应与 delivery 同值 |
-| `WORKER_POLL_INTERVAL_MS` | 否 | `2000` | 轮询认领间隔（毫秒） |
+| `WORKER_MODE` | 否 | `resident` | `resident`（常驻轮询，自托管）\| `http`（门铃模式：暴露 `POST /wake`，唤醒后 claim-drain，空闲可退出；ADR-0017）。DB `worker_mode` > env |
+| `WORKER_HTTP_PORT` | 否 | `9001` | http 模式监听端口（含 `GET /healthz` 供平台探活） |
+| `WORKER_IDLE_EXIT_MINUTES` | 否 | `0`（不退出） | http 模式空闲退出阈值：最后一次认领后连续 N 分钟无任务即 graceful 退出，加速平台缩零 |
+| `WORKER_NOTIFY_SECRET` | http 模式**是** | 空 | `/wake` Bearer 共享密钥（常量时间比较）；admin 侧 `worker_notify_secret` 须同值，**http 模式未配置则拒绝启动**（防计费攻击） |
+| `WORKER_POLL_INTERVAL_MS` | 否 | `2000` | 轮询认领间隔（毫秒，仅 resident 模式） |
 | `WORKER_LEASE_MS` | 否 | `60000` | 任务 lease 时长；执行期按 1/3 续期，崩溃后 lease 过期即重派（ADR-0008） |
 | `WORKER_MAX_ATTEMPTS` | 否 | `3` | 单任务最大尝试次数，超过判 `FAILED`，防崩溃循环 |
 | `STORAGE_ROOT_PREFIX` | 否 | 空 | 全局 root 前缀（spec.md §1.1） |
@@ -195,6 +206,10 @@ ADMIN_TRUSTED_ORIGINS=""                # 额外信任来源，逗号分隔（�
 ADMIN_SESSION_TTL_SEC="28800"           # 会话有效期（秒），默认 8h
 # CNB_VSCODE_PROXY_URI 由平台自动注入，检测到会覆盖上面两项，通常无需手配
 
+# ---- Worker 唤醒（ADR-0017 门铃；worker 为 http 模式时配置，也可在「系统设置 → 任务设置」维护）----
+WORKER_NOTIFY_URL="https://worker.example.com"  # 发起转码 / 重启后 POST {URL}/wake 加速认领；通知可丢，队列兜底
+WORKER_NOTIFY_SECRET=""                         # /wake Bearer 密钥；须与 worker 侧一致（worker 侧必填，admin 侧仅发通知可空）
+
 # ---- OIDC（可选；留空则仅本地邮箱密码登录）----
 OIDC_ISSUER="https://sso.example.com"   # discovery: {OIDC_ISSUER}/.well-known/openid-configuration
 OIDC_CLIENT_ID=""
@@ -231,6 +246,8 @@ DELIVERY_PUBLIC_BASE_URL=""                      # /api/admin/settings 回退提
 | `ADMIN_BASE_URL` | 否 | `http://localhost:{ADMIN_PORT}` | 管理端对外基址（better-auth `baseURL`）。反代场景填外部地址；填错 host 会 403 `Invalid origin` |
 | `ADMIN_TRUSTED_ORIGINS` | 否 | 空 | 额外信任来源（逗号分隔；裸域名展开为 http+https，支持通配符） |
 | `ADMIN_SESSION_TTL_SEC` | 否 | `28800` | 管理端会话有效期（秒），默认 8h |
+| `WORKER_NOTIFY_URL` | worker 为 http 模式时建议配 | 空 | admin 门铃目标：发起转码 / 重启后 fire-and-forget `POST {URL}/wake`（ADR-0017）；失败仅告警，任务留存队列。也可在「系统设置 → 任务设置」配置（DB > env） |
+| `WORKER_NOTIFY_SECRET` | 同上 | 空 | `/wake` Bearer 密钥（admin 发通知用；worker 侧 http 模式必填）。「系统设置」里对应键 `worker_notify_secret` 为 MK 封装存储 |
 | `OIDC_ISSUER` | 否 | 空 | 通用 OIDC（genericOAuth）。空 = 仅本地邮箱密码登录 |
 | `OIDC_CLIENT_ID` | OIDC 时必填 | 空 | OIDC 客户端 ID |
 | `OIDC_CLIENT_SECRET` | OIDC 时必填 | 空 | OIDC 客户端密钥 |
@@ -265,7 +282,9 @@ DELIVERY_PUBLIC_BASE_URL=""                      # /api/admin/settings 回退提
 | `MASTER_KEYS` | ✅ | ✅（加密任务） | ✅ |
 | `URL_SIGN_KEY_HEX` / `URL_SIGN_KEY_KID` | ✅ | — | — |
 | `BETTER_AUTH_SECRET` / `ADMIN_*` / `OIDC_*` | — | — | ✅ |
+| `WORKER_MODE` / `WORKER_HTTP_PORT` / `WORKER_IDLE_EXIT_MINUTES` | — | ✅ | — |
 | `WORKER_POLL_INTERVAL_MS` / `WORKER_LEASE_MS` / `WORKER_MAX_ATTEMPTS` | — | ✅ | — |
+| `WORKER_NOTIFY_URL` / `WORKER_NOTIFY_SECRET` | — | ✅（SECRET 必填） | ✅（仅发通知） |
 | `DELIVERY_*`（JWT / TTL / CORS / LISTEN） | ✅ | — | — |
 | `DELIVERY_PUBLIC_BASE_URL` | ✅ | ✅（占位基址） | ✅（回退提示） |
 | `DELIVERY_BASE_URL` / `DELIVERY_PREVIEW_*` | — | — | ✅（预览） |

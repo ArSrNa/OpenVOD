@@ -138,6 +138,100 @@ export function generateMediaId(length: number = MEDIA_ID_CONFIG.defaultLength):
   return id;
 }
 
+// ---- 媒资分类与自定义元数据（spec.md §8 / ADR-0016）----
+
+/** 分类 ID 形状：与模板 ID / 字幕轨道 ID 同形（cuid 形状），路由与参数白名单校验（防路径注入） */
+export const MEDIA_CATEGORY_ID_PATTERN = /^c[a-z0-9]{20,}$/;
+/** 分类名长度上限（同级不允许重名；MySQL VARCHAR(191) 文本列语义） */
+export const MEDIA_CATEGORY_NAME_MAX = 64;
+/** 分类描述长度上限（同为 VARCHAR(191) 文本列） */
+export const MEDIA_CATEGORY_DESCRIPTION_MAX = 191;
+/** 同级排序权重上限（越小越靠前） */
+export const MEDIA_CATEGORY_SORT_MAX = 10_000;
+/** 媒资描述长度上限（media.description，VARCHAR(191)） */
+export const MEDIA_DESCRIPTION_MAX = 191;
+/** 单媒资标签数上限 */
+export const MEDIA_TAGS_MAX = 20;
+/** 单个标签长度上限 */
+export const MEDIA_TAG_LENGTH_MAX = 32;
+/** 分类路径分隔符（展示与自定义元数据投影共用，如 `电影 / 科幻`） */
+export const MEDIA_CATEGORY_PATH_SEPARATOR = " / ";
+
+// ---- 默认分类「其他」（spec.md §8.1 修订 2026-09-24）----
+// 系统内置一条顶级分类「其他」：**未设置分类的媒资默认归入它**（读取时 status 空值回退、
+// 上传时直接落库、删除分类时把该分类下媒资迁入），且该分类**不可删除**。
+// ID 固定（cuid 形状，符合 MEDIA_CATEGORY_ID_PATTERN），迁移与运行时幂等创建共用同一个值。
+
+/** 默认分类 ID（固定值；MySQL 迁移插入 + SQLite 开发库运行时幂等创建都使用它） */
+export const MEDIA_DEFAULT_CATEGORY_ID = "cother00000000000000000";
+/** 默认分类名 */
+export const MEDIA_DEFAULT_CATEGORY_NAME = "其他";
+/** 默认分类描述（首次创建时写入） */
+export const MEDIA_DEFAULT_CATEGORY_DESCRIPTION =
+  "未设置分类的媒资默认归入此分类（系统内置，不可删除）";
+
+/**
+ * 自定义元数据公开白名单键（ADR-0004「按公开白名单输出」，spec.md §8.4）：
+ * media.custom_data 里其余键可存，但**不下发**给播放端。
+ * Go 侧 `apps/delivery/internal/server/custom.go` 手工对齐这三个键。
+ */
+export const MEDIA_CUSTOM_KEYS = {
+  category: "category",
+  description: "description",
+  tags: "tags",
+} as const;
+
+/** 自定义元数据中的分类投影（含 name / path 快照，分发端零 join 即可输出；分类改名 / 移动会同步刷新） */
+export interface MediaCustomCategory {
+  id: string;
+  name: string;
+  /** 祖先名 → 自身名，用 ` / ` 连接（如 `电影 / 科幻`） */
+  path: string;
+}
+
+/** 媒资自定义元数据 v1 结构（= media.custom_data 的投影；空项不下发） */
+export interface MediaCustomData {
+  category?: MediaCustomCategory;
+  description?: string;
+  tags?: string[];
+}
+
+/** 分类路径：祖先名序列 → 展示字符串（`["电影","科幻"]` → `电影 / 科幻`） */
+export function mediaCategoryPath(names: readonly string[]): string {
+  return names.map((n) => n.trim()).filter(Boolean).join(MEDIA_CATEGORY_PATH_SEPARATOR);
+}
+
+/** 标签归一化：去首尾空白、丢弃空串、按首次出现去重（保留原大小写写法） */
+export function normalizeMediaTags(tags: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const raw of tags) {
+    const t = raw.trim();
+    if (t && !out.includes(t)) out.push(t);
+  }
+  return out;
+}
+
+/**
+ * 构建自定义元数据投影（spec.md §8.3）：只保留非空项——无分类 / 空描述 / 空标签数组
+ * 一律不出现在投影里（播放端按缺省处理）。管理端在写分类 / 描述 / 标签时重算，
+ * 落 `media.custom_data` 并导出 `metadata/{id}/custom.json`。
+ */
+export function buildMediaCustomData(input: {
+  category: MediaCustomCategory | null;
+  description: string | null;
+  tags: readonly string[];
+}): MediaCustomData {
+  const out: MediaCustomData = {};
+  if (input.category) {
+    out.category = { id: input.category.id, name: input.category.name, path: input.category.path };
+  }
+  const description = (input.description ?? "").trim();
+  if (description) out.description = description;
+  const tags = normalizeMediaTags(input.tags);
+  if (tags.length) out.tags = tags;
+  return out;
+}
+
 export const DEFAULTS = {
   jwtTtlSec: 24 * 3600,
   playbackSessionTtlSec: 4 * 3600,
@@ -168,10 +262,13 @@ export const SETTING_KEYS = {
   playbackManifestTtlSec: "playback_manifest_ttl_sec",
   playbackSubtitleTtlSec: "playback_subtitle_ttl_sec",
   corsOrigins: "cors_origins",
-  // ---- worker ----
+  // ---- worker（ADR-0017：双模式 + HTTP 门铃） ----
+  workerMode: "worker_mode",
   workerPollIntervalMs: "worker_poll_interval_ms",
   workerLeaseMs: "worker_lease_ms",
   workerMaxAttempts: "worker_max_attempts",
+  workerNotifyUrl: "worker_notify_url",
+  workerNotifySecret: "worker_notify_secret",
   // ---- 管理端 ----
   adminBaseUrl: "admin_base_url",
   adminTrustedOrigins: "admin_trusted_origins",
@@ -190,6 +287,7 @@ export const SETTING_SECRET_KEYS = [
   "s3_secret_access_key",
   "oidc_client_secret",
   "delivery_preview_password",
+  "worker_notify_secret",
 ] as const;
 
 export type SettingSecretKey = (typeof SETTING_SECRET_KEYS)[number];
@@ -203,6 +301,7 @@ export const SETTING_DEFAULTS: Record<string, string> = {
   [SETTING_KEYS.playbackManifestTtlSec]: String(DEFAULTS.manifestTtlSec),
   [SETTING_KEYS.playbackSubtitleTtlSec]: String(DEFAULTS.subtitleTtlSec),
   [SETTING_KEYS.corsOrigins]: "*",
+  [SETTING_KEYS.workerMode]: "resident",
   [SETTING_KEYS.workerPollIntervalMs]: "2000",
   [SETTING_KEYS.workerLeaseMs]: "60000",
   [SETTING_KEYS.workerMaxAttempts]: "3",

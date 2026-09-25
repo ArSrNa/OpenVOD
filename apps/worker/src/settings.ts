@@ -71,6 +71,20 @@ function pick(values: Map<string, string>, key: string, env: string): string {
   return ev?.trim() ?? "";
 }
 
+/** 运行模式（ADR-0017）：DB > env > resident。http 模式在启动时读一次，运行期不改。 */
+export async function loadWorkerMode(): Promise<"resident" | "http"> {
+  const { values } = await loadRaw();
+  return pick(values, "worker_mode", "WORKER_MODE") === "http" ? "http" : "resident";
+}
+
+/**
+ * serverless DB 冷启动探活（ADR-0017 §5）：loadRaw 对查询失败吞错返回空快照，
+ * 不能用作探活；此函数连接失败即抛错，供启动退避重试包裹。
+ */
+export async function pingDb(): Promise<void> {
+  await db.$queryRaw`SELECT 1`;
+}
+
 export async function loadWorkerSettings(): Promise<WorkerSettings> {
   const { values, secret } = await loadRaw();
   const endpoint = pick(values, "s3_endpoint", "S3_ENDPOINT");

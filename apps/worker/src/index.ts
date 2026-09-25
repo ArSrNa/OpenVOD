@@ -1,15 +1,17 @@
-// 转码 Worker 常驻容器入口（ADR-0008：禁止上函数，P0）
-// 职责：轮询认领 transcode_jobs → 探测 → 逐档转码（可选 AES-128）→ 上传 → 密钥落库 → 状态联动。
+// 转码 Worker 入口（ADR-0008：禁止上函数，P0；ADR-0017：resident / http 双模式）。
+// 职责：认领 transcode_jobs → 探测 → 逐档转码（可选 AES-128）→ 上传 → 密钥落库 → 状态联动。
+// resident = 常驻轮询（自托管 / 本地开发）；http = 门铃模式，POST /wake 触发 claim-drain（serverless）。
 // ADR-0015：启动只要求 DATABASE_URL / DB_PROVIDER / MASTER_KEYS；存储凭据与队列参数
 // 从 system_settings 读取（首次启动向导写入，MK 封装密钥解封），env 同名键兜底。
 import type { MasterKey } from "@openvod/crypto";
 import { DEFAULT_LADDER } from "@openvod/transcode";
 import { executeClaimedJob } from "./executor";
+import { createHttpWorker } from "./http-mode";
 import { createPrismaTranscodeJobStore } from "./job-store";
 import { createPrismaMediaKeyStore } from "./media-key-store";
 import { createPrismaMediaStore } from "./media-store";
 import { describeMasterKeys, loadMasterKeys } from "./media-keys";
-import { loadWorkerSettings } from "./settings";
+import { loadWorkerMode, loadWorkerSettings, pingDb } from "./settings";
 
 interface ToolCheck {
   name: string;
@@ -53,8 +55,29 @@ const jobStore = createPrismaTranscodeJobStore();
 const mediaStore = createPrismaMediaStore();
 const keyStore = createPrismaMediaKeyStore();
 
-// 设置首载（DB > env；30s 缓存，每轮 tick 刷新参数，存储凭据变更自动重建适配器）
-const boot = await loadWorkerSettings();
+// 设置首载（DB > env；30s 缓存，每轮刷新参数，存储凭据变更自动重建适配器）。
+// serverless DB 冷启动：自动暂停的库首连会失败，带指数退避重试（ADR-0017 §5）。
+async function withDbRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
+  const baseMs = 2_000;
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (attempt === 5) break;
+      const wait = baseMs * 2 ** (attempt - 1);
+      console.warn(`[worker] ${label} 失败（${(e as Error).message}），${wait}ms 后重试（第 ${attempt}/5 次）`);
+      await Bun.sleep(wait);
+    }
+  }
+  throw lastErr;
+}
+
+const boot = await withDbRetry(async () => {
+  await pingDb(); // loadWorkerSettings 对查询失败吞错为空快照，先探活区分「库未醒」与「真未配置」
+  return loadWorkerSettings();
+}, "数据库探活");
 if (!boot.storageConfigured) {
   console.error(
     "[worker] 对象存储未配置：请先完成管理台首次启动向导（/setup）或配置 S3_* 环境变量后重启",
@@ -62,6 +85,7 @@ if (!boot.storageConfigured) {
   process.exit(1);
 }
 let storage = boot.storage;
+const mode = await loadWorkerMode();
 
 let running = true;
 process.on("SIGTERM", () => (running = false));
@@ -69,8 +93,8 @@ process.on("SIGINT", () => (running = false));
 
 let pollIntervalMs = boot.pollIntervalMs;
 
-/** 单轮：刷新设置（30s 缓存）→ 认领一个任务并执行（无可认领任务立即返回） */
-async function tick(): Promise<void> {
+/** 认领并执行单个任务（无可认领任务返回 false）；两种模式共用 */
+async function runOnce(): Promise<boolean> {
   const s = await loadWorkerSettings().catch((e) => {
     console.error("[worker] 读取系统设置失败（沿用上次配置）:", (e as Error).message);
     return null;
@@ -80,7 +104,7 @@ async function tick(): Promise<void> {
     if (s.storageConfigured) storage = s.storage;
   }
   const job = await jobStore.claim({ leaseMs: s?.leaseMs ?? boot.leaseMs, maxAttempts: s?.maxAttempts ?? boot.maxAttempts });
-  if (!job) return;
+  if (!job) return false;
 
   console.log(`[worker] 认领任务 ${job.id}（媒资 ${job.mediaId}，第 ${job.attempts} 次尝试）`);
   try {
@@ -107,13 +131,43 @@ async function tick(): Promise<void> {
       .setStatus(job.id, "FAILED", { lastError: message, finishedAt: new Date(), leaseUntil: null })
       .catch((err) => console.error("[worker] 标记失败状态出错:", err));
   }
+  return true;
 }
 
-console.log(
-  `[worker] polling every ${pollIntervalMs}ms（lease ${boot.leaseMs}ms，最大尝试 ${boot.maxAttempts} 次）`,
-);
-while (running) {
-  await tick().catch((e) => console.error("[worker] tick error:", (e as Error).message));
-  await Bun.sleep(pollIntervalMs);
+/** claim-drain：循环认领直到队列空（http 模式的 /wake 触发体） */
+async function drainOnce(): Promise<void> {
+  while (running && (await runOnce().catch((e) => {
+    console.error("[worker] drain error:", (e as Error).message);
+    return false;
+  }))) {
+    // runOnce 返回 true = 执行了一个任务，继续认领
+  }
 }
-console.log("[worker] bye");
+
+if (mode === "http") {
+  // ---- HTTP 门铃模式（ADR-0017 §2）：/wake 触发 drain，空闲超时退出加速平台缩零 ----
+  const idleExitMinutes = Math.max(0, Number(process.env.WORKER_IDLE_EXIT_MINUTES ?? "0") || 0);
+  const worker = createHttpWorker({
+    port: Number(process.env.WORKER_HTTP_PORT ?? "9001") || 9001,
+    notifySecret: process.env.WORKER_NOTIFY_SECRET ?? "",
+    onWake: () => drainOnce(),
+    idleExitMs: idleExitMinutes > 0 ? idleExitMinutes * 60_000 : 0,
+    onIdle: () => {
+      console.log("[worker] 空闲退出（队列已空，等待下次唤醒）");
+      void worker.stop().finally(() => process.exit(0));
+    },
+  });
+  await worker.start();
+  process.on("SIGTERM", () => void worker.stop());
+  process.on("SIGINT", () => void worker.stop());
+} else {
+  // ---- resident 模式（默认）：常驻轮询 ----
+  console.log(
+    `[worker] polling every ${pollIntervalMs}ms（lease ${boot.leaseMs}ms，最大尝试 ${boot.maxAttempts} 次）`,
+  );
+  while (running) {
+    await runOnce().catch((e) => console.error("[worker] tick error:", (e as Error).message));
+    await Bun.sleep(pollIntervalMs);
+  }
+  console.log("[worker] bye");
+}

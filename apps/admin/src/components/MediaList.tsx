@@ -5,7 +5,9 @@
 // 「更多 → 转码」已实现（M2：选转码模板入队 transcode_jobs，Worker 认领执行，进度见「转码任务」页）；
 // 转码产物：按模板的产物列表（抽屉）→ **解密播放**（走分发端签名链路，管理端不出密钥，spec.md §6）
 // 与**按模板删除**（只删该模板子树，spec.md §5.5）；
-// 「更多 → 字幕管理」打开字幕管理抽屉（M4，spec.md §7 / SubtitleManager）。
+// 「更多 → 字幕管理」打开字幕管理抽屉（M4，spec.md §7 / SubtitleManager）；
+// 「更多 → 分类、描述与标签」/ 详情弹窗 → 自定义元数据编辑（分类 / **视频描述** / 标签，spec.md §8；分类树在 /categories 维护）。
+// 注意：这里的 description 是**视频（媒资）自身**的描述，与「分类管理」页里分类的 `media_categories.description` 无关。
 import {
   CloudUploadOutlined,
   CopyOutlined,
@@ -18,6 +20,7 @@ import {
   PictureOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
+  TagsOutlined,
   ThunderboltOutlined,
 } from "@ant-design/icons";
 import { ProCard } from "@ant-design/pro-components";
@@ -39,11 +42,13 @@ import {
   Tabs,
   Tag,
   Tooltip,
+  TreeSelect,
   Typography,
   Upload,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useRouter } from "next/navigation";
+import { buildCategoryTree, type CategoryTreeNode } from "@/lib/category-tree";
 import { PRODUCT_LEGACY_ID } from "@/lib/media-products";
 import { CoverFrameCapture } from "./CoverFrameCapture";
 import { HlsPreviewPlayer } from "./HlsPreviewPlayer";
@@ -63,6 +68,20 @@ interface MediaProduct {
   variants: string[];
 }
 
+/** 自定义元数据里的分类引用（含路径快照，spec.md §8.3） */
+interface MediaCustomCategory {
+  id: string;
+  name: string;
+  path: string;
+}
+
+/** 自定义元数据（管理端读取形态：三项恒在，spec.md §8.3） */
+interface MediaCustomMetadata {
+  category: MediaCustomCategory | null;
+  description: string | null;
+  tags: string[];
+}
+
 interface MediaListItem {
   id: string;
   title: string | null;
@@ -75,6 +94,10 @@ interface MediaListItem {
   products: MediaProduct[];
   /** 该媒资的字幕对象数（proceed/{id}/subtitles/*.vtt，spec.md §7.2） */
   subtitleCount: number;
+  /** 归属分类（spec.md §8） */
+  category: MediaCustomCategory | null;
+  description: string | null;
+  tags: string[];
 }
 
 interface MediaDetail {
@@ -87,12 +110,49 @@ interface MediaDetail {
   createdAt: string | null;
   updatedAt: string | null;
   probe: ProbeSummary | null;
+  /** 自定义元数据（分类 / 描述 / 标签，spec.md §8.3） */
+  custom: MediaCustomMetadata;
+  /** 自定义元数据投影原文（稀疏 JSON，= metadata/{id}/custom.json） */
   customData: unknown;
   durationMs: number | null;
   posterKey: string | null;
   sourceKey: string | null;
   assets: { proceed: number; cover: number; metadata: number };
   products: MediaProduct[];
+}
+
+/** 分类选项（TreeSelect 用；来自 /api/admin/categories 扁平列表） */
+interface CategoryOptionNode {
+  value: string;
+  title: string;
+  children?: CategoryOptionNode[];
+}
+
+/** 分类扁平列表项（TreeSelect 选项构建的最小投影） */
+interface CategoryListItem {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  sort_order: number;
+}
+
+/** 扁平分类列表 → TreeSelect 选项（无限层级，标题带完整路径） */
+function toCategoryOptions(items: CategoryListItem[]): CategoryOptionNode[] {
+  const toOption = (node: CategoryTreeNode): CategoryOptionNode => ({
+    value: node.id,
+    title: node.path,
+    children: node.children.length ? node.children.map(toOption) : undefined,
+  });
+  return buildCategoryTree(
+    items.map((i) => ({ id: i.id, name: i.name, parentId: i.parent_id, sortOrder: i.sort_order })),
+  ).map(toOption);
+}
+
+/** 自定义元数据表单值 */
+interface MetadataFormValues {
+  category_id?: string;
+  description?: string;
+  tags?: string[];
 }
 
 // ffprobe 归一化摘要（服务端 @openvod/transcode summarizeProbe 落库 media.probe 的形状）
@@ -196,7 +256,7 @@ function uploadTo(url: string, file: File, onProgress?: (pct: number) => void): 
 
 // 表格不随条目数无限增高：表体限高后内部纵向滚动、表头固定（列宽合计见下方 columns）。
 // 滚动实现抽至 tableScroll.ts（管理端所有表格共用约定，spec.md §3）。
-const TABLE_MIN_WIDTH = 1350; // 固定列 970（含首列封面缩略图）+ 字幕列 90 + 展示名最小可读宽度
+const TABLE_MIN_WIDTH = 1730; // 固定列 1350（含首列封面缩略图 + 分类/标签 180 + 描述 200）+ 字幕列 90 + 展示名最小可读宽度
 
 /** 码率（bps）→ 可读字符串 */
 function formatBitrate(bps: number | null | undefined): string {
@@ -304,7 +364,7 @@ function ProbeSummaryView({ probe }: { probe: ProbeSummary }) {
       </div>
       <details style={{ marginTop: 8 }}>
         <summary style={{ cursor: "pointer", fontSize: 12 }}>
-          <Typography.Text type="secondary">探测摘要 JSON（原始 ffprobe 输出见 metadata/{'{'}id{'}'}/probe.json）</Typography.Text>
+          <Typography.Text type="secondary">原始数据</Typography.Text>
         </summary>
         <pre style={{ margin: "4px 0 0", fontSize: 12, maxHeight: 220, overflow: "auto" }}>
           {JSON.stringify(probe, null, 2)}
@@ -340,6 +400,14 @@ export function MediaList() {
   const [coverUploading, setCoverUploading] = useState(false);
 
   const [metadataBusyId, setMetadataBusyId] = useState<string | null>(null);
+
+  // 自定义元数据（分类 / 描述 / 标签，spec.md §8）：编辑弹窗 + 分类树选项（/categories 维护）
+  const [customTarget, setCustomTarget] = useState<{ id: string; title: string | null } | null>(null);
+  const [customForm] = Form.useForm<MetadataFormValues>();
+  const [customSaving, setCustomSaving] = useState(false);
+  const [customLoading, setCustomLoading] = useState(false);
+  const [categoryOptions, setCategoryOptions] = useState<CategoryOptionNode[]>([]);
+  const [categoriesLoading, setCategoriesLoading] = useState(false);
 
   // 字幕管理（M4，spec.md §7）：多轨 VTT 的增删改查（抽屉）
   const [subtitleTarget, setSubtitleTarget] = useState<MediaListItem | null>(null);
@@ -493,6 +561,69 @@ export function MediaList() {
       if ((e as Error).message === "未登录") return;
     } finally {
       setMetadataBusyId(null);
+    }
+  };
+
+  // ---- 自定义元数据（分类 / 描述 / 标签；spec.md §8）----
+
+  /** 打开编辑器：读详情（当前值）+ 分类树 → 回填表单 → 数据就绪后再打开弹窗（避免空表单闪一下） */
+  const openCustomMetadata = async (target: { id: string; title: string | null }) => {
+    if (customLoading) return;
+    setCustomLoading(true);
+    setCategoriesLoading(true);
+    try {
+      const [detail, categories] = await Promise.all([
+        fetchJson(`/api/admin/media/${target.id}`) as Promise<MediaDetail>,
+        fetchJson("/api/admin/categories") as Promise<{ items: CategoryListItem[] }>,
+      ]);
+      setCategoryOptions(toCategoryOptions(categories.items ?? []));
+      customForm.setFieldsValue({
+        category_id: detail.custom.category?.id ?? "",
+        description: detail.custom.description ?? "",
+        tags: detail.custom.tags,
+      });
+      setCustomTarget(target);
+    } catch (e) {
+      if ((e as Error).message !== "未登录") {
+        message.error(e instanceof Error ? e.message : "自定义元数据加载失败");
+      }
+    } finally {
+      setCustomLoading(false);
+      setCategoriesLoading(false);
+    }
+  };
+
+  /** 保存：PATCH /api/admin/media/{id}（description / tags / category_id 三项，服务端重算 custom_data 投影） */
+  const handleCustomMetadataSave = async () => {
+    if (!customTarget) return;
+    setCustomSaving(true);
+    try {
+      const values = await customForm.validateFields();
+      const res = (await fetchJson(`/api/admin/media/${customTarget.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          description: values.description?.trim() ? values.description.trim() : null,
+          tags: values.tags ?? [],
+          category_id: values.category_id ? values.category_id : null,
+        }),
+      })) as { customDataWritten?: boolean };
+      if (res.customDataWritten === false) {
+        message.warning(
+          "自定义元数据已保存；metadata/{id}/custom.json 导出失败（不影响播放端下发，可稍后重新保存补齐）",
+        );
+      } else {
+        message.success("自定义元数据已保存");
+      }
+      setCustomTarget(null);
+      void load();
+    } catch (e) {
+      if ((e as { errorFields?: unknown }).errorFields) return; // 表单校验失败
+      if ((e as Error).message !== "未登录") {
+        message.error(e instanceof Error ? e.message : "保存失败");
+      }
+    } finally {
+      setCustomSaving(false);
     }
   };
 
@@ -714,6 +845,7 @@ export function MediaList() {
     items: [
       { key: "transcode", icon: <ThunderboltOutlined />, label: "转码" },
       { key: "subtitle", icon: <FontSizeOutlined />, label: "字幕管理" },
+      { key: "custom", icon: <TagsOutlined />, label: "分类、描述与标签", disabled: customLoading },
       {
         key: "metadata",
         icon: <FileTextOutlined />,
@@ -728,6 +860,7 @@ export function MediaList() {
       if (key === "cover") setCoverTarget(record);
       else if (key === "transcode") void openTranscode(record);
       else if (key === "subtitle") setSubtitleTarget(record);
+      else if (key === "custom") void openCustomMetadata({ id: record.id, title: record.title });
       else if (key === "metadata") void handleGenerateMetadata(record);
     },
   });
@@ -848,6 +981,53 @@ export function MediaList() {
       render: (iso?: string) => (
         <Typography.Text type="secondary">{formatTime(iso)}</Typography.Text>
       ),
+    },
+    {
+      // 分类 / 标签（spec.md §8）：分类为无限层级树的路径快照，标签最多展示 2 个 + 「+N」
+      title: "分类 / 标签",
+      key: "custom",
+      width: 180,
+      render: (_, row) => (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {row.category ? (
+            <Typography.Text style={{ fontSize: 12 }} ellipsis={{ tooltip: row.category.path }}>
+              {row.category.path}
+            </Typography.Text>
+          ) : (
+            <Tag color="default" style={{ width: "fit-content", marginInlineEnd: 0 }}>
+              未分类
+            </Tag>
+          )}
+          {row.tags.length > 0 && (
+            <Space size={4} wrap>
+              {row.tags.slice(0, 2).map((t) => (
+                <Tag key={t} style={{ marginInlineEnd: 0 }}>
+                  {t}
+                </Tag>
+              ))}
+              {row.tags.length > 2 && (
+                <Tooltip title={row.tags.join(" / ")}>
+                  <Tag style={{ marginInlineEnd: 0 }}>+{row.tags.length - 2}</Tag>
+                </Tooltip>
+              )}
+            </Space>
+          )}
+        </div>
+      ),
+    },
+    {
+      // 视频（媒资）描述：与分类描述（/categories 页）是两回事，这里单独一列展示（spec.md §8）
+      title: "描述",
+      dataIndex: "description",
+      width: 200,
+      render: (description: string | null) =>
+        description ? (
+          <Typography.Text style={{ fontSize: 13 }} ellipsis={{ tooltip: description }}>
+            {description}
+          </Typography.Text>
+        ) : (
+          <Typography.Text type="secondary">—</Typography.Text>
+        ),
     },
     {
       title: "转码产物",
@@ -1037,6 +1217,19 @@ export function MediaList() {
             <Descriptions.Item label="上传时间" span={1}>
               {formatTime(detail.lastModified ?? detail.createdAt)}
             </Descriptions.Item>
+            <Descriptions.Item label="封面" span={1}>
+              {detail.posterKey ? (
+                <Image
+                  src={`/api/admin/media/${detail.id}/cover`}
+                  alt={`封面：${detail.title ?? detail.id}`}
+                  width={84}
+                  height={48}
+                  style={{ objectFit: "cover", borderRadius: 4, background: "#f5f5f5" }}
+                />
+              ) : (
+                <Tag color="default">未设置</Tag>
+              )}
+            </Descriptions.Item>
             <Descriptions.Item label="original 键" span={2}>
               <Typography.Text code style={{ fontSize: 12 }}>
                 {detail.sourceKey ?? "—"}
@@ -1065,9 +1258,6 @@ export function MediaList() {
                 </Typography.Text>
               )}
             </Descriptions.Item>
-            <Descriptions.Item label="封面" span={1}>
-              {detail.assets.cover} 个对象{detail.posterKey ? "（已设 poster）" : ""}
-            </Descriptions.Item>
             <Descriptions.Item label="系统元数据（probe）" span={2}>
               {detail.probe ? (
                 <ProbeSummaryView probe={detail.probe} />
@@ -1077,8 +1267,48 @@ export function MediaList() {
                 </Typography.Text>
               )}
             </Descriptions.Item>
-            <Descriptions.Item label="业务自定义数据" span={2}>
-              {detail.customData != null ? JSON.stringify(detail.customData) : "—"}
+            <Descriptions.Item label="自定义元数据" span={2}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%" }}>
+                <div style={CELL}>
+                  <Typography.Text type="secondary">分类：</Typography.Text>
+                  {detail.custom.category ? (
+                    <Tag color="geekblue">{detail.custom.category.path}</Tag>
+                  ) : (
+                    <Tag color="default">未分类</Tag>
+                  )}
+                </div>
+                <div style={CELL}>
+                  <Typography.Text type="secondary">视频描述：</Typography.Text>
+                  {detail.custom.description ?? "—"}
+                </div>
+                <div style={CELL}>
+                  <Typography.Text type="secondary">标签：</Typography.Text>
+                  {detail.custom.tags.length ? (
+                    <Space size={4} wrap>
+                      {detail.custom.tags.map((t) => (
+                        <Tag key={t} style={{ marginInlineEnd: 0 }}>
+                          {t}
+                        </Tag>
+                      ))}
+                    </Space>
+                  ) : (
+                    "—"
+                  )}
+                </div>
+                <Space size={8}>
+                  <Button
+                    size="small"
+                    icon={<EditOutlined />}
+                    onClick={() => {
+                      const target = { id: detail.id, title: detail.title };
+                      setDetailOpen(false);
+                      void openCustomMetadata(target);
+                    }}
+                  >
+                    编辑自定义元数据
+                  </Button>
+                </Space>
+              </div>
             </Descriptions.Item>
           </Descriptions>
         )}
@@ -1110,6 +1340,73 @@ export function MediaList() {
             }
           >
             <Input placeholder="媒资展示名" onPressEnter={() => void handleRename()} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* 自定义元数据（分类 / 描述 / 标签，spec.md §8）：保存即重算 custom_data 投影并导出 custom.json；
+          分类树在「分类管理」页维护（无限层级），此处为 TreeSelect 选择 */}
+      <Modal
+        open={customTarget !== null}
+        title={`分类、描述与标签：${customTarget?.title ?? customTarget?.id ?? ""}`}
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={customSaving}
+        onOk={() => void handleCustomMetadataSave()}
+        onCancel={() => setCustomTarget(null)}
+        destroyOnHidden
+      >
+        <Form form={customForm} layout="vertical" style={{ marginTop: 8 }}>
+          <Form.Item
+            name="category_id"
+            label="分类"
+          >
+            <TreeSelect
+              treeData={categoryOptions}
+              treeDefaultExpandAll
+              showSearch
+              treeNodeFilterProp="title"
+              allowClear
+              loading={categoriesLoading}
+              placeholder="默认归入「其他」"
+              onChange={(v) => customForm.setFieldValue("category_id", v ?? "")}
+            />
+          </Form.Item>
+          <Form.Item
+            name="description"
+            label="视频描述"
+            rules={[{ max: 191, message: "描述最多 191 个字符" }]}
+          >
+            <Input.TextArea rows={3} maxLength={191} showCount placeholder="视频描述（可选）" />
+          </Form.Item>
+          <Form.Item
+            name="tags"
+            label="标签"
+            rules={[
+              {
+                validator: (_, value: string[] | undefined) => {
+                  const list = value ?? [];
+                  const tooLong = list.find((t) => t.trim().length > 32);
+                  if (tooLong) {
+                    return Promise.reject(new Error(`单个标签最多 32 个字符：${tooLong}`));
+                  }
+                  return Promise.resolve();
+                },
+              },
+            ]}
+            extra={
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                回车 / 逗号分隔添加，最多 20 个、每个 ≤32 字符（服务端去重与去空白）
+              </Typography.Text>
+            }
+          >
+            <Select
+              mode="tags"
+              tokenSeparators={[",", "，"]}
+              maxCount={20}
+              placeholder="输入标签后回车"
+              notFoundContent={null}
+            />
           </Form.Item>
         </Form>
       </Modal>
@@ -1255,13 +1552,13 @@ export function MediaList() {
           size="small"
           pagination={false}
           scroll={{ y: "calc(100vh - 320px)" }}
-          locale={{ emptyText: <Empty description="尚无转码产物（「更多 → 转码」发起，按模板落在 proceed/{id}/{模板id}/）" /> }}
+          locale={{ emptyText: <Empty description="尚无转码产物，请在「更多 → 转码」发起" /> }}
         />
         <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 12, marginBottom: 0 }}>
           播放：管理端只向分发端换一个签名主清单 URL，清单 / 密钥 / 分片直达浏览器——
           明文密钥（CEK）只由分发端下发、浏览器本地解密。若画面不加载：多为分发端 CORS
           （<Typography.Text code>DELIVERY_CORS_ORIGINS</Typography.Text>）或对象桶 CORS 未放行管理端源站；
-          预览账号未配置时接口返回 501（见 dev-workflow §5.3）。
+          预览账号未配置时接口返回 501
           删除：仅移除该模板子树的存储对象；加密密钥与转码任务历史保留。存在进行中的同模板任务时拒绝删除。
         </Typography.Paragraph>
       </Drawer>
@@ -1297,13 +1594,12 @@ export function MediaList() {
                 <Tag>旧布局产物</Tag>
               )}
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                签名清单 / 密钥 / 分片由分发端与对象存储直达浏览器（不经管理端）
+                签名清单 / 密钥 / 分片由分发端与对象存储直达浏览器
               </Typography.Text>
             </Space>
             {playing.corsOk === false && (
               <Typography.Paragraph type="warning" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
-                对象桶未放行当前管理端源站的 CORS：浏览器直连分片会被拦，表现为「有总时长但一直转圈」。
-                请在对象桶加 CORS 规则（Origin 含本页源站、Method GET/HEAD、Header *）（见 dev-workflow §8）。
+                对象桶需放行当前管理端源站的CORS，否则无法播放。
               </Typography.Paragraph>
             )}
             {playError && (

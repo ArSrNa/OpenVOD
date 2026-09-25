@@ -16,8 +16,9 @@
 #   - admin 端口：容器内外同取 .env 的 ADMIN_PORT（默认 8787）。CNB 上管理端读
 #     CNB_VSCODE_PROXY_URI 自动推导对外基址与 trustedOrigins（apps/admin/src/lib/auth.ts），
 #     故此处必须把该变量显式传进容器——容器不继承宿主环境。
-#   - worker 无端口（轮询 transcode_jobs 认领任务）；转码临时目录（os.tmpdir()）挂到
-#     ./.run/worker-tmp，需大磁盘（ADR-0003：源片 + 全档产物 + 加密重写）。
+#   - worker 默认 resident 模式无端口（轮询认领）；ADR-0017 http 模式才监听 WORKER_HTTP_PORT
+#     （默认 9001，可自行加 ports 映射）；转码临时目录（os.tmpdir()）挂到 ./.run/worker-tmp，
+#     需大磁盘（ADR-0003：源片 + 全档产物 + 加密重写）。
 #   - delivery 不在本编排内：它按 ADR-0003 部署到 EdgeOne Cloud Functions / SCF；admin 的
 #     DELIVERY_BASE_URL 必须指向分发端**实际可达地址**（容器内写 127.0.0.1 会指向 admin 自己）。
 #   - 停止 worker 会中断当前转码：任务经 lease 过期自动重派（ADR-0008），attempts 会 +1。
@@ -55,8 +56,18 @@ services:
     image: ${OPENVOD_WORKER_IMAGE:-docker.cnb.cool/arsrna/media/openvod/worker:latest}
     env_file:
       - .env
+    # http 模式（ADR-0017）需要暴露 /wake 门铃端口时自行取消注释：
+    # ports:
+    #   - "${WORKER_HTTP_PORT:-9001}:${WORKER_HTTP_PORT:-9001}"
     volumes:
       - ${OPENVOD_WORKER_TMP:-./.run/worker-tmp}:/tmp
+    healthcheck:
+      # 双模式（与镜像 HEALTHCHECK 一致）：http 探 /healthz；resident 无端口，进程在 = 健康
+      test: ["CMD-SHELL", "if [ \"${WORKER_MODE:-resident}\" = \"http\" ]; then bun -e \"const r = await fetch('http://127.0.0.1:'+(process.env.WORKER_HTTP_PORT||9001)+'/healthz'); process.exit(r.ok?0:1)\"; else kill -0 1; fi"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     init: true
     restart: unless-stopped
     logging: *logging

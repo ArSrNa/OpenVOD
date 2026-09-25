@@ -119,3 +119,27 @@ $:
     - <<: *build-admin-image
   web_trigger_worker_docker:
     - <<: *build-worker-image
+  # tag_push（打 tag 发版）：一次性构建全部运行镜像并推送制品库。
+  # 三个 stage 顺序执行（worker → admin → delivery），任一失败即中断，不留"半个版本"；
+  # 每个镜像同时打 :latest 与 :${CNB_BRANCH}（tag 名）双标签。
+  # 注：与上方三个 web_trigger 锚点独立成流水线并行不同，发版要求三镜像同批产出，故单流水线串行。
+  tag_push:
+    - name: 发布全部运行镜像（worker / admin / delivery）
+      runner:
+        cpus: 32
+      services:
+        - docker
+      stages:
+        - name: docker build worker
+          script:
+            - docker build -f apps/worker/Dockerfile -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/worker:latest -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/worker:${CNB_BRANCH} . --push
+        - name: docker build admin
+          script:
+            - docker build -f apps/admin/Dockerfile -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/admin:latest -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/admin:${CNB_BRANCH} . --push
+        # 构建上下文必须是 apps/delivery（Dockerfile 的 COPY 路径相对该目录）。
+        # SCF 仅接受 x86：构建机若为 arm64，改用 buildx：
+        #   docker buildx build --platform linux/amd64 --push -t .../delivery:latest -t .../delivery:${CNB_BRANCH} apps/delivery
+        - name: docker build delivery
+          script:
+            - cd apps/delivery
+            - docker build -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:latest -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:${CNB_BRANCH} . --push

@@ -7,7 +7,12 @@
 | 镜像 | Dockerfile | 运行时 | 端口 |
 |---|---|---|---|
 | `admin` | `apps/admin/Dockerfile` | Node 22（`next start`） | `:8787` · `GET /healthz` |
-| `worker` | `apps/worker/Dockerfile` | Bun 常驻 | 无端口（轮询认领 `transcode_jobs`） |
+| `worker` | `apps/worker/Dockerfile` | Bun 常驻 | 见下（ADR-0017 双模式） |
+
+worker 端口取决于 `WORKER_MODE`（ADR-0017）：`resident`（默认）无端口，轮询认领 `transcode_jobs`；
+`http`（serverless 门铃）监听 `WORKER_HTTP_PORT`（默认 `9001`）：`POST /wake` 触发认领
+（Bearer `WORKER_NOTIFY_SECRET`），`GET /healthz` 供平台探活。镜像与 compose 均已内置
+模式感知 HEALTHCHECK（http 探 /healthz；resident 看进程）。
 
 ## 构建上下文必须是仓库根
 
@@ -46,13 +51,19 @@ task image:worker     # docker build -f apps/worker/Dockerfile -t openvod-worker
 # admin：UI + API 同源（无 CORS）；端口由 ADMIN_PORT 控制，默认 8787
 docker run -d --name openvod-admin -p 8787:8787 --env-file .env openvod-admin:latest
 
-# worker：无端口；转码临时目录在 os.tmpdir()，必须挂大磁盘（ADR-0003）
+# worker（resident 默认）：无端口；转码临时目录在 os.tmpdir()，必须挂大磁盘（ADR-0003）
 docker run -d --name openvod-worker --env-file .env \
+  -v /data/openvod-tmp:/tmp openvod-worker:latest
+
+# worker（http 门铃模式，ADR-0017）：暴露 /wake 与 /healthz；WORKER_NOTIFY_SECRET 必填
+docker run -d --name openvod-worker -p 9001:9001 --env-file .env \
+  -e WORKER_MODE=http -e WORKER_NOTIFY_SECRET=<至少16字符> \
   -v /data/openvod-tmp:/tmp openvod-worker:latest
 ```
 
 接通验证：admin `curl -fsS localhost:8787/healthz` 返回 `{"ok":true,"db":true}`；
-worker 日志出现 `[worker] ffmpeg ok` / `[worker] ffprobe ok` 与 `polling every ...`。
+resident worker 日志出现 `[worker] ffmpeg ok` / `[worker] ffprobe ok` 与 `polling every ...`；
+http 模式为 `http 门铃模式 listening :9001`，且 `curl -fsS localhost:9001/healthz` 返回 200。
 
 ## Compose 运行（单机常驻，CNB / 任意 Docker 宿主）
 
@@ -107,6 +118,10 @@ CNB 云原生开发环境实测要点（2026-09-22）：
 |---|---|---|
 | 构建admin（Docker） | `web_trigger_admin_docker` | `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/admin:latest` |
 | 构建worker（Docker） | `web_trigger_worker_docker` | `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/worker:latest` |
+| 打 tag 发版（worker + admin + delivery 一次构建） | `tag_push` | 三个镜像均推 `:latest` 与 `:<tag名>` 双标签（delivery 构建见 deploy-delivery.md） |
+
+`tag_push` 流水线（`$` 兜底分支）单流水线串行构建三个运行镜像，任一 stage 失败即中断、
+不留「半个版本」；产物同时保留 `:latest` 与本次 tag 两个标签，制品库可直接按 tag 回滚。
 
 ## 待办与待验证
 

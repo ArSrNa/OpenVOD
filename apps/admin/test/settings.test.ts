@@ -124,6 +124,19 @@ test("配置实例刷新：并发合并、变更重建、失败可重试", async
   expect(builds).toBe(4);
 });
 
+test("login 分组启用 OIDC 需要 Issuer、Client ID 与 Client Secret 齐备", async () => {
+  const initial = await readSettingsEditor("login", deps());
+  for (const values of [
+    { oidc_issuer: "https://idp.example.test" },
+    { oidc_issuer: "https://idp.example.test", oidc_client_id: "client" },
+    { oidc_issuer: "https://idp.example.test", oidc_client_secret: "shh" },
+  ]) await expect(saveSettingsEditor({ group: "login", revision: initial.revision, values }, actor, deps())).rejects.toThrow("启用 OIDC 需要同时配置 Issuer、Client ID 和 Client Secret");
+  const complete = await saveSettingsEditor({ group: "login", revision: initial.revision, values: { oidc_issuer: "https://idp.example.test", oidc_client_id: "client", oidc_client_secret: "shh" } }, actor, deps());
+  expect(complete.fields.find((f) => f.key === "oidc_issuer")?.value).toBe("https://idp.example.test");
+  expect(await db.systemSetting.findUniqueOrThrow({ where: { key: "oidc_client_secret" } })).toBeTruthy();
+  expect(await db.systemSetting.count()).toBe(3);
+});
+
 test("清除覆盖前校验将启用的环境回退值", async () => {
   const first = await readSettingsEditor("security", deps());
   const saved = await saveSettingsEditor({ group: "security", revision: first.revision, values: { url_sign_key_hex: "a".repeat(64) } }, actor, deps());

@@ -326,9 +326,15 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `WORKER_POLL_INTERVAL_MS` | `2000` | 轮询间隔（毫秒） |
+| `WORKER_MODE` | `resident` | 运行模式（ADR-0017）：`resident` = 常驻轮询；`http` = HTTP 门铃（`POST /wake` 触发 claim-drain，空闲可退出）。DB `worker_mode` > env |
+| `WORKER_HTTP_PORT` | `9001` | http 模式监听端口（含 `GET /healthz`） |
+| `WORKER_IDLE_EXIT_MINUTES` | `0`（不退出） | http 模式空闲退出阈值 |
+| `WORKER_NOTIFY_SECRET` | 空（http 模式必填） | `/wake` Bearer 密钥；缺失拒绝启动 |
+| `WORKER_POLL_INTERVAL_MS` | `2000` | 轮询间隔（毫秒，仅 resident 模式） |
 | `WORKER_LEASE_MS` | `60000` | 任务 lease 时长（执行期按 1/3 续期） |
 | `WORKER_MAX_ATTEMPTS` | `3` | 单任务最大尝试次数 |
+
+http 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_settings，ADR-0015）在发起转码 / 重启后 fire-and-forget `POST {url}/wake` 加速认领；通知可丢，任务留存队列兜底。详见 ADR-0017 与 [env-vars.md](./env-vars.md)。
 
 ## 6. 播放链路（分发端，M3）
 

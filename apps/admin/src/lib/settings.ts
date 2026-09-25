@@ -213,7 +213,12 @@ const PLAIN_META: Record<string, { env?: string; validate: Validator } | undefin
     ),
   },
   [SETTING_KEYS.corsOrigins]: { env: "DELIVERY_CORS_ORIGINS", validate: corsOriginsValidator() },
+  [SETTING_KEYS.workerMode]: {
+    env: "WORKER_MODE",
+    validate: enumValidator("worker 运行模式", ["resident", "http"]),
+  },
   [SETTING_KEYS.workerPollIntervalMs]: { env: "WORKER_POLL_INTERVAL_MS", validate: intValidator("worker 轮询间隔", 500, 600000) },
+  [SETTING_KEYS.workerNotifyUrl]: { env: "WORKER_NOTIFY_URL", validate: urlValidator("worker 唤醒地址") },
   [SETTING_KEYS.workerLeaseMs]: { env: "WORKER_LEASE_MS", validate: intValidator("worker lease", 5000, 3600000) },
   [SETTING_KEYS.workerMaxAttempts]: { env: "WORKER_MAX_ATTEMPTS", validate: intValidator("worker 最大尝试", 1, 20) },
   [SETTING_KEYS.adminBaseUrl]: { env: "ADMIN_BASE_URL", validate: urlValidator("管理端基址") },
@@ -263,6 +268,16 @@ const SECRET_META: Record<SettingSecretKey, SecretMeta> = {
   s3_secret_access_key: { env: "S3_SECRET_ACCESS_KEY", label: "对象存储访问密钥", validate: (v) => v.trim() },
   oidc_client_secret: { env: "OIDC_CLIENT_SECRET", label: "OIDC 客户端密钥", validate: (v) => v.trim() },
   delivery_preview_password: { env: "DELIVERY_PREVIEW_PASSWORD", label: "播放预览账号口令", validate: (v) => v.trim() },
+  worker_notify_secret: {
+    env: "WORKER_NOTIFY_SECRET",
+    label: "worker 唤醒密钥",
+    validate: (v) => {
+      const raw = v.trim();
+      if (!raw) return "";
+      if (raw.length < 16) throw new SettingsError("bad_request", "worker 唤醒密钥至少 16 字符");
+      return raw;
+    },
+  },
 };
 
 function assertKnownKey(key: string): void {

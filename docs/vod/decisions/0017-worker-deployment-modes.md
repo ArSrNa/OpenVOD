@@ -82,3 +82,10 @@ P0 边界重申：**转码禁止上「请求-响应型函数」**（SCF / EdgeOn
 - **空闲退出 × 平台 min instances 的组合**需在部署文档（deploy-delivery.md 同级）中验证与记录；
 - **冷启动延迟（10~60s）**：镜像层优化可压缩，但产品预期必须管理（「点转码 → 任务开跑」不再是秒级）；
 - 管理台 SSE 在「有人开着转码页」期间仍会以 1.5s/5s 间隔触碰 serverless DB——人的注意力本身是活跃信号，可接受；如需极致省，可调大 `idleIntervalMs`（演进项）。
+
+## 实现记录（2026-09-26）
+
+- **worker 双模式落地**（`apps/worker/src/index.ts` + 新增 `http-mode.ts`）：`WORKER_MODE=resident`（默认，原轮询行为不变）；`http` 模式 `Bun.serve` 暴露 `POST /wake`（Bearer `WORKER_NOTIFY_SECRET`，SHA-256 定长 + timingSafeEqual；**未配置密钥拒绝启动**）与 `GET /healthz`（平台探活）；合法请求异步 claim-drain（并发唤醒合并为一轮）立即 202；`WORKER_IDLE_EXIT_MINUTES>0` 时最后一次认领后空闲超时 graceful 退出，加速平台缩零；启动对 serverless DB 冷启动做 `pingDb` + 指数退避重试（区分「库未醒」与「存储真未配置」——`loadWorkerSettings` 对查询失败吞错为空快照，不能用作探活）。
+- **admin 通知钩子**（新增 `apps/admin/src/lib/worker-notify.ts`）：`/api/admin/media/{id}/transcode` 与 `/api/admin/jobs/{id}/restart` 成功后 fire-and-forget `POST {WORKER_NOTIFY_URL}/wake`，失败仅告警不阻塞业务；`stop` 不通知（409 语义不依赖通道）。
+- **配置面**：`worker_mode`（明文，枚举 `resident|http`）/`worker_notify_url`（明文 URL）/`worker_notify_secret`（MK 封装，≥16 字符）登记进 `system_settings` 键注册表（ADR-0015 边界：DB > env > 默认），「系统设置 → 任务设置」分组可维护；worker 侧 `WORKER_HTTP_PORT` / `WORKER_IDLE_EXIT_MINUTES` 为纯部署参数，仅 env。
+- **测试**：`apps/worker/test/http-mode.test.ts`（鉴权 401、202、drain 合并、healthz、空密钥拒启、空闲退出）；`apps/admin/test/worker-notify.test.ts`（URL/Bearer 装配、失败不抛、新键校验）。

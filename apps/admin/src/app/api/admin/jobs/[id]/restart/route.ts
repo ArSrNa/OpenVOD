@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { apiJson, auditAction, getAdminSession, unauthorized } from "@/lib/api";
 import { jobsHub } from "@/lib/jobs-live";
 import { restartTranscodeJob, transcodeErrorResponse } from "@/lib/transcode";
+import { notifyWorkerWake } from "@/lib/worker-notify";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,7 @@ export async function POST(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
     const { id } = await ctx.params;
     const result = await restartTranscodeJob(id);
     jobsHub.poke(); // 「转码任务」页的 SSE 立即推送新状态
+    void notifyWorkerWake(); // ADR-0017 门铃：同发起转码；stop 不需要通知（409 语义不依赖通道）
     await auditAction(req, session, "transcode.restart", id, { status: result.status });
     return apiJson(result);
   } catch (e) {

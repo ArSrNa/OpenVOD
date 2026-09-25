@@ -262,10 +262,13 @@ export const SETTING_KEYS = {
   playbackManifestTtlSec: "playback_manifest_ttl_sec",
   playbackSubtitleTtlSec: "playback_subtitle_ttl_sec",
   corsOrigins: "cors_origins",
-  // ---- worker ----
+  // ---- worker（ADR-0017：双模式 + HTTP 门铃） ----
+  workerMode: "worker_mode",
   workerPollIntervalMs: "worker_poll_interval_ms",
   workerLeaseMs: "worker_lease_ms",
   workerMaxAttempts: "worker_max_attempts",
+  workerNotifyUrl: "worker_notify_url",
+  workerNotifySecret: "worker_notify_secret",
   // ---- 管理端 ----
   adminBaseUrl: "admin_base_url",
   adminTrustedOrigins: "admin_trusted_origins",
@@ -284,6 +287,7 @@ export const SETTING_SECRET_KEYS = [
   "s3_secret_access_key",
   "oidc_client_secret",
   "delivery_preview_password",
+  "worker_notify_secret",
 ] as const;
 
 export type SettingSecretKey = (typeof SETTING_SECRET_KEYS)[number];
@@ -297,6 +301,7 @@ export const SETTING_DEFAULTS: Record<string, string> = {
   [SETTING_KEYS.playbackManifestTtlSec]: String(DEFAULTS.manifestTtlSec),
   [SETTING_KEYS.playbackSubtitleTtlSec]: String(DEFAULTS.subtitleTtlSec),
   [SETTING_KEYS.corsOrigins]: "*",
+  [SETTING_KEYS.workerMode]: "resident",
   [SETTING_KEYS.workerPollIntervalMs]: "2000",
   [SETTING_KEYS.workerLeaseMs]: "60000",
   [SETTING_KEYS.workerMaxAttempts]: "3",

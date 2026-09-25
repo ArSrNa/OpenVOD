@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { apiJson, auditAction, getAdminSession, unauthorized } from "@/lib/api";
 import { jobsHub } from "@/lib/jobs-live";
 import { submitTranscode, transcodeErrorResponse } from "@/lib/transcode";
+import { notifyWorkerWake } from "@/lib/worker-notify";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +19,7 @@ export async function POST(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
     const body = await req.json().catch(() => null);
     const result = await submitTranscode(id, body);
     jobsHub.poke(); // 有写入：让「转码任务」页的 SSE 立即推新任务，不必等下一轮观察
+    void notifyWorkerWake(); // ADR-0017 门铃：唤醒 http 模式 worker 加速认领；可丢，失败仅告警
     await auditAction(req, session, "media.transcode_submit", id, {
       job_ids: result.jobs.map((j) => j.job_id),
       template_ids: result.jobs.map((j) => j.template_id),

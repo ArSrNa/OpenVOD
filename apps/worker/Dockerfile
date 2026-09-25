@@ -1,11 +1,14 @@
-# 转码 Worker 镜像（ADR-0003 / ADR-0008：Bun 常驻容器；P0 —— 转码禁止上任何函数）
+# 转码 Worker 镜像（ADR-0003 / ADR-0008：Bun 常驻容器；ADR-0017：resident / http 双模式；P0 —— 转码禁止上任何函数）
 #
 # 构建上下文必须是**仓库根**：worker 依赖 workspace 包（@openvod/{db,shared,crypto,storage,transcode,contracts}），
 # 且 packages/db 的两份 Prisma 客户端要在镜像内生成。
 #   docker build -f apps/worker/Dockerfile -t <tag> .
 #
-# 运行形态：无端口（轮询认领 transcode_jobs），存活看进程；转码临时目录在 os.tmpdir()，
-# 必须给容器挂大磁盘（ADR-0003：Worker 挂大磁盘）。
+# 运行形态（ADR-0017）：
+#   WORKER_MODE=resident（默认）：无端口，轮询认领 transcode_jobs，存活看进程；
+#   WORKER_MODE=http（serverless 门铃）：监听 WORKER_HTTP_PORT（默认 9001，EXPOSE 见下），
+#     POST /wake 触发认领（Bearer WORKER_NOTIFY_SECRET），GET /healthz 供平台探活，空闲超时退出。
+# 两种模式的转码临时目录都在 os.tmpdir()，必须给容器挂大磁盘（ADR-0003：Worker 挂大磁盘）。
 FROM oven/bun:1.4-debian
 
 ENV TZ=Asia/Shanghai
@@ -23,6 +26,14 @@ RUN bun install --frozen-lockfile
 
 # packages/db/src/index.ts 静态导入 mysql + sqlite 两份客户端，缺任一份 Next / Bun 解析即失败
 RUN bun run --cwd packages/db generate:mysql && bun run --cwd packages/db generate:sqlite
+
+# http 模式监听端口（resident 模式不监听；仅为编排 / 平台的端口声明）
+EXPOSE 9001
+
+# 双模式健康检查（与 docker-compose.yml worker 服务一致）：
+# http 模式探 /healthz；resident 模式无端口，进程（PID 1）在 = 健康。
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD ["sh", "-c", "if [ \"${WORKER_MODE:-resident}\" = \"http\" ]; then bun -e \"const r = await fetch('http://127.0.0.1:'+(process.env.WORKER_HTTP_PORT||9001)+'/healthz'); process.exit(r.ok?0:1)\"; else kill -0 1; fi"]
 
 # worker 直接跑 TS 源码（Bun 原生转译，无构建步骤）
 CMD ["bun", "apps/worker/src/index.ts"]

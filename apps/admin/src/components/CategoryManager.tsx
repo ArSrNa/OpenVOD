@@ -42,6 +42,7 @@ interface CategoryItem {
   /** 系统内置分类（默认分类「其他」）：不可删除 */
   is_system: boolean;
   media_count: number;
+  /** 含子孙媒资数（API 保留字段，当前页面不展示） */
   descendant_media_count: number;
   created_at: string;
   updated_at: string;
@@ -247,11 +248,6 @@ export function CategoryManager() {
               <Tag color="blue">默认</Tag>
             </Tooltip>
           )}
-          {row.descendant_media_count > row.media_count && (
-            <Tooltip title={`含子孙分类共 ${row.descendant_media_count} 个媒资`}>
-              <Tag color="default">+{row.descendant_media_count - row.media_count}</Tag>
-            </Tooltip>
-          )}
         </Space>
       ),
     },
@@ -262,7 +258,6 @@ export function CategoryManager() {
       render: (v: string | null) => v ?? "—",
     },
     { title: "直属媒资", dataIndex: "media_count", width: 90 },
-    { title: "含子孙", dataIndex: "descendant_media_count", width: 90 },
     { title: "排序", dataIndex: "sort_order", width: 70 },
     {
       title: "更新时间",
@@ -300,7 +295,7 @@ export function CategoryManager() {
                     ? `${row.media_count} 个直属媒资会归入默认分类「其他」（媒资不会被删除，仅同步刷新自定义元数据里的分类投影）`
                     : "该分类下暂无直属媒资"}
                   <br />
-                  含子孙分类共 {row.descendant_media_count} 个媒资；分类本身不可恢复。
+                  分类本身不可恢复。
                 </div>
               }
               okText="删除"

@@ -452,7 +452,7 @@ export const MediaCategoryDTO = z.object({
   is_system: z.boolean(),
   /** 直属该分类的媒资数（不含子孙） */
   media_count: z.number().int(),
-  /** 含子孙分类的媒资数（删除确认提示用） */
+  /** 含子孙分类的媒资数（**保留字段**：当前管理端不展示，仅 API 返回） */
   descendant_media_count: z.number().int(),
   created_at: z.string(),
   updated_at: z.string(),
@@ -470,6 +470,7 @@ const MediaCategoryInput = z.object({
     .trim()
     .min(1, "分类名不能为空")
     .max(MEDIA_CATEGORY_NAME_MAX, `分类名最多 ${MEDIA_CATEGORY_NAME_MAX} 个字符`),
+  /** 分类自身的描述（管理端「分类管理」页；**与媒资的视频描述 `media.description` 无关**） */
   description: z
     .string()
     .trim()

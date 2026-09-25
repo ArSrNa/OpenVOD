@@ -6,7 +6,8 @@
 // 转码产物：按模板的产物列表（抽屉）→ **解密播放**（走分发端签名链路，管理端不出密钥，spec.md §6）
 // 与**按模板删除**（只删该模板子树，spec.md §5.5）；
 // 「更多 → 字幕管理」打开字幕管理抽屉（M4，spec.md §7 / SubtitleManager）；
-// 「更多 → 分类与标签」/ 详情弹窗 → 自定义元数据编辑（分类 / 描述 / 标签，spec.md §8；分类树在 /categories 维护）。
+// 「更多 → 分类、描述与标签」/ 详情弹窗 → 自定义元数据编辑（分类 / **视频描述** / 标签，spec.md §8；分类树在 /categories 维护）。
+// 注意：这里的 description 是**视频（媒资）自身**的描述，与「分类管理」页里分类的 `media_categories.description` 无关。
 import {
   CloudUploadOutlined,
   CopyOutlined,
@@ -255,7 +256,7 @@ function uploadTo(url: string, file: File, onProgress?: (pct: number) => void): 
 
 // 表格不随条目数无限增高：表体限高后内部纵向滚动、表头固定（列宽合计见下方 columns）。
 // 滚动实现抽至 tableScroll.ts（管理端所有表格共用约定，spec.md §3）。
-const TABLE_MIN_WIDTH = 1530; // 固定列 1150（含首列封面缩略图 + 分类/标签列 180）+ 字幕列 90 + 展示名最小可读宽度
+const TABLE_MIN_WIDTH = 1730; // 固定列 1350（含首列封面缩略图 + 分类/标签 180 + 描述 200）+ 字幕列 90 + 展示名最小可读宽度
 
 /** 码率（bps）→ 可读字符串 */
 function formatBitrate(bps: number | null | undefined): string {
@@ -363,7 +364,7 @@ function ProbeSummaryView({ probe }: { probe: ProbeSummary }) {
       </div>
       <details style={{ marginTop: 8 }}>
         <summary style={{ cursor: "pointer", fontSize: 12 }}>
-          <Typography.Text type="secondary">探测摘要 JSON（原始 ffprobe 输出见 metadata/{'{'}id{'}'}/probe.json）</Typography.Text>
+          <Typography.Text type="secondary">原始数据</Typography.Text>
         </summary>
         <pre style={{ margin: "4px 0 0", fontSize: 12, maxHeight: 220, overflow: "auto" }}>
           {JSON.stringify(probe, null, 2)}
@@ -844,7 +845,7 @@ export function MediaList() {
     items: [
       { key: "transcode", icon: <ThunderboltOutlined />, label: "转码" },
       { key: "subtitle", icon: <FontSizeOutlined />, label: "字幕管理" },
-      { key: "custom", icon: <TagsOutlined />, label: "分类与标签", disabled: customLoading },
+      { key: "custom", icon: <TagsOutlined />, label: "分类、描述与标签", disabled: customLoading },
       {
         key: "metadata",
         icon: <FileTextOutlined />,
@@ -1011,13 +1012,22 @@ export function MediaList() {
               )}
             </Space>
           )}
-          {row.description && (
-            <Typography.Text type="secondary" style={{ fontSize: 12 }} ellipsis={{ tooltip: row.description }}>
-              {row.description}
-            </Typography.Text>
-          )}
         </div>
       ),
+    },
+    {
+      // 视频（媒资）描述：与分类描述（/categories 页）是两回事，这里单独一列展示（spec.md §8）
+      title: "描述",
+      dataIndex: "description",
+      width: 200,
+      render: (description: string | null) =>
+        description ? (
+          <Typography.Text style={{ fontSize: 13 }} ellipsis={{ tooltip: description }}>
+            {description}
+          </Typography.Text>
+        ) : (
+          <Typography.Text type="secondary">—</Typography.Text>
+        ),
     },
     {
       title: "转码产物",
@@ -1257,7 +1267,7 @@ export function MediaList() {
                 </Typography.Text>
               )}
             </Descriptions.Item>
-            <Descriptions.Item label="自定义元数据（分类 / 描述 / 标签）" span={2}>
+            <Descriptions.Item label="自定义元数据" span={2}>
               <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%" }}>
                 <div style={CELL}>
                   <Typography.Text type="secondary">分类：</Typography.Text>
@@ -1266,12 +1276,9 @@ export function MediaList() {
                   ) : (
                     <Tag color="default">未分类</Tag>
                   )}
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    （无限层级分类树在「分类管理」页维护）
-                  </Typography.Text>
                 </div>
                 <div style={CELL}>
-                  <Typography.Text type="secondary">描述：</Typography.Text>
+                  <Typography.Text type="secondary">视频描述：</Typography.Text>
                   {detail.custom.description ?? "—"}
                 </div>
                 <div style={CELL}>
@@ -1300,20 +1307,7 @@ export function MediaList() {
                   >
                     编辑自定义元数据
                   </Button>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    保存后写入 media.custom_data，并导出 metadata/{detail.id}/custom.json
-                  </Typography.Text>
                 </Space>
-                <details>
-                  <summary style={{ cursor: "pointer", fontSize: 12 }}>
-                    <Typography.Text type="secondary">
-                      投影 JSON（分发端按公开白名单下发 category / description / tags，spec.md §8.4）
-                    </Typography.Text>
-                  </summary>
-                  <pre style={{ margin: "4px 0 0", fontSize: 12, maxHeight: 160, overflow: "auto" }}>
-                    {JSON.stringify(detail.customData ?? {}, null, 2)}
-                  </pre>
-                </details>
               </div>
             </Descriptions.Item>
           </Descriptions>
@@ -1354,7 +1348,7 @@ export function MediaList() {
           分类树在「分类管理」页维护（无限层级），此处为 TreeSelect 选择 */}
       <Modal
         open={customTarget !== null}
-        title={`分类与标签：${customTarget?.title ?? customTarget?.id ?? ""}`}
+        title={`分类、描述与标签：${customTarget?.title ?? customTarget?.id ?? ""}`}
         okText="保存"
         cancelText="取消"
         confirmLoading={customSaving}
@@ -1366,11 +1360,6 @@ export function MediaList() {
           <Form.Item
             name="category_id"
             label="分类"
-            extra={
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                无限层级分类树（在「分类管理」页维护）；留空 = 归入默认分类「其他」（未设置分类的媒资默认归属）
-              </Typography.Text>
-            }
           >
             <TreeSelect
               treeData={categoryOptions}
@@ -1385,15 +1374,10 @@ export function MediaList() {
           </Form.Item>
           <Form.Item
             name="description"
-            label="描述"
+            label="视频描述"
             rules={[{ max: 191, message: "描述最多 191 个字符" }]}
-            extra={
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                业务描述（简介 / 备注等），随自定义元数据下发给播放端
-              </Typography.Text>
-            }
           >
-            <Input.TextArea rows={3} maxLength={191} showCount placeholder="业务描述（可选）" />
+            <Input.TextArea rows={3} maxLength={191} showCount placeholder="视频描述（可选）" />
           </Form.Item>
           <Form.Item
             name="tags"

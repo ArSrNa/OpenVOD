@@ -66,7 +66,7 @@
 |---|---|
 | 转码 | 弹窗**多选**转码模板一并发起转码（每个模板各入队一条任务）；产物按模板落在 `proceed/{媒资id}/{模板id}/`（spec.md §1.3），列表/详情按模板分组展示「哪套产物出自哪个模板」（模板定义与执行规则见下文「转码模板管理」） |
 | 字幕管理 | 多轨 WebVTT 字幕的增删改查（上传 / 更新元信息 / 覆盖文本 / 删除 / 设为默认），落 `proceed/{媒资id}/subtitles/{trackId}.vtt`（`trackId` = 服务端生成的轨道唯一 ID，同时是 `media_subtitles.id` 与存储文件名）并落 `media_subtitles` 表；语言按 BCP-47（如 `zh-CN` / `en-US`，输入兼容 `zh_CN` / `en_US` 写法、服务端归一化）。权威规则见 spec.md §7 |
-| 分类与标签 | 设置该媒资的**归属分类**（无限层级分类树中选一个节点；留空 = 归入默认分类「其他」）+ **描述** + **标签**；三项写入 `media.custom_data`（自定义元数据**稀疏投影**，含分类 `name` / `path` 快照）并导出 `metadata/{id}/custom.json`。权威规则见 spec.md §8 |
+| 分类与标签 | 设置该媒资的**归属分类**（无限层级分类树中选一个节点；留空 = 归入默认分类「其他」）+ **视频描述**（媒资自身的描述，与分类描述无关）+ **标签**；三项写入 `media.custom_data`（自定义元数据**稀疏投影**，含分类 `name` / `path` 快照）并导出 `metadata/{id}/custom.json`。权威规则见 spec.md §8 |
 | 生成元数据 | 为该媒资生成元数据到 `metadata/` 分区 |
 | 设置封面 | 手动上传图片，或从原视频截帧（拖拽进度条选时间点取当前帧）作为封面，落该媒资的 `cover/{id}/` 目录 |
 
@@ -150,7 +150,7 @@
 
 **实现状态（2026-09-24，分类 / 描述 / 标签竖切）**
 
-- ✅ 已完成：`media_categories` 表（无限层级邻接表 + 同级唯一 + `SetNull` 引用）与 `media` 的 `category_id` / `description` / `tags`（迁移 `20260924120000_media_categories`，双方言 schema 与 parity 门禁同步）；**默认分类「其他」**（`is_system` + 幂等补建 + 历史行回填，迁移 `20260924130000_default_category` / `20260924140000_backfill_default_category`；上传即落库、留空 = 「其他」、读取空值回退、不可删除、删除分类时迁入）；`/api/admin/categories`（列表含直属 / 含子孙媒资计数、新建、更新、删除，含同级重名与环路校验、删除保护、投影刷新）；`PATCH /api/admin/media/{id}` 扩展为「重命名 + 自定义元数据」；`custom_data` 稀疏投影与 `metadata/{id}/custom.json` 导出；分发端 `custom` 公开白名单（列表 + 详情，含 Go 单测）；管理端「分类管理」页 `/categories`（默认分类带标记、删除禁用）、媒资页「更多 → 分类与标签」与详情弹窗展示 / 编辑（TreeSelect 选分类 + 描述 + 标签）。
+- ✅ 已完成：`media_categories` 表（无限层级邻接表 + 同级唯一 + `SetNull` 引用）与 `media` 的 `category_id` / `description` / `tags`（迁移 `20260924120000_media_categories`，双方言 schema 与 parity 门禁同步）；**默认分类「其他」**（`is_system` + 幂等补建 + 历史行回填，迁移 `20260924130000_default_category` / `20260924140000_backfill_default_category`；上传即落库、留空 = 「其他」、读取空值回退、不可删除、删除分类时迁入）；`/api/admin/categories`（列表含直属媒资计数（含子孙计数为 API 保留字段，UI 不展示）、新建、更新、删除，含同级重名与环路校验、删除保护、投影刷新）；`PATCH /api/admin/media/{id}` 扩展为「重命名 + 自定义元数据」；`custom_data` 稀疏投影与 `metadata/{id}/custom.json` 导出；分发端 `custom` 公开白名单（列表 + 详情，含 Go 单测）；管理端「分类管理」页 `/categories`（默认分类带标记、删除禁用）、媒资页「更多 → 分类与标签」与详情弹窗展示 / 编辑（TreeSelect 选分类 + 描述 + 标签）。
 - ⏳ 未完成（演进项）：分类路径物化列（深树查询与移动优化）、标签实体化与治理（重命名 / 合并 / 统计）、投影刷新任务化（超大规模分类的改名 / 移动）、`/v1/media` 按分类 / 标签筛选、分类改名后已签发 token 的输出即时性（当前随投影刷新时机）。
 
 ### 控制台总览（管理端主页，2026-09-18 用户定）

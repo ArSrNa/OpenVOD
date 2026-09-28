@@ -17,6 +17,11 @@ tasks:
   vectors:
     cmds: [bun run crypto:vectors]
 
+  # ---- 环境 ----
+  env:init:
+    desc: 交互式向导生成根 .env（问答 DB/端口、自动生成 MASTER_KEYS；与 gen-env.sh 互补，ADR-0015）
+    cmds: [bun scripts/init-env.ts]
+
   # ---- 数据库（ADR-0004） ----
   db:generate:
     desc: 生成两份 Prisma 客户端（src/index.ts 静态导入 mysql+sqlite，缺一会导致 Next 打包失败）

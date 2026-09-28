@@ -3,11 +3,13 @@ import { MEDIA_ID_CONFIG, SETTING_TTL_LIMITS } from "@openvod/shared";
 export interface SettingField {
   key: string;
   label: string;
-  type: "text" | "number" | "secret" | "boolean";
+  type: "text" | "number" | "secret" | "boolean" | "enum";
   help?: string;
   min?: number;
   max?: number;
   placeholder?: string;
+  /** type="enum" 时的可选项；后端 enumValidator 校验同一取值集合 */
+  options?: Array<{ value: string; label: string }>;
 }
 const ttl = (key: keyof typeof SETTING_TTL_LIMITS, label: string): SettingField => ({ key, label, type: "number", ...SETTING_TTL_LIMITS[key] });
 
@@ -65,13 +67,20 @@ export const SETTINGS_GROUPS = {
     title: "任务设置",
     description: "调整 Worker 运行模式、轮询、任务租约和最大尝试次数；转码编码参数在「转码模板」维护。",
     fields: [
-      { key: "worker_mode", label: "Worker 运行模式", type: "text", placeholder: "resident", help: "resident = 常驻轮询（自托管）；http = HTTP 门铃（serverless，需配置唤醒地址与密钥）。ADR-0017。" },
-      { key: "worker_notify_url", label: "Worker 唤醒地址", type: "text", placeholder: "https://worker.example.com", help: "http 模式必填；发起转码 / 重启后管理端会 POST 该地址（/wake）加速认领。通知可丢，任务留存队列。" },
-      { key: "worker_notify_secret", label: "Worker 唤醒密钥", type: "secret", help: "至少 16 字符；worker 侧 WORKER_NOTIFY_SECRET 需与之相同，不回显。" },
-      { key: "worker_poll_interval_ms", label: "轮询间隔（毫秒）", type: "number", min: 500, max: 600000, help: "仅 resident 模式使用。" },
+      {
+        key: "worker_mode", label: "Worker 运行模式", type: "enum",
+        options: [
+          { value: "resident", label: "常驻轮询（适用于服务器）" },
+          { value: "http", label: "HTTP发起（适用于serverless）" },
+        ],
+        help: "常驻轮询适用于服务器24小时在线环境，会不断触发轮询来接受任务。http则适用于突发环境，收到请求后触发任务。",
+      },
+      { key: "worker_notify_url", label: "Worker 唤醒地址", type: "text", placeholder: "https://worker.example.com", help: "http 模式必填；发起转码相关任务后会POST此地址" },
+      { key: "worker_notify_secret", label: "Worker 唤醒密钥", type: "secret", help: "至少16字符；worker侧WORKER_NOTIFY_SECRET需与之相同" },
+      { key: "worker_poll_interval_ms", label: "轮询间隔（毫秒）", type: "number", min: 500, max: 600000, help: "仅 常驻轮询模式使用。" },
       { key: "worker_lease_ms", label: "任务租约（毫秒）", type: "number", min: 5000, max: 3600000, help: "执行中的任务继续按认领时的租约续期；新值作用于之后认领的任务。" },
-      { key: "worker_max_attempts", label: "最大尝试次数", type: "number", min: 1, max: 20, help: "包含首次执行，不是额外重试次数。" },
-      { key: "media_id_length", label: "新媒资 ID 位数", type: "number", min: MEDIA_ID_CONFIG.minLength, max: MEDIA_ID_CONFIG.maxLength, help: "只影响新上传媒资，已有 ID 和文件名保持不变。" },
+      { key: "worker_max_attempts", label: "最大尝试次数", type: "number", min: 1, max: 20, help: "包含首次执行，非额外重试次数。" },
+      { key: "media_id_length", label: "媒资ID长度", type: "number", min: MEDIA_ID_CONFIG.minLength, max: MEDIA_ID_CONFIG.maxLength, help: "只影响新上传媒资，已有ID和文件名保持不变。" },
     ],
   },
 } satisfies Record<string, { title: string; description: string; fields: SettingField[] }>;

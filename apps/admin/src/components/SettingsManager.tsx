@@ -179,6 +179,16 @@ export function SettingsManager({ group = "playback" }: { group?: SettingsGroup 
     if (field.type === "boolean") {
       return <Select options={[{ value: "true", label: "启用" }, { value: "false", label: "关闭" }, { value: "", label: "使用环境变量或默认值" }]} />;
     }
+    if (field.type === "enum") {
+      return (
+        <Select
+          options={[
+            ...(field.options ?? []),
+            { value: "", label: "使用环境变量或默认值" },
+          ]}
+        />
+      );
+    }
     return <Input placeholder={field.placeholder ?? "留空使用环境变量或默认值"} allowClear autoComplete="off" />;
   };
 

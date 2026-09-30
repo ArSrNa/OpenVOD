@@ -129,6 +129,42 @@ function UploadMenuBadge() {
   return <Badge count={count} size="small" />;
 }
 
+// 进行中转码任务状态（同 JobsManager 的 ACTIVE：未终结即计入，spec.md §5.1 状态机）
+const JOBS_ACTIVE = new Set(["QUEUED", "PROBING", "ENCODING", "PACKAGING"]);
+
+/**
+ * 「转码任务」菜单项角标（2026-10-01 用户定）：存在进行中任务时显示数量，无则不渲染。
+ * 数据源与任务页同一 SSE（/api/admin/jobs/stream）：连接即回放全量快照，服务端仅变化时推帧；
+ * 连接永久断开（HTTP 非 200，如会话过期）后隐藏角标避免陈旧数量，网络类断线由浏览器自动重连。
+ */
+function JobsMenuBadge() {
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const es = new EventSource("/api/admin/jobs/stream");
+    const onJobs = (ev: MessageEvent) => {
+      try {
+        const data = JSON.parse(ev.data as string) as { items?: { status?: string }[] };
+        if (!alive) return;
+        setCount((data.items ?? []).filter((j) => JOBS_ACTIVE.has(j.status ?? "")).length);
+      } catch {
+        // 单帧坏数据忽略：下一帧是全量覆盖，可自愈
+      }
+    };
+    es.addEventListener("jobs", onJobs);
+    es.onerror = () => {
+      if (es.readyState === EventSource.CLOSED && alive) setCount(0);
+    };
+    return () => {
+      alive = false;
+      es.removeEventListener("jobs", onJobs);
+      es.close();
+    };
+  }, []);
+  if (count === 0) return null;
+  return <Badge count={count} size="small" />;
+}
+
 export function ConsoleShell({
   userName,
   version,
@@ -256,6 +292,8 @@ export function ConsoleShell({
           <span style={{ flex: 1, minWidth: 0 }}>{dom}</span>
           {/* 上传任务角标（spec.md §9.1，2026-10-01 用户定）：挂在「视频上传」菜单项上 */}
           {item.path === "/media/upload" ? <UploadMenuBadge /> : null}
+          {/* 进行中转码任务角标（2026-10-01 用户定）：挂在「转码任务」菜单项上 */}
+          {item.path === "/jobs" ? <JobsMenuBadge /> : null}
         </div>
       )}
       avatarProps={{

@@ -1099,9 +1099,11 @@ export function MediaList() {
         ),
     },
     {
+      // 操作列固定右侧（横向滚动时始终可见），左侧各列随 scroll.x 滚动
       title: "操作",
       key: "actions",
       width: 180,
+      fixed: "right",
       render: (_, record) => (
         <Space size={0}>
           <Tooltip title="预览">

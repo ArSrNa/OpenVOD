@@ -287,6 +287,8 @@ export interface MediaRow {
   key: string;
   size: number;
   lastModified?: string;
+  /** 自定义上传时间（数据库 uploaded_at；null = 未自定义，展示回退 lastModified，spec.md §3.1） */
+  uploadedAt?: string | null;
   assets: { proceed: number; cover: number; metadata: number };
   /** 转码产物按模板分组（spec.md §1.3）；空数组 = 尚无转码产物 */
   products: MediaProduct[];
@@ -304,6 +306,7 @@ export async function listMedia(): Promise<{ total: number; items: MediaRow[] }>
     categoryId: string | null;
     description: string | null;
     tags: unknown;
+    uploadedAt: Date | null;
   };
   // DB 查询失败时降级为纯存储视角（title/status 置 null），保证列表可用
   const rowsTask: Promise<MediaDbRow[]> = db.media
@@ -316,6 +319,7 @@ export async function listMedia(): Promise<{ total: number; items: MediaRow[] }>
         categoryId: true,
         description: true,
         tags: true,
+        uploadedAt: true,
       },
     })
     .catch(() => [] as MediaDbRow[]);
@@ -353,6 +357,7 @@ export async function listMedia(): Promise<{ total: number; items: MediaRow[] }>
     items.push({
       id: m[1],
       title: row?.title ?? null,
+      uploadedAt: row?.uploadedAt?.toISOString() ?? null,
       status: row?.status ?? null,
       posterKey: row?.posterKey ?? null,
       // 未设置分类 → 回退系统默认分类「其他」（spec.md §8.1 修订）
@@ -408,6 +413,8 @@ export interface MediaDetail {
   ext: string | null;
   size: number | null;
   lastModified: string | null;
+  /** 自定义上传时间（null = 未自定义；管理端展示回退 lastModified，spec.md §3.1） */
+  uploadedAt: string | null;
   createdAt: string | null;
   updatedAt: string | null;
   /** ffprobe 系统元数据（转码流水线写入，未实现时为 null） */
@@ -446,6 +453,7 @@ export async function getMediaDetail(id: string): Promise<MediaDetail> {
     ext,
     size: original?.size ?? null,
     lastModified: original?.lastModified?.toISOString() ?? null,
+    uploadedAt: row?.uploadedAt?.toISOString() ?? null,
     createdAt: row?.createdAt?.toISOString() ?? null,
     updatedAt: row?.updatedAt?.toISOString() ?? null,
     probe: row?.probe ?? null,
@@ -485,6 +493,42 @@ export async function renameMedia(
       throw new MediaError("not_found", `媒资不存在或未入库：${id}`, 404);
     }
     throw new MediaError("internal", `重命名失败：${(e as Error).message}`, 500);
+  }
+}
+
+// ---- 自定义上传时间（spec.md §3.1：管理端展示 + 分发端列表排序回退；不进入元数据投影） ----
+
+/**
+ * 设置 / 清除媒资自定义上传时间：
+ * - `uploadedAt` = ISO 8601 字符串 → 落库 `media.uploaded_at`（管理端展示优先，分发端排序第二级回退）；
+ * - `null` → 清除自定义（管理端展示回退存储对象原始写入时间，分发端排序回退 created_at）。
+ * 只改 DB 列，不触碰存储对象（original 的写入时间由对象存储决定，不可改）。
+ */
+export async function updateMediaUploadedAt(
+  id: string,
+  uploadedAt: string | null,
+): Promise<{ id: string; uploadedAt: string | null }> {
+  assertMediaId(id);
+  let value: Date | null = null;
+  if (uploadedAt !== null) {
+    const parsed = new Date(uploadedAt);
+    if (Number.isNaN(parsed.getTime())) {
+      throw new MediaError("bad_request", `上传时间非法（需 ISO 8601 时间）：${uploadedAt}`, 400);
+    }
+    value = parsed;
+  }
+  try {
+    const row = await db.media.update({
+      where: { id },
+      data: { uploadedAt: value },
+      select: { id: true, uploadedAt: true },
+    });
+    return { id: row.id, uploadedAt: row.uploadedAt?.toISOString() ?? null };
+  } catch (e) {
+    if (isRecordNotFound(e)) {
+      throw new MediaError("not_found", `媒资不存在或未入库：${id}`, 404);
+    }
+    throw new MediaError("internal", `上传时间更新失败：${(e as Error).message}`, 500);
   }
 }
 

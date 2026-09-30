@@ -112,13 +112,14 @@ func (s *Store) MediaByID(ctx context.Context, id string) (*Media, error) {
 	return &m, nil
 }
 
-/** ListReady 上架可播列表（status=READY；ADR-0010「仅上架 ready 项」） */
+/** ListReady 上架可播列表（status=READY；ADR-0010「仅上架 ready 项」）
+ *  排序回退链：发布时间 → 自定义上传时间（管理端可设置，spec.md §3.1）→ 入库时间 */
 func (s *Store) ListReady(ctx context.Context, limit int) ([]Media, error) {
 	rows := []Media{}
 	err := s.db.SelectContext(ctx, &rows,
 		`SELECT id, title, status, custom_data, duration_ms, poster_key, probe
 		   FROM media WHERE status = 'READY'
-		  ORDER BY COALESCE(published_at, created_at) DESC, id DESC
+		  ORDER BY COALESCE(published_at, uploaded_at, created_at) DESC, id DESC
 		  LIMIT ?`, limit)
 	if err != nil {
 		return nil, err

@@ -191,6 +191,9 @@ model Media {
   durationMs  Int?        @map("duration_ms")
   posterKey   String?     @map("poster_key")
   publishedAt DateTime?   @map("published_at")
+  /// 自定义上传时间（spec.md §3.1）：NULL = 管理端展示回退存储对象原始写入时间；
+  /// 分发端列表排序回退链 COALESCE(published_at, uploaded_at, created_at) 的第二级
+  uploadedAt  DateTime?   @map("uploaded_at")
   createdAt   DateTime    @default(now()) @map("created_at")
   updatedAt   DateTime    @updatedAt @map("updated_at")
 

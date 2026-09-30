@@ -505,7 +505,8 @@ export const MediaTagsRequest = z
 
 /**
  * PATCH /api/admin/media/{id}：媒资字段部分更新（spec.md §8.2）。
- * `title` 走重命名语义（只改展示名）；其余三项即「自定义元数据」设置。
+ * `title` 走重命名语义（只改展示名）；`description` / `tags` / `category_id` 即「自定义元数据」设置；
+ * `uploaded_at` 为自定义上传时间：**不进入**元数据投影与分发端下发，仅管理端展示 + 分发端列表排序回退（spec.md §3.1）。
  */
 export const UpdateMediaRequest = z
   .object({
@@ -519,6 +520,11 @@ export const UpdateMediaRequest = z
     tags: MediaTagsRequest.nullable().optional(),
     /** 归属分类 ID；null = 移出分类（分类必须存在，服务端校验） */
     category_id: z.string().nullable().optional(),
+    /** 自定义上传时间（ISO 8601，UTC `Z` 或带时区偏移）；null = 恢复默认（回退存储对象原始写入时间） */
+    uploaded_at: z
+      .iso.datetime({ offset: true, error: "上传时间必须是合法的 ISO 8601 时间" })
+      .nullable()
+      .optional(),
   })
   .refine((v) => Object.keys(v).length > 0, { message: "没有需要更新的字段" });
 

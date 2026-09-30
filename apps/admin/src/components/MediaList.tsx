@@ -1,14 +1,17 @@
 "use client";
 
 // 媒资管理页（/media，intent.md 媒资管理操作）：
-// 上传原视频 / 预览（弹窗播放 original）/ 详情 / 重命名 / 删除 / 设置封面（双模式：手动上传 / 视频截帧，spec.md §2.3） / 生成元数据（ffprobe）；
+// 上传原视频 → 跳转独立上传页 /media/upload（2026-10-01 起，spec.md §9，本页不再内联上传）；
+// 预览（弹窗播放 original）/ 详情 / 重命名 / 删除 / 设置封面（双模式：手动上传 / 视频截帧，spec.md §2.3） / 生成元数据（ffprobe）；
 // 「更多 → 转码」已实现（M2：选转码模板入队 transcode_jobs，Worker 认领执行，进度见「转码任务」页）；
 // 转码产物：按模板的产物列表（抽屉）→ **解密播放**（走分发端签名链路，管理端不出密钥，spec.md §6）
 // 与**按模板删除**（只删该模板子树，spec.md §5.5）；
 // 「更多 → 字幕管理」打开字幕管理抽屉（M4，spec.md §7 / SubtitleManager）；
 // 「更多 → 分类、描述与标签」/ 详情弹窗 → 自定义元数据编辑（分类 / **视频描述** / 标签，spec.md §8；分类树在 /categories 维护）。
+// 「更多 → 修改上传时间」/ 详情弹窗 → 自定义上传时间（spec.md §3.1：管理端展示 + 分发端列表排序第二级回退，可恢复默认）。
 // 注意：这里的 description 是**视频（媒资）自身**的描述，与「分类管理」页里分类的 `media_categories.description` 无关。
 import {
+  ClockCircleOutlined,
   CloudUploadOutlined,
   CopyOutlined,
   DeleteOutlined,
@@ -27,6 +30,7 @@ import { ProCard } from "@ant-design/pro-components";
 import {
   App,
   Button,
+  DatePicker,
   Descriptions,
   Drawer,
   Dropdown,
@@ -47,9 +51,12 @@ import {
   Upload,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
+import dayjs, { type Dayjs } from "dayjs";
 import { useRouter } from "next/navigation";
 import { buildCategoryTree, type CategoryTreeNode } from "@/lib/category-tree";
+import { formatSize } from "@/lib/format";
 import { PRODUCT_LEGACY_ID } from "@/lib/media-products";
+import { uploadViaXhr, UploadUnauthorizedError } from "@/lib/xhr-upload";
 import { CoverFrameCapture } from "./CoverFrameCapture";
 import { HlsPreviewPlayer } from "./HlsPreviewPlayer";
 import { SubtitleManager } from "./SubtitleManager";
@@ -90,6 +97,8 @@ interface MediaListItem {
   key: string;
   size: number;
   lastModified?: string;
+  /** 自定义上传时间（数据库 uploaded_at；null = 未自定义，展示回退 lastModified，spec.md §3.1） */
+  uploadedAt?: string | null;
   assets: { proceed: number; cover: number; metadata: number };
   products: MediaProduct[];
   /** 该媒资的字幕对象数（proceed/{id}/subtitles/*.vtt，spec.md §7.2） */
@@ -107,6 +116,8 @@ interface MediaDetail {
   ext: string | null;
   size: number | null;
   lastModified: string | null;
+  /** 自定义上传时间（null = 未自定义；管理端展示回退 lastModified，spec.md §3.1） */
+  uploadedAt: string | null;
   createdAt: string | null;
   updatedAt: string | null;
   probe: ProbeSummary | null;
@@ -216,47 +227,15 @@ function productLabel(p: MediaProduct): string {
   return p.templateName ?? `模板已删除（${p.templateId.slice(0, 8)}…）`;
 }
 
-function formatSize(bytes: number | null | undefined): string {
-  if (bytes == null) return "—";
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let v = bytes;
-  let i = -1;
-  do {
-    v /= 1024;
-    i++;
-  } while (v >= 1024 && i < units.length - 1);
-  return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
-}
-
 function formatTime(iso?: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString("zh-CN", { hour12: false });
 }
 
-/** XHR 流式上传（File 直接作请求体，服务端按 octet-stream 流式接收；带进度回调） */
-function uploadTo(url: string, file: File, onProgress?: (pct: number) => void): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", url);
-    xhr.responseType = "json";
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) onProgress?.(Math.round((e.loaded / e.total) * 100));
-    };
-    xhr.onload = () => {
-      const body = xhr.response as { error?: { message?: string } } | null;
-      if (xhr.status >= 200 && xhr.status < 300) resolve(body);
-      else reject(new Error(body?.error?.message ?? `上传失败（HTTP ${xhr.status}）`));
-    };
-    xhr.onerror = () => reject(new Error("网络错误"));
-    xhr.send(file);
-  });
-}
-
 // 表格不随条目数无限增高：表体限高后内部纵向滚动、表头固定（列宽合计见下方 columns）。
 // 滚动实现抽至 tableScroll.ts（管理端所有表格共用约定，spec.md §3）。
-const TABLE_MIN_WIDTH = 1730; // 固定列 1350（含首列封面缩略图 + 分类/标签 180 + 描述 200）+ 字幕列 90 + 展示名最小可读宽度
+const TABLE_MIN_WIDTH = 1770; // 固定列 1390（含首列封面缩略图 + 分类/标签 180 + 描述 200 + 上传时间 210）+ 字幕列 90 + 展示名最小可读宽度
 
 /** 码率（bps）→ 可读字符串 */
 function formatBitrate(bps: number | null | undefined): string {
@@ -384,13 +363,17 @@ export function MediaList() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [uploadingName, setUploadingName] = useState<string | null>(null);
-  const [uploadPct, setUploadPct] = useState(0);
-
   const [preview, setPreview] = useState<MediaListItem | null>(null);
   const [detail, setDetail] = useState<MediaDetail | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
+
+  // 自定义上传时间（spec.md §3.1）：详情弹窗「编辑」与列表「更多 → 修改上传时间」共用同一弹窗
+  const [uploadedAtTarget, setUploadedAtTarget] = useState<{ id: string; title: string | null } | null>(
+    null,
+  );
+  const [uploadedAtForm] = Form.useForm<{ uploaded_at?: Dayjs | null }>();
+  const [uploadedAtSaving, setUploadedAtSaving] = useState(false);
 
   const [renameTarget, setRenameTarget] = useState<MediaListItem | null>(null);
   const [renameForm] = Form.useForm();
@@ -452,26 +435,6 @@ export function MediaList() {
     void load();
   }, [load]);
 
-  // ---- 上传原视频 ----
-  const handleUpload = async (file: File) => {
-    setUploadingName(file.name);
-    setUploadPct(0);
-    try {
-      const result = (await uploadTo(
-        `/api/admin/media/upload?filename=${encodeURIComponent(file.name)}`,
-        file,
-        setUploadPct,
-      )) as { id?: string };
-      message.success(`媒资「${file.name}」上传成功（ID ${result?.id ?? "—"}）`);
-      void load();
-    } catch (e) {
-      if ((e as Error).message === "未登录") return;
-      message.error(e instanceof Error ? e.message : "上传失败");
-    } finally {
-      setUploadingName(null);
-    }
-  };
-
   // ---- 详情 ----
   const openDetail = async (record: MediaListItem) => {
     setDetailOpen(true);
@@ -487,6 +450,47 @@ export function MediaList() {
       }
     } finally {
       setDetailLoading(false);
+    }
+  };
+
+  // ---- 自定义上传时间（spec.md §3.1：管理端展示 + 分发端列表排序第二级回退）----
+
+  /** 打开编辑器：回填当前自定义值（null = 留空，保存即恢复默认，回退存储对象写入时间） */
+  const openUploadedAtEditor = (
+    target: { id: string; title: string | null },
+    current: string | null | undefined,
+  ) => {
+    uploadedAtForm.setFieldsValue({ uploaded_at: current ? dayjs(current) : null });
+    setUploadedAtTarget(target);
+  };
+
+  /** 保存：PATCH /api/admin/media/{id}（`uploaded_at` = ISO 字符串，null = 恢复默认） */
+  const handleUploadedAtSave = async () => {
+    if (!uploadedAtTarget) return;
+    const target = uploadedAtTarget;
+    setUploadedAtSaving(true);
+    try {
+      const values = await uploadedAtForm.validateFields();
+      const res = (await fetchJson(`/api/admin/media/${target.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          uploaded_at: values.uploaded_at ? values.uploaded_at.toISOString() : null,
+        }),
+      })) as { uploadedAt?: string | null };
+      const saved = res.uploadedAt ?? null;
+      message.success(saved ? "上传时间已更新" : "上传时间已恢复默认");
+      setUploadedAtTarget(null);
+      // 详情弹窗开着时同步刷新，避免需要关掉重开才能看到新值
+      setDetail((prev) => (prev && prev.id === target.id ? { ...prev, uploadedAt: saved } : prev));
+      void load();
+    } catch (e) {
+      if ((e as { errorFields?: unknown }).errorFields) return; // 表单校验失败
+      if ((e as Error).message !== "未登录") {
+        message.error(e instanceof Error ? e.message : "上传时间保存失败");
+      }
+    } finally {
+      setUploadedAtSaving(false);
     }
   };
 
@@ -846,6 +850,7 @@ export function MediaList() {
       { key: "transcode", icon: <ThunderboltOutlined />, label: "转码" },
       { key: "subtitle", icon: <FontSizeOutlined />, label: "字幕管理" },
       { key: "custom", icon: <TagsOutlined />, label: "分类、描述与标签", disabled: customLoading },
+      { key: "uploadedAt", icon: <ClockCircleOutlined />, label: "修改上传时间" },
       {
         key: "metadata",
         icon: <FileTextOutlined />,
@@ -861,25 +866,30 @@ export function MediaList() {
       else if (key === "transcode") void openTranscode(record);
       else if (key === "subtitle") setSubtitleTarget(record);
       else if (key === "custom") void openCustomMetadata({ id: record.id, title: record.title });
+      else if (key === "uploadedAt")
+        openUploadedAtEditor({ id: record.id, title: record.title }, record.uploadedAt);
       else if (key === "metadata") void handleGenerateMetadata(record);
     },
   });
 
   // 封面上传（双模式共用，spec.md §2.3）：手动上传的 File 与截帧导出的 JPEG Blob（包装成 File）
-  // 都走同一端点 POST /api/admin/media/{id}/cover?filename=…，服务端逻辑无差别
+  // 都走同一端点 POST /api/admin/media/{id}/cover?filename=…，服务端逻辑无差别；
+  // XHR 实现抽至 lib/xhr-upload（与上传页队列共用，spec.md §9.4）
   const handleCoverUpload = async (file: File) => {
     if (!coverTarget) return;
     setCoverUploading(true);
     try {
-      await uploadTo(
+      await uploadViaXhr(
         `/api/admin/media/${coverTarget.id}/cover?filename=${encodeURIComponent(file.name)}`,
         file,
-      );
+      ).promise;
       message.success("封面设置成功");
       setCoverTarget(null);
       void load();
     } catch (e) {
-      if ((e as Error).message !== "未登录") {
+      if (e instanceof UploadUnauthorizedError) {
+        router.push("/login");
+      } else {
         message.error(e instanceof Error ? e.message : "封面设置失败");
       }
     } finally {
@@ -975,11 +985,25 @@ export function MediaList() {
       render: (size: number) => formatSize(size),
     },
     {
+      // 上传时间（spec.md §3.1）：优先自定义值（数据库 uploaded_at），未设置回退对象存储原始写入时间
       title: "上传时间",
-      dataIndex: "lastModified",
-      width: 170,
-      render: (iso?: string) => (
-        <Typography.Text type="secondary">{formatTime(iso)}</Typography.Text>
+      dataIndex: "uploadedAt",
+      width: 210,
+      render: (_: string | null | undefined, record) => (
+        <Space size={4}>
+          <Typography.Text type="secondary">
+            {formatTime(record.uploadedAt ?? record.lastModified)}
+          </Typography.Text>
+          {record.uploadedAt ? (
+            <Tooltip
+              title={`已自定义上传时间（对象存储写入时间：${formatTime(record.lastModified)}）`}
+            >
+              <Tag color="blue" style={{ marginInlineEnd: 0 }}>
+                自定义
+              </Tag>
+            </Tooltip>
+          ) : null}
+        </Space>
       ),
     },
     {
@@ -1120,25 +1144,14 @@ export function MediaList() {
       bordered={false}
       extra={
         <Space>
-          <Upload
-            accept="video/*"
-            showUploadList={false}
-            disabled={uploadingName !== null}
-            beforeUpload={(file) => {
-              void handleUpload(file as File);
-              return false; // 关闭 antd 默认 POST，走自定义流式上传
-            }}
+          {/* 上传视频（2026-10-01 起）：跳转独立上传页 /media/upload（spec.md §9.1），本页不再内联上传 */}
+          <Button
+            type="primary"
+            icon={<CloudUploadOutlined />}
+            onClick={() => router.push("/media/upload")}
           >
-            <Button
-              type="primary"
-              icon={<CloudUploadOutlined />}
-              loading={uploadingName !== null}
-            >
-              {uploadingName
-                ? `上传中 ${uploadPct}%${uploadPct >= 100 ? "（处理中）" : ""}`
-                : "上传视频"}
-            </Button>
-          </Upload>
+            上传视频
+          </Button>
           <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>
             刷新
           </Button>
@@ -1215,7 +1228,22 @@ export function MediaList() {
               {detail.durationMs != null ? `${(detail.durationMs / 1000).toFixed(1)} s` : "—"}
             </Descriptions.Item>
             <Descriptions.Item label="上传时间" span={1}>
-              {formatTime(detail.lastModified ?? detail.createdAt)}
+              <Space size={4}>
+                <Typography.Text>
+                  {formatTime(detail.uploadedAt ?? detail.lastModified ?? detail.createdAt)}
+                </Typography.Text>
+                {detail.uploadedAt ? <Tag color="blue">自定义</Tag> : null}
+                <Tooltip title="修改上传时间">
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<EditOutlined />}
+                    onClick={() =>
+                      openUploadedAtEditor({ id: detail.id, title: detail.title }, detail.uploadedAt)
+                    }
+                  />
+                </Tooltip>
+              </Space>
             </Descriptions.Item>
             <Descriptions.Item label="封面" span={1}>
               {detail.posterKey ? (
@@ -1340,6 +1368,28 @@ export function MediaList() {
             }
           >
             <Input placeholder="媒资展示名" onPressEnter={() => void handleRename()} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* 自定义上传时间（spec.md §3.1）：留空保存 = 恢复默认（回退对象存储写入时间）；
+          管理端展示优先 + 分发端列表排序第二级回退，不进入元数据投影 / 下发 */}
+      <Modal
+        open={uploadedAtTarget !== null}
+        title={`修改上传时间：${uploadedAtTarget?.title ?? uploadedAtTarget?.id ?? ""}`}
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={uploadedAtSaving}
+        onOk={() => void handleUploadedAtSave()}
+        onCancel={() => setUploadedAtTarget(null)}
+        destroyOnHidden
+      >
+        <Form form={uploadedAtForm} layout="vertical" style={{ marginTop: 8 }}>
+          <Form.Item
+            name="uploaded_at"
+            label="上传时间"
+          >
+            <DatePicker showTime allowClear style={{ width: "100%" }} placeholder="选择上传时间" />
           </Form.Item>
         </Form>
       </Modal>

@@ -6,7 +6,7 @@ import { ConsoleShell } from "@/components/ConsoleShell";
 import pkg from "../../../package.json";
 
 export const metadata: Metadata = {
-  title: "媒资管理 - OpenVOD 管理端",
+  title: "视频管理 - OpenVOD 管理端",
 };
 
 export default async function MediaPage() {

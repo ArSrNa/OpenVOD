@@ -15,16 +15,19 @@ import {
   VideoCameraOutlined,
 } from "@ant-design/icons";
 import { PageContainer, ProCard, ProLayout } from "@ant-design/pro-components";
-import { Dropdown, Empty, Spin, Typography } from "antd";
+import { App, Badge, Dropdown, Empty, Spin, Typography } from "antd";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { authClient } from "@/lib/auth-client";
+import { configureUploadManager, uploadManager } from "@/lib/upload-manager";
 
 // 模块骨架（ADR-0004 功能清单；模块路由随 specification 落地）
 const MODULES = [
   { key: "/", label: "总览", icon: <DashboardOutlined /> },
-  { key: "/media", label: "媒资管理", icon: <VideoCameraOutlined /> },
+  // 注意：父项 key 不能与子项「视频管理」（/media）相同，否则扁平化后 antd Menu 报
+  // Duplicated key。父项只是分组（子菜单标题，点击仅展开、不导航），用非路由键。
+  { key: "/media-group", label: "媒资管理", icon: <VideoCameraOutlined /> },
   { key: "/categories", label: "分类管理", icon: <ApartmentOutlined /> },
   { key: "/templates", label: "转码模板", icon: <SlidersOutlined /> },
   { key: "/subtitles", label: "字幕管理", icon: <FontSizeOutlined /> },
@@ -33,6 +36,12 @@ const MODULES = [
   { key: "/jobs", label: "转码任务", icon: <ThunderboltOutlined /> },
   { key: "/settings", label: "系统设置", icon: <SettingOutlined /> },
   { key: "/about", label: "关于", icon: <InfoCircleOutlined /> },
+];
+
+// 媒资管理二级菜单（2026-10-01 用户定，spec.md §9.1）：与系统设置同构，父项仅展开不导航
+const MEDIA_CHILDREN = [
+  { key: "/media", label: "视频管理" },
+  { key: "/media/upload", label: "视频上传" },
 ];
 
 // 系统设置二级菜单：设置项按域拆子页（/settings 本身只做重定向到首个子页）
@@ -44,13 +53,20 @@ const SETTINGS_CHILDREN = [
   { key: "/settings/worker", label: "任务设置" },
 ];
 
+// 有二级菜单的模块：ROUTE 组装时展开为父子结构
+const MODULE_CHILDREN: Record<string, { key: string; label: string }[]> = {
+  "/media-group": MEDIA_CHILDREN,
+  "/settings": SETTINGS_CHILDREN,
+};
+
 // 扁平查找表：内容区标题 / 占位判定用（含二级菜单项）
-const ALL_ENTRIES = [...MODULES, ...SETTINGS_CHILDREN];
+const ALL_ENTRIES = [...MODULES, ...MEDIA_CHILDREN, ...SETTINGS_CHILDREN];
 
 // 已实现的真实路由页：菜单点击直接跳转（其余模块仍是内容区占位）
 const ROUTE_PAGES = new Set([
   "/",
   "/media",
+  "/media/upload",
   "/categories",
   "/templates",
   "/subtitles",
@@ -69,16 +85,17 @@ const ROUTE_PAGES = new Set([
 const ROUTE = {
   path: "/",
   name: "控制台",
-  routes: MODULES.map(({ key, label, icon }) =>
-    key === "/settings"
+  routes: MODULES.map(({ key, label, icon }) => {
+    const children = MODULE_CHILDREN[key];
+    return children
       ? {
         path: key,
         name: label,
         icon,
-        routes: SETTINGS_CHILDREN.map(({ key: k, label: l }) => ({ path: k, name: l })),
+        routes: children.map(({ key: k, label: l }) => ({ path: k, name: l })),
       }
-      : { path: key, name: label, icon },
-  ),
+      : { path: key, name: label, icon };
+  }),
 };
 
 /** 品牌标识（远程 logo，域名白名单见 next.config.ts images.remotePatterns） */
@@ -95,6 +112,21 @@ function BrandLogo() {
       priority
     />
   );
+}
+
+/**
+ * 「视频上传」菜单项角标（spec.md §9.1，2026-10-01 用户定，替代原右上角全局入口）：
+ * 存在进行中上传任务（UPLOADING / QUEUED）时显示数量，无任务不渲染（不显示 0）。
+ */
+function UploadMenuBadge() {
+  const tasks = useSyncExternalStore(
+    uploadManager.subscribe,
+    uploadManager.getSnapshot,
+    uploadManager.getServerSnapshot,
+  );
+  const count = tasks.filter((t) => t.status === "UPLOADING" || t.status === "QUEUED").length;
+  if (count === 0) return null;
+  return <Badge count={count} size="small" />;
 }
 
 export function ConsoleShell({
@@ -123,6 +155,12 @@ export function ConsoleShell({
   useEffect(() => setPlaceholder(null), [pathname]);
   const current = placeholder ?? pathname;
   const active = ALL_ENTRIES.find((m) => m.key === current) ?? MODULES[0];
+  // 精确选中当前叶子菜单：ProLayout 默认按前缀模糊匹配（getMatchMenu 未传 exact），
+  // /media/upload 会同时命中 /media 与 /media/upload 两个叶子 → 双高亮；
+  // 传受控 selectedKeys（BaseMenu useMergedState 的 value）只选中当前项，openKeys 仍自动推导、子菜单照常展开
+  const selectedKeys = Array.from(
+    new Set(ALL_ENTRIES.filter((m) => m.key === current).map((m) => m.key)),
+  );
   // 当前内容区是否为未实现模块的占位页（真实路由页的 children 总是渲染）
   const showPlaceholder = !ROUTE_PAGES.has(current);
 
@@ -131,6 +169,35 @@ export function ConsoleShell({
     router.push("/login");
     router.refresh();
   };
+
+  // 上传队列接线（spec.md §9.4）：401 时用 SPA 跳转登录页（替代默认整页 location.assign）
+  useEffect(() => {
+    configureUploadManager({ onUnauthorized: () => router.push("/login") });
+  }, [router]);
+
+  // 上传任务终态全局提示（spec.md §9.3）：挂在壳层，切页后完成的任务提示也不丢；
+  // 消息文案与上传页任务状态一致（DONE(ready) / DONE(timeout) / FAILED / 401 整队终止）
+  const { message } = App.useApp();
+  useEffect(() => {
+    return uploadManager.onTerminal((task, kind) => {
+      if (kind === "unauthorized") {
+        message.error("登录已过期，上传任务已全部终止");
+        return;
+      }
+      if (kind === "ready") {
+        message.success(`媒资「${task.filename}」上传成功（ID ${task.mediaId}）`);
+        return;
+      }
+      if (kind === "timeout") {
+        message.warning(
+          `媒资「${task.filename}」元数据仍在生成或已失败（ID ${task.mediaId}）：可在媒资页「更多 → 生成元数据」手动重跑`,
+          8,
+        );
+        return;
+      }
+      message.error(`媒资「${task.filename}」上传失败：${task.error ?? "未知原因"}`);
+    });
+  }, [message]);
 
   // 菜单点击：已实现的真实路由页（/ 总览、/media、/about）直接跳转；
   // 未实现的模块仅切换内容区为占位（不走路由，ProLayout 高亮由 location 推导）
@@ -176,6 +243,7 @@ export function ConsoleShell({
       fixedHeader
       route={ROUTE}
       location={{ pathname: current }}
+      selectedKeys={selectedKeys}
       menuItemRender={(item, dom) => (
         <div
           onClick={(event) => {
@@ -183,8 +251,11 @@ export function ConsoleShell({
             event.preventDefault();
             handleMenuClick(item.path);
           }}
+          style={{ display: "flex", alignItems: "center" }}
         >
-          {dom}
+          <span style={{ flex: 1, minWidth: 0 }}>{dom}</span>
+          {/* 上传任务角标（spec.md §9.1，2026-10-01 用户定）：挂在「视频上传」菜单项上 */}
+          {item.path === "/media/upload" ? <UploadMenuBadge /> : null}
         </div>
       )}
       avatarProps={{

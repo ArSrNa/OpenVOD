@@ -83,20 +83,20 @@
 
 | 端点 | 请求 | 成功响应 | 主要错误 |
 |---|---|---|---|
-| `GET /api/admin/media` | — | `200 {total, items[]}`；条目 = `{id, title\|null, status\|null, posterKey\|null, category\|null, description\|null, tags[], ext, key, size, lastModified?, assets{proceed,cover,metadata}, products[], subtitleCount}` 🆕（`category/description/tags`） | `500` |
-| `POST /api/admin/media/upload?filename=<name>&title=<可选展示名>` | **原始字节流**（`Content-Type` 任意，流式接收） | `201 {id, title, ext, key, size}` | `400` 空体 / 缺 `filename` / 无法识别扩展名；`500` 存储或 DB 失败 |
-| `GET /api/admin/media/{id}` | 路径 `id` 为纯数字 | `200` 详情：`{id, title, status, ext, size, lastModified, createdAt, updatedAt, durationMs, posterKey, sourceKey, probe, custom{category,description,tags}, customData, assets{...}, products[]}` 🆕 | `400` ID 形状非法；`404` 媒资不存在 |
+| `GET /api/admin/media` | — | `200 {total, items[]}`；条目 = `{id, title\|null, status\|null, posterKey\|null, category\|null, description\|null, tags[], ext, key, size, lastModified?, uploadedAt\|null, assets{proceed,cover,metadata}, products[], subtitleCount}` 🆕（`category/description/tags/uploadedAt`） | `500` |
+| `POST /api/admin/media/upload?filename=<name>&title=<可选展示名>` | **原始字节流**（`Content-Type` 任意，流式接收） | `201 {id, title, ext, key, size, metadata}` 🆕；**上传完毕后异步自动生成元数据**（2026-09-30）：响应**立即返回**、`metadata = {status:"pending"}`，探测在响应发送后由后台任务执行（Next `after()`：ffprobe → `metadata/{id}/probe.json` + `media.probe` / `duration_ms`）——best-effort，失败只告警（可手动 `POST /{id}/metadata` 重跑）；管理端以**递增间隔轮询详情**直至 `probe` 就绪（约 30s 上限） | `400` 空体 / 缺 `filename` / 无法识别扩展名；`500` 存储或 DB 失败（自动探测失败**不算**上传失败） |
+| `GET /api/admin/media/{id}` | 路径 `id` 为纯数字 | `200` 详情：`{id, title, status, ext, size, lastModified, uploadedAt\|null, createdAt, updatedAt, durationMs, posterKey, sourceKey, probe, custom{category,description,tags}, customData, assets{...}, products[]}` 🆕（`uploadedAt`） | `400` ID 形状非法；`404` 媒资不存在 |
 | `PATCH /api/admin/media/{id}` 🆕 | `UpdateMediaRequest`（见下） | `200` 按传入字段增量返回：`{id, title?, custom?, customData?, customDataKey?, customDataWritten?}` | `400` 校验失败 / 至少一字段；`404` 媒资未入库或分类不存在；`500` |
 | `DELETE /api/admin/media/{id}` | — | `200 {removed: boolean}` | `400` ID 形状非法；`500` |
 | `GET /api/admin/media/{id}/original` | — | `302` → 对象存储预签名 GET（TTL 600s，可经 `STORAGE_CDN_BASE_URL`）；响应 `no-store` | `404` 原始文件不存在 |
 | `GET /api/admin/media/{id}/cover` | — | `302` → 预签名 GET（600s）；`no-store` | `404` 未设置封面 |
 | `POST /api/admin/media/{id}/cover?filename=<name>` | **原始图片字节流**（jpg/png/webp/gif/avif） | `201 {key}` | `400` 空体 / 缺 filename / 非图片；`404` 媒资未入库；`500` |
-| `POST /api/admin/media/{id}/metadata` | —（无 body） | `200 {id, probeKey, summary}`（ffprobe 摘要；`probeKey = metadata/{id}/probe.json`） | `404` 媒资 / original 缺失；`500` 缺 ffprobe、预签名失败 |
+| `POST /api/admin/media/{id}/metadata` | —（无 body） | `200 {id, probeKey, summary}`（ffprobe 摘要；`probeKey = metadata/{id}/probe.json`）；**上传完毕后由 upload 接口异步自动触发**（2026-09-30，响应后后台执行），此端点用于**手动重跑**（幂等覆盖） | `404` 媒资 / original 缺失；`500` 缺 ffprobe、预签名失败 |
 | `POST /api/admin/media/{id}/preview-play` | `{template_id?: string}`（`""` = 显式旧布局；缺省 = 自动选择） | `200 {sid, manifest_url, expires_at, template_id, encrypted, browser_cors_ok}`（管理端以预览账号换分发端签名 URL，**不出密钥**） | `501` 未配置预览账号；`502` 分发端不可达；分发端错误码透传（404→404，其余→409） |
 | `POST /api/admin/media/{id}/transcode` | `{template_ids: string[]}`（1..10，去重保序） | `202 {jobs:[{job_id, template_id, template_name, status:"QUEUED"}]}` | `400` zod / 加密但非 HLS；`404` 媒资 / original / 模板缺失；`409` 同媒资同模板已有未终结任务 |
 | `DELETE /api/admin/media/{id}/products/{templateId}` | `templateId` = 模板 cuid 或字面量 `legacy` | `200 {deleted, bytes}` | `400` 形状非法；`404` 产物不存在；`409` 该模板有进行中任务 |
 
-#### 🆕 `PATCH /api/admin/media/{id}`（重命名 + 自定义元数据）
+#### 🆕 `PATCH /api/admin/media/{id}`（重命名 + 自定义元数据 + 自定义上传时间）
 
 请求（`contracts UpdateMediaRequest`，至少一个字段，否则 400）：
 
@@ -106,8 +106,9 @@
 | `description` | `string \| null`，≤ 191（`MEDIA_DESCRIPTION_MAX`） | **视频（媒资）自身的描述**；`null` = 清空。与分类描述（`media_categories.description`，见 §1.2）完全独立 |
 | `tags` | `string[] \| null`，≤ 20 张（`MEDIA_TAGS_MAX`）、每张 trim 后 1..32（`MEDIA_TAG_LENGTH_MAX`） | 业务标签；`null` / `[]` = 清空；服务端去首尾空白、按首现顺序去重 |
 | `category_id` | `string \| null` | 归属分类；**`null` = 归入默认分类「其他」**；给具体 id 时分类必须存在（否则 404） |
+| `uploaded_at` 🆕 | ISO 8601 字符串（`Z` / 带时区偏移）`\| null` | **自定义上传时间**（spec.md §3.1）；`null` = 恢复默认（回退存储对象原始写入时间）。影响管理端「上传时间」展示与分发端列表排序回退链，**不进入**自定义元数据投影 / 分发端下发（审计 `media.uploaded_at_update`） |
 
-副作用（三项任一命中，审计 `media.metadata_update`）：
+副作用（`description` / `tags` / `category_id` 任一命中，审计 `media.metadata_update`）：
 
 1. 重算自定义元数据投影（保留白名单外扩展键）→ 写 `media.custom_data`；
 2. best-effort 导出 `metadata/{id}/custom.json`（失败只在响应里 `customDataWritten=false`，**不回滚 DB**）。
@@ -314,7 +315,8 @@ JWT 为 ES256（P-256）compact JWS，header `{alg,typ,kid}`，claims `{iss,sub,
 #### `GET /v1/media?limit=<n>`
 
 `limit` 缺省 **50**，合法区间 1..200，非法或越界**静默回退 50**；仅返回 `status = 'READY'`，
-排序 `COALESCE(published_at, created_at) DESC, id DESC`；`cursor` 未实现（`next_cursor` 恒 `null`）。
+排序 `COALESCE(published_at, uploaded_at, created_at) DESC, id DESC`（发布时间 → 自定义上传时间 → 入库时间）；
+`cursor` 未实现（`next_cursor` 恒 `null`）。
 
 ```json
 {

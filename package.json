@@ -1,5 +1,5 @@
 {
-  "version": "0.0.1",
+  "version": "0.1.0",
   "name": "openvod",
   "private": true,
   "license": "Apache-2.0",
@@ -8,7 +8,9 @@
     "packages/*"
   ],
   "scripts": {
+    "start": "sh scripts/compose.sh up",
     "dev": "bun scripts/dev.ts",
+    "env:init": "bun scripts/init-env.ts",
     "dev:all": "bun scripts/dev.ts all --background",
     "contracts:json": "bun packages/contracts/scripts/gen-json.ts",
     "contracts:go": "bash packages/contracts/scripts/gen-go.sh",

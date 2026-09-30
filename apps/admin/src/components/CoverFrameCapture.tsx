@@ -126,8 +126,8 @@ export function CoverFrameCapture({ src, uploading, onCapture }: CoverFrameCaptu
         <Typography.Paragraph type="warning" style={{ marginBottom: 0, fontSize: 12 }}>
           {loadError}
           <br />
-          排查项：AllowedOrigin 与本页源站**完全一致**（含协议与端口，如 http://localhost:8787）；AllowedMethod
-          需含 **GET 与 OPTIONS**（Range 头会触发预检）；AllowedHeader 用 `*` 或至少含 Range。
+          AllowedOrigin与本页源站<b>完全一致</b>（含协议与端口，如http://localhost:8787）；AllowedMethod
+          需含<b>GET、OPTIONS</b>；AllowedHeader至少含<b>Range</b>。
         </Typography.Paragraph>
       )}
       <div>

@@ -225,7 +225,7 @@ export function UsersManager() {
       const body = (await res.json()) as { revoked_sessions?: number };
       message.success(
         `「${pwdTarget.username}」口令已重置` +
-          (body.revoked_sessions ? `，${body.revoked_sessions} 个旧会话已吊销` : ""),
+        (body.revoked_sessions ? `，${body.revoked_sessions} 个旧会话已吊销` : ""),
       );
       setPwdTargetOpen(false);
       setPwdTarget(null);
@@ -301,7 +301,7 @@ export function UsersManager() {
       const body = (await res.json()) as { revoked_sessions?: number };
       message.success(
         `用户「${item.username}」已删除` +
-          (body.revoked_sessions ? `（${body.revoked_sessions} 个会话随用户级联删除）` : ""),
+        (body.revoked_sessions ? `（${body.revoked_sessions} 个会话随用户级联删除）` : ""),
       );
       await reload();
     } catch (e) {
@@ -510,7 +510,7 @@ export function UsersManager() {
             <Form.Item
               name="password"
               label="初始密码"
-              tooltip="bcrypt（cost 12）哈希后入库，仅本次写入，后续不可查看（ADR-0007）"
+              tooltip="bcrypt（cost 12）哈希后入库，仅本次写入，后续不可查看"
               rules={[
                 { required: true, message: "请输入初始密码" },
                 { min: 8, message: "密码至少 8 位" },
@@ -529,7 +529,7 @@ export function UsersManager() {
             <Form.Item
               name="status"
               label="状态"
-              tooltip="封禁后分发端 login 直接拒绝，并立即吊销该用户全部未过期播放会话（ADR-0007）"
+              tooltip="封禁后分发端 login 直接拒绝，并立即吊销该用户全部未过期播放会话"
             >
               <Switch
                 checkedChildren="可用"
@@ -541,7 +541,7 @@ export function UsersManager() {
             <Form.Item
               name="max_concurrent_sessions"
               label="并发播放上限"
-              tooltip="单用户同时可用的播放会话数，0 = 不限（ADR-0007）"
+              tooltip="单用户同时可用的播放会话数，0为不限"
               rules={[
                 { required: true, message: "请填写并发上限" },
                 {

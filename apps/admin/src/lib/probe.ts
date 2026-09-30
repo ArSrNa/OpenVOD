@@ -3,6 +3,7 @@
 // 归一化摘要回写 `media.probe` + `media.duration_ms`。
 // ffprobe 在管理端运行环境就地执行（s3 预签名 GET URL 供流，字节不经管理端内存）；
 // 与 Worker 转码链路探测共用 @openvod/transcode 的 ffprobe 封装。
+// 2026-09-30：上传接口在上传完毕后自动调用（best-effort 降级不阻塞上传，见 ./probe-auto 与 tryGenerateMetadata）。
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { getDb } from "@openvod/db";
@@ -10,6 +11,7 @@ import { ffprobeJSON, summarizeProbe, type ProbeSummary } from "@openvod/transco
 import { STORAGE_KEYS } from "@openvod/shared";
 import { getStorage } from "./storage";
 import { MediaError, assertMediaId, resolveOriginalKey } from "./media";
+import { runAutoMetadata, type AutoMetadataOutcome } from "./probe-auto";
 
 const execFileP = promisify(execFile);
 
@@ -91,4 +93,13 @@ export async function generateMetadata(id: string): Promise<GenerateMetadataResu
     throw new MediaError("internal", `元数据回写数据库失败：${(e as Error).message}`, 500);
   }
   return { id, probeKey, summary };
+}
+
+/**
+ * 上传完毕后自动生成元数据（upload 接口调用，spec.md §2.1 2026-09-30）：
+ * best-effort 包装 `generateMetadata` —— 失败只告警并返回 `generated:false`，**不阻塞上传成功**；
+ * 用户可在列表「更多 → 生成元数据」手动重跑（幂等覆盖）。
+ */
+export async function tryGenerateMetadata(id: string): Promise<AutoMetadataOutcome> {
+  return runAutoMetadata(id, { generate: generateMetadata });
 }

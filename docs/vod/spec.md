@@ -86,9 +86,9 @@ root 下按资产类别分四个分区，互不嵌套：
 | 端点 | 方法 | 说明 |
 |---|---|---|
 | `/api/admin/media` | GET | 媒资列表（§1.4 存储视角 + DB 展示名/状态合并）；每条含 `products[]`——按模板分组的转码产物（模板名 / 对象数 / 体积 / 变体），旧布局产物归入 `template_id=""`；另含 `subtitleCount`（该媒资字幕对象数，§7.2）与 `category`（分类引用含路径）/ `description` / `tags`（自定义元数据，§8.3） |
-| `/api/admin/media/upload` | POST | 原视频上传（§1.3）：生成数字 ID（主键冲突即重取）→ 流式写 `original/{id}.{ext}` → `media` 行落库；存储失败回滚 DB 行 |
+| `/api/admin/media/upload` | POST | 原视频上传（§1.3）：生成数字 ID（主键冲突即重取）→ 流式写 `original/{id}.{ext}` → `media` 行落库；存储失败回滚 DB 行；**上传完毕后异步自动生成元数据**（2026-09-30 增：与 `/{id}/metadata` 同源，ffprobe → `metadata/{id}/probe.json` + `media.probe` / `duration_ms`）——响应立即返回 `metadata.status="pending"`，探测在响应发送后由后台任务执行（Next `after()`）；**best-effort**：失败只告警（上传仍成功，可手动重跑），管理端以递增间隔轮询详情直至 `probe` 就绪。**2026-10-01 增**：上传入口为独立上传页 + 客户端上传队列（§9）——客户端并发上限 2、取消 = 中止请求（服务端按「存储写入失败」回滚占位行）；端点、协议与并发语义本身不变 |
 | `/api/admin/media/{id}` | GET | 详情：存储资产计数 + DB 元数据合并 + `products[]`（每套模板产物的模板名 / 变体 / 对象数 / 体积，模板 ID 可追溯到 `proceed/{id}/{模板id}/`）+ `custom`（自定义元数据**恒三项**：分类含 `id/name/path` / 描述 / 标签，§8.3）+ `customData`（稀疏投影原文） |
-| `/api/admin/media/{id}` | PATCH | 媒资字段部分更新（`contracts UpdateMediaRequest`）：`title` = 重命名（仅改 `media.title`，绝不改动 original 文件名与媒资 ID）；`description` / `tags` / `category_id` = 自定义元数据设置（§8.2：服务端重算 `custom_data` 投影并导出 `metadata/{id}/custom.json`；**`category_id: null` = 归入默认分类「其他」**）；至少一个字段，否则 400。审计 `media.rename` / `media.metadata_update` |
+| `/api/admin/media/{id}` | PATCH | 媒资字段部分更新（`contracts UpdateMediaRequest`）：`title` = 重命名（仅改 `media.title`，绝不改动 original 文件名与媒资 ID）；`description` / `tags` / `category_id` = 自定义元数据设置（§8.2：服务端重算 `custom_data` 投影并导出 `metadata/{id}/custom.json`；**`category_id: null` = 归入默认分类「其他」**）；`uploaded_at` = 自定义上传时间（**2026-09-30 增**，ISO 8601，`null` = 恢复默认：管理端「上传时间」展示与分发端列表排序回退链使用，**不进入**元数据投影 / 分发端下发）；至少一个字段，否则 400。审计 `media.rename` / `media.metadata_update` / `media.uploaded_at_update` |
 | `/api/admin/categories` | GET | 分类扁平列表（§8.1）：`id` / `name` / `description` / `parent_id`（层级由它表达，客户端组树）/ `sort_order` / `is_system`（系统默认分类「其他」= true，前端禁用删除）/ `media_count`（直属，含未设置分类的历史媒资计入「其他」）/ `descendant_media_count`（含子孙；**保留字段，当前 UI 不展示**）/ 时间戳；**默认分类缺失时幂等补建** |
 | `/api/admin/categories` | POST | 新建分类（§8.1）：`name` 必填（≤64）、`description`（≤191）、`parent_id`（缺省 / `null` = 顶级，不限层级）、`sort_order`；上级不存在 404；**同级重名 409**（顶级重名也拦，DB 唯一索引对 NULL 不生效）；审计 `category.create` |
 | `/api/admin/categories/{id}` | PATCH | 更新分类：改名 / 描述 / 移动（`parent_id`，禁止环路 → 409）/ 排序；上级不存在 404；同级重名 409；**改名或移动后刷新该分类子树下全部媒资的自定义元数据投影**（`path` 快照，§8.3），响应 `refreshed_media` 回报刷新条数；审计 `category.update` |
@@ -97,7 +97,7 @@ root 下按资产类别分四个分区，互不嵌套：
 | `/api/admin/media/{id}/original` | GET | 原视频预览：预签名 GET 302 重定向（字节不经管理端；配置 `STORAGE_CDN_BASE_URL` 时 302 目标 origin 替换为加速域名，ADR-0005）；no-store |
 | `/api/admin/media/{id}/cover` | POST | 上传封面：`cover/{id}/poster.{ext}`（jpg/png/webp/gif/avif）+ 回写 `media.poster_key`；手动上传 / 视频截帧双模式共用此端点（§2.3） |
 | `/api/admin/media/{id}/cover` | GET | 封面图片读取（列表首列缩略图 / 详情展示，§3.1）：local 整对象流式输出；s3 预签名 GET 302（字节不经管理端，`STORAGE_CDN_BASE_URL` origin 替换同 original）；no-store |
-| `/api/admin/media/{id}/metadata` | POST | 生成元数据：ffprobe 探测 original（local 直读文件路径 / s3 预签名 GET URL 供流）→ 原始输出落 `metadata/{id}/probe.json`，归一化摘要（宽高 / 帧率 / 色彩空间 / 编码 / 码率 / 音轨等，`@openvod/transcode summarizeProbe`）回写 `media.probe` + `media.duration_ms`；幂等覆盖式更新；落 `audit_logs`（`media.metadata_generate`）。要求运行环境安装 ffprobe |
+| `/api/admin/media/{id}/metadata` | POST | 生成元数据：ffprobe 探测 original（local 直读文件路径 / s3 预签名 GET URL 供流）→ 原始输出落 `metadata/{id}/probe.json`，归一化摘要（宽高 / 帧率 / 色彩空间 / 编码 / 码率 / 音轨等，`@openvod/transcode summarizeProbe`）回写 `media.probe` + `media.duration_ms`；幂等覆盖式更新；落 `audit_logs`（`media.metadata_generate`）。要求运行环境安装 ffprobe。**2026-09-30 起上传完毕后由 upload 接口异步自动触发**（Next `after()` 于响应发送后执行，与 upload 同源逻辑；best-effort 降级不阻塞上传），本端点保留给手动重跑 |
 | `/api/admin/keys` | GET | 密钥列表（§4.3）：`hls_keys` + 媒资展示名/状态 + proceed 对象数（存储不可用时为 null）；**响应中不存在任何密钥材料字段**（契约层就不定义） |
 | `/api/admin/keys/{mediaId}` | GET | 密钥详情：kid / method / iv / mk_ver / 生成时间 / 使用中会话数；明文 CEK 永不返回 |
 | `/api/admin/keys/{mediaId}` | DELETE | 删除该媒资密钥行；存在未过期播放会话时 **409 拒绝**；落 `audit_logs`（`key.delete`） |
@@ -186,17 +186,18 @@ root 下按资产类别分四个分区，互不嵌套：
 
 ### 3.1 已实现页面
 
-- `/media`（媒资管理，M1/M2 已实现，M3 增产物操作，2026-09-24 增分类 / 标签）：媒资列表表格——**封面缩略图（首列，antd Image，经 GET `/cover` 读取，点击预览大图；未设置显示「未设置」）**、**展示名（第一行为展示名，第二行为媒资 ID 代码样式；右侧复制按钮一键复制 ID + 重命名按钮）**、生命周期状态、原始文件（格式 / 大小 / 上传时间）、**分类 / 标签（分类完整路径或「未分类」Tag；标签最多平铺 2 个 + 「+N」悬停全量，§8.5）**、**描述（视频描述列：媒资自身描述，空显示「—」，§8.5）**、**转码产物（按模板分组：`N 组产物 · M 个对象`，悬停列出每套产物的模板名与档位，点击打开产物列表）**；详情弹窗显示产物组数并提供「产物列表（播放 / 删除）」入口（不再逐套平铺）；
+- `/media`（媒资管理，M1/M2 已实现，M3 增产物操作，2026-09-24 增分类 / 标签）：媒资列表表格——**封面缩略图（首列，antd Image，经 GET `/cover` 读取，点击预览大图；未设置显示「未设置」）**、**展示名（第一行为展示名，第二行为媒资 ID 代码样式；右侧复制按钮一键复制 ID + 重命名按钮）**、生命周期状态、原始文件（格式 / 大小 / 上传时间——**可自定义**：设置后展示自定义值并带「自定义」Tag，未设置回退对象存储写入时间，2026-09-30 增）、**分类 / 标签（分类完整路径或「未分类」Tag；标签最多平铺 2 个 + 「+N」悬停全量，§8.5）**、**描述（视频描述列：媒资自身描述，空显示「—」，§8.5）**、**转码产物（按模板分组：`N 组产物 · M 个对象`，悬停列出每套产物的模板名与档位，点击打开产物列表）**；详情弹窗显示产物组数并提供「产物列表（播放 / 删除）」入口（不再逐套平铺）；
   - **产物列表（抽屉，按模板一行）**：模板名（已删显示「模板已删除（id 前缀）」；旧布局显示「未分组（旧布局）」）、存储前缀 `proceed/{id}/{模板id}/`、变体（`1080p / 720p`）、对象数、体积；操作：
     - **播放** = 解密播放预览（`POST /media/{id}/preview-play` → 分发端签名主清单 URL → hls.js / Safari 原生播放，浏览器本地解密；管理端不出密钥，§4.3），播放弹窗标注「AES-128 加密（浏览器本地解密）」或「未加密」与模板 ID；
     - **删除** = 按模板删除该套产物（`DELETE /media/{id}/products/{templateId}`；确认弹窗给出前缀 / 对象数 / 体积与不可恢复警告；同模板有进行中任务时 409，需等待其结束）；
   - 播放失败的常见排查提示直接展示在弹窗内：分发端 CORS（`DELIVERY_CORS_ORIGINS`）或对象桶 CORS 未放行管理端源站；预览账号未配置时接口 501（dev-workflow §5.3）；
+- `/media/upload`（上传视频，2026-10-01 已实现；§9 权威）：拖拽区（多文件、`video/*`）+ **上传任务列表**（进度条 / 状态 / 媒资 ID / 失败原因；取消 / 重试 / 移除 / 清空已完成）；任务为**客户端队列**——页面切换不中断、并发 2、刷新即中断（有进行中任务时离开给原生确认提示）；右上角全局入口显示「x 个上传任务进行中」并跳转本页；媒资列表页「上传视频」按钮改为跳转本页。
 - `/subtitles`（字幕管理，M4 已实现）：顶部可搜索媒资选择器（选项标注已有字幕条数，默认选中已有字幕的媒资）+ 该媒资的轨道面板（预览 / 上传 / 编辑 / 替换内容 / 删除，与媒资页抽屉同一组件）；规范见 §7.6。
 - `/templates`（转码模板，ADR-0014 已实现）：模板列表表格——模板名（默认标记）、描述、模式（转码 / 保持原视频）、加密（AES-128）、格式（M3U8）、参数摘要（编码器 / 码率或 CRF / 分辨率档位 / 帧率 / preset）、更新时间；操作：新建 / 编辑（弹窗表单，含分辨率档位多行编辑：固定宽×高或自适应上限约束）、删除（确认弹窗注明已发起任务不受影响）；API 见 §2（`/api/admin/templates`）。
 - `/users`（播放端用户，ADR-0004 `users` 表 / ADR-0007 账户域）：用户列表表格——用户名（加粗，已封禁标红 Tag）、展示名、状态（可用 / 封禁 Tag）、并发上限（`0` 悬停提示「0 = 不限制」）、进行中会话数、最近登录、注册时间；操作：新建 / 编辑（弹窗表单：用户名创建后为只读，口令仅新建时可填，状态用 Switch，并发上限 0–10000）、重置密码（独立弹窗，双口令确认，提示将吊销全部会话）、吊销会话（有会话时才可点）、封禁 / 启用、删除（确认弹窗区分「级联删除会话」与「封禁后可恢复」）。页面**不提供口令 / 哈希的查看与导出入口**；API 见 §2.1.1。
 - `/keys`（密钥管理，已实现）：密钥列表表格——媒资 ID、展示名、媒资状态、kid（截断 + Tooltip 全量）、算法、MK 版本（非当前版本标「待轮换」）、加密产物对象数、生成时间；顶部条展示当前封装版本与各版本密钥用量；操作：详情（弹窗：kid / IV / mk_ver / 生成时间 / 使用中会话数，并明确标注「明文密钥不展示」）、删除（确认弹窗警告需重转码才能恢复可播）、「轮换 MK」（确认后重封装旧版本，无需重转码）；API 见 §2.1 与 §4.3。**页面不提供任何明文密钥的展示 / 导出入口**。
-- `/jobs`（转码任务，M2 已实现，M3 增停止 / 重启）：任务列表表格——任务 ID、媒资（ID + 展示名）、状态（排队 / 探测中 / 转码中 / 封装上传中 / 完成 / 失败；worker 失联的执行中任务标「中断」）、模板名（取任务快照）、尝试次数、耗时、失败原因、创建时间；**操作列**：停止（取消）/ 重启（重新入队），规则见 §5.1；**实时推送（SSE）**——连接即回放全量快照，任务变化由服务端主动推送（客户端零轮询），断线自动重连并展示连接状态；「刷新」= 重建连接（服务端随即回放最新快照），「耗时」列由本地时钟每秒重算（不发请求）；API 见 §2.1（`/api/admin/jobs`、`/api/admin/jobs/stream`、`/api/admin/jobs/{id}/stop|restart`），执行规则见 §5。
-- 操作（对应 §2.1）：上传视频（原始字节流直传，带进度）、预览（弹窗 `<video>` 播放 original，local 支持 Range 拖动）、详情（弹窗展示元数据：probe 摘要结构化展示——容器 / 分辨率 / 帧率 / 编码 / 像素格式 / 色彩空间 / 码率 / 音轨等 + 摘要 JSON 折叠块）、重命名（仅展示名）、删除（确认后硬删除全级联）、设置封面（弹窗双模式：手动上传 / 视频截帧，§2.3）、「更多 → 生成元数据」（ffprobe 探测，§2.1）、「更多 → 转码」（M2 已实现：弹窗**多选**模板（默认勾选默认模板）→ 逐个展示所选模板的模式 / 加密 / 输出格式 → 一次发起入队多条 `transcode_jobs`（每个模板各一条、各落 `proceed/{id}/{模板id}/`），进度跳「转码任务」页查看）；「更多 → 字幕管理」打开**字幕管理抽屉**（M4 已实现：多轨 VTT 列表 / 上传 / 编辑元信息 / 替换文本 / 删除，语言按 BCP-47 归一化；规范见 §7.6）；「更多 → 分类、描述与标签」与详情弹窗的「编辑自定义元数据」打开**自定义元数据弹窗**（分类 TreeSelect 无限层级 + 视频描述 + 标签，§8.5）。
+- `/jobs`（转码任务，M2 已实现，M3 增停止 / 重启）：任务列表表格——任务 ID、媒资（ID + 展示名）、状态（排队 / 探测中 / 转码中 / 封装上传中 / 完成 / 失败；worker 失联的执行中任务标「中断」）、模板名（取任务快照）、尝试次数、耗时、失败原因、创建时间；**操作列**：停止（取消）/ 重启（重新入队），规则见 §5.1；**实时推送（SSE）**——连接即回放全量快照，任务变化由服务端主动推送（客户端零轮询），断线自动重连并展示连接状态；「刷新」= 重建连接（服务端随即回放最新快照），「耗时」列由本地时钟每秒重算（不发请求）；**侧边栏「转码任务」菜单项 Badge**（2026-10-01 用户定）：存在进行中任务（`QUEUED / PROBING / ENCODING / PACKAGING`）时显示数量，与任务页同一 SSE 快照源，无进行中任务不渲染；API 见 §2.1（`/api/admin/jobs`、`/api/admin/jobs/stream`、`/api/admin/jobs/{id}/stop|restart`），执行规则见 §5。
+- 操作（对应 §2.1）：上传视频（**2026-10-01 起改为跳转独立上传页 `/media/upload`（§9），本页不再内联文件选择与上传进度**；上传页负责多文件拖入 → 客户端队列（并发 2、切页不中断）→ 进度与任务状态展示，**上传完毕后异步自动生成元数据**在上传页的任务状态中体现——任务转入「元数据生成中」，按递增间隔轮询详情，就绪 → 完成，超时黄色告警提示可「更多 → 生成元数据」重跑，2026-09-30 增 / 2026-10-01 迁移）、预览（弹窗 `<video>` 播放 original，local 支持 Range 拖动）、详情（弹窗展示元数据：probe 摘要结构化展示——容器 / 分辨率 / 帧率 / 编码 / 像素格式 / 色彩空间 / 码率 / 音轨等 + 摘要 JSON 折叠块）、重命名（仅展示名）、删除（确认后硬删除全级联）、设置封面（弹窗双模式：手动上传 / 视频截帧，§2.3）、「更多 → 生成元数据」（ffprobe 探测，§2.1；2026-09-30 起上传完毕后**异步自动生成**，此处用于手动重跑）、「更多 → 转码」（M2 已实现：弹窗**多选**模板（默认勾选默认模板）→ 逐个展示所选模板的模式 / 加密 / 输出格式 → 一次发起入队多条 `transcode_jobs`（每个模板各一条、各落 `proceed/{id}/{模板id}/`），进度跳「转码任务」页查看）；「更多 → 字幕管理」打开**字幕管理抽屉**（M4 已实现：多轨 VTT 列表 / 上传 / 编辑元信息 / 替换文本 / 删除，语言按 BCP-47 归一化；规范见 §7.6）；「更多 → 分类、描述与标签」与详情弹窗的「编辑自定义元数据」打开**自定义元数据弹窗**（分类 TreeSelect 无限层级 + 视频描述 + 标签，§8.5）；「更多 → 修改上传时间」与详情弹窗「上传时间」旁的编辑按钮打开**上传时间弹窗**（`DatePicker showTime`；留空保存 = 恢复默认；2026-09-30 增）。
 - `/categories`（分类管理，2026-09-24 已实现，独立模块）：**树形表格**（antd `children` 层级，默认展开全部父节点，遵循 §3.0 滚动约定）——分类名（系统默认分类「其他」带「默认」标记）、描述、直属媒资、排序、更新时间；操作：**新建子分类**（行内，预设上级）、**编辑**（弹窗：上级 TreeSelect（自身与子孙禁选，防环路）/ 分类名 / 描述 / 同级排序）、**删除**（Popconfirm 提示：直属媒资将归入默认分类「其他」、媒资不被删除；系统默认分类按钮禁用）；顶部「新建顶级分类」与「刷新」；规范见 §8.1 / §8.5。
 
 ## 4. 密钥管理与视频加密（以 ADR-0006 为决策源）
@@ -346,7 +347,7 @@ http 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_s
 | 端点 | 鉴权 | 说明 |
 |---|---|---|
 | `POST /v1/auth/login` | 凭据 | bcrypt 校验 `users`（须 `status=ACTIVE`）→ ES256 JWT（`kid` / `exp=DELIVERY_JWT_TTL_SEC`；未配置签名密钥时 503） |
-| `GET /v1/media` | JWT | 上架列表（`status=READY`；`limit` ≤200，默认 50；排序 `COALESCE(published_at, created_at) DESC, id DESC`；`poster_url` 为预签名直出） |
+| `GET /v1/media` | JWT | 上架列表（`status=READY`；`limit` ≤200，默认 50；排序 `COALESCE(published_at, uploaded_at, created_at) DESC, id DESC` —— 发布时间 → 自定义上传时间（2026-09-30 增）→ 入库时间；`poster_url` 为预签名直出） |
 | `GET /v1/media/{id}` | JWT | 详情：probe 摘要（契约 `Probe` 子集）+ 就绪字幕轨道 + `playable` |
 | `POST /v1/media/{id}/play` | JWT | 建 / 复用播放会话：`template_id` 可选（见 §6.3）；同用户同媒资未过期末吊销会话**默认复用**（幂等），`force_new=true` 强制新建；并发上限命中 → 409 `session_limit`；媒资非 READY → 409 `not_playable`；返回 `{sid, manifest_url, expires_at, template_id}`（M4 起附签名 `subtitles[]` 与每条轨道的 `url`，§7.5） |
 | `GET /v1/media/{id}/manifest/master.m3u8` | token(m) | 改写主清单：变体行替换为分发端 URL（typ=m + `tpl`）；`no-store` |
@@ -360,7 +361,7 @@ http 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_s
 **请求 / 响应字段（2026-09-23 按实现核对）**：
 
 - `login`：请求 `{username, password}`；成功写 `users.last_login_at`，返回 `{access_token, token_type:"Bearer", expires_in, kid}`；
-- `GET /v1/media`：`limit` 缺省 50、上限 200（非法 / 越界静默回退缺省值）；返回 `{items[], next_cursor}`，条目 = `{id, title, duration_ms, poster_url, custom}`，排序 `COALESCE(published_at, created_at) DESC, id DESC`；**cursor 分页未实现，`next_cursor` 恒为 `null`**（v1 只返回前 `limit` 条，ADR-0010 的 cursor 契约留待后续）；`custom` = 自定义元数据公开白名单（§8.4；无内容时为空对象）；
+- `GET /v1/media`：`limit` 缺省 50、上限 200（非法 / 越界静默回退缺省值）；返回 `{items[], next_cursor}`，条目 = `{id, title, duration_ms, poster_url, custom}`，排序 `COALESCE(published_at, uploaded_at, created_at) DESC, id DESC`（发布时间 → 自定义上传时间 → 入库时间，2026-09-30 增中间级）；**cursor 分页未实现，`next_cursor` 恒为 `null`**（v1 只返回前 `limit` 条，ADR-0010 的 cursor 契约留待后续）；`custom` = 自定义元数据公开白名单（§8.4；无内容时为空对象）；
 - `GET /v1/media/{id}`：`{id, title, status, playable, duration_ms, poster_url, probe, subtitles[], custom}`——`probe` 仅含宽 / 高 / 视频编码 / 音频编码 / 码率（未探测为 `null`）；`subtitles[]` = `{id, lang, label, is_default}`（`status=READY`，顺序 `is_default DESC, created_at ASC`，**不含 URL**）；`custom` 与列表同口径（公开白名单，§8.4；无内容时为空对象）；未入库 404（非 READY 仍返回详情，仅 `playable=false`）；
 - `POST /v1/media/{id}/play`：请求体**可整体省略**（仅在 `Content-Length>0` 时解析）；返回 `{sid, manifest_url, expires_at, template_id, subtitles[]}`，`expires_at` 为 RFC3339 UTC（会话到期时间），`subtitles[].url` 各轨共用同一枚 typ=v token。
 
@@ -648,3 +649,74 @@ http 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_s
 - `packages/shared` 新增常量与纯函数：`MEDIA_CATEGORY_ID_PATTERN` / `MEDIA_CATEGORY_NAME_MAX` / `MEDIA_CATEGORY_DESCRIPTION_MAX` / `MEDIA_CATEGORY_SORT_MAX` / `MEDIA_CATEGORY_PATH_SEPARATOR` / `MEDIA_DESCRIPTION_MAX` / `MEDIA_TAGS_MAX` / `MEDIA_TAG_LENGTH_MAX` / `MEDIA_CUSTOM_KEYS` / `mediaCategoryPath` / `normalizeMediaTags` / `buildMediaCustomData`（含单测）；
 - Prisma：新增 `media_categories` 模型（含 `is_system`）与 `media.category_id` / `description` / `tags` 列；迁移三条 —— `20260924120000_media_categories`（建表 / 加列）、`20260924130000_default_category`（`is_system` + 插入默认分类「其他」）、`20260924140000_backfill_default_category`（历史行回填分类与投影）；双方言 schema 的 enum/model 段必须逐字一致（`task db:parity` 门禁）；SQLite 开发库 `db push` 后由运行时 `ensureDefaultCategory()` 补建默认分类；
 - Go 侧：`internal/server/custom.go`（白名单解析）+ `mediaListItem` / `handleMediaDetail` 使用它；`store.Media.CustomData` 列早已读取，SQL 无改动。
+
+## 9. 上传页与上传任务（客户端队列，2026-10-01）
+
+> 决策（用户 2026-10-01 定）：上传从媒资列表的内联按钮升级为**独立页面「上传视频」**（`/media/upload`）；
+> 上传任务由**管理端浏览器侧的客户端队列**承载（**无新端点、无 DB 迁移、无服务端任务表**）。
+> 服务端上传协议与端点**不变**（§2 原始字节流 `application/octet-stream`；§2.1 `/api/admin/media/upload`），`docs/vod/api.md` 无需改动；
+> 本功能不引入新 ADR（不改服务端协议与数据模型），演进项（分片直传）挂 ADR-0005「上传路径演进」。
+
+### 9.1 页面与入口
+
+- **`/media/upload`「视频上传」**（新增页面）：页面内容 = 拖拽上传区（§9.3）+ 上传任务列表（§9.3）；页头标题由 `ConsoleShell` 的菜单项推导；
+- 侧边栏「媒资管理」为**二级菜单**（2026-10-01 用户修订：与「系统设置」同构，**替代**本节最初「保持扁平菜单」的决定）：子项「视频管理」（`/media`）与「视频上传」（`/media/upload`），父项仅展开不导航；两个子页均加入 `ConsoleShell` 的 `ROUTE_PAGES`（不在白名单会显示 scaffold 占位）；
+- 媒资管理页（`/media`）工具栏「上传视频」按钮改为 **`router.push("/media/upload")`**：移除内联的 antd `Upload` 文件选择、`uploadTo` / `uploadingName` / `uploadPct` 状态与 `watchMetadataInBackground`（职责移入 §9.4 队列）；
+- **「视频上传」菜单项 Badge**（2026-10-01 用户定，**替代**早前「App 右上角全局入口」方案）：存在进行中上传任务（`UPLOADING / QUEUED`，§9.2）时，侧边栏「视频上传」菜单项右侧渲染 antd `Badge` 显示数量；无进行中任务不渲染（不显示 0）；右上角不放全局入口；
+- 任务内存中保留至「移除 / 清空已完成」：同一浏览器会话内来回切页，任务列表与进度仍可见。
+
+### 9.2 任务模型与状态机
+
+- **任务 = 一个文件**；字段：`id`（客户端生成）、`file`（`File`，仅内存）、`filename`、`size`、`status`、`loadedBytes` / `pct`（0–100）、`mediaId`（成功后的媒资数字 ID）、`error`（失败原因）、`createdAt` / `startedAt` / `finishedAt`、`metadata`（`pending | ready | timeout`）；
+- 状态机（单向流转；取消 / 重试是仅有的回边；**「开始上传」把全部待上传任务批量转入排队**，2026-10-01 用户定）：
+
+| 状态 | 含义 | 允许操作 |
+|---|---|---|
+| `PENDING` | 已加入列表，尚未开始上传（等待「开始上传」） | 移除 |
+| `QUEUED` | 已点击「开始上传」，等待并发槽位 | 取消 |
+| `UPLOADING` | XHR 上传中（`pct` 由 `xhr.upload.onprogress` 驱动） | 取消 |
+| `METADATA` | 上传成功（`mediaId` 已生成），元数据异步生成中 | —（上传已结束，不可取消） |
+| `DONE` | 任务成功（`metadata=ready`） | 移除、复制媒资 ID、去媒资列表 |
+| `FAILED` | 上传失败（网络 / HTTP 错误 / 存储失败 / 登录过期） | 重试、移除 |
+| `CANCELED` | 用户取消（中止 XHR） | 重试、移除 |
+
+- `DONE` 且 `metadata=timeout`（轮询序列耗尽）：展示黄色告警「元数据仍在生成或已失败，可在媒资页「更多 → 生成元数据」手动重跑」（语义同 §2.1 现有实现）；
+- **取消** = `xhr.abort()` → `CANCELED`；服务端语义（§2.1）：请求中断 → `uploadOriginal` 按「存储写入失败」回滚占位行；但存在「存储已写完、响应未返回」的窗口——该窗口内取消**媒资已入库**。故取消后提示「若该文件已上传完成，媒资仍会出现在列表」（列表页每次挂载重新拉取，无需额外机制）；
+- **重试**：仅 `FAILED / CANCELED` 可重试 → 重新入队（新 XHR、`pct` 归零、清 `error`），复用同一 `File` 对象（不重新读盘）；
+- **移除**：仅终态可移除；「清空已完成」批量移除 `DONE / FAILED / CANCELED`；
+- **不做跨刷新 / 跨标签页持久化**（v1）：状态仅存内存单例；刷新 / 关闭页面即中断（进行中任务丢失，服务端按中断语义回滚；见 open-questions #20）。
+
+### 9.3 页面交互
+
+- **拖拽区**（antd `Upload.Dragger`，`multiple`、`accept="video/*"`、`showUploadList={false}`）：
+  - `beforeUpload` 一律 `return false`（关闭 antd 默认 POST），把本次选择 / 拖入的**全部文件**逐个加入任务列表（`PENDING`，**不立即上传**——2026-10-01 用户定：先入列，点「开始上传」再统一上传）；
+  - 一次拖入 N 个文件 = N 条任务；同一文件重复拖入允许（各自新建媒资，服务端不做去重）；
+  - 入队前预检：`size = 0` 的任务直接判 `FAILED`（不发起请求）；非视频文件仅靠浏览器 `accept` 过滤提示，服务端仍按扩展名 `sanitizeExt` 校验（400 → 任务 `FAILED`）；
+- **任务列表**（antd `Table`，一行一任务，遵循 §3.0 滚动约定）：
+  - 列：文件名（省略号 + 悬停全名）/ 大小（复用 `formatSize` 语义）/ 状态 Tag / **进度**（antd `Progress`：`UPLOADING` 显示百分比；`METADATA` 显示 `active` 动画 + 「元数据生成中」；终态不显示）/ 媒资 ID（成功后展示，可一键复制）/ 耗时 / 失败原因；
+  - 操作：移除（待上传 / 终态）/ 取消（排队中、上传中）/ 重试（失败、已取消）/ 「去媒资列表」（成功）；批量：「**开始上传**」（主按钮：把全部待上传任务转入排队执行，2026-10-01 用户定）、「重试全部失败」、「清空已完成」；
+  - 实时更新由队列 `notify` 驱动（客户端订阅，无需轮询 / SSE，与 `/jobs` 的 SSE 链路无关）；
+- 终态提示：转 `DONE(ready)` → `message.success`（文件名 + 媒资 ID）；转 `DONE(timeout)` → `message.warning`；转 `FAILED` → `message.error`（原因）；
+- **离开确认**：存在进行中任务时注册 `beforeunload`（浏览器原生确认框），任务全部终止 / 清空后解除。
+
+### 9.4 客户端队列实现（复用与落位）
+
+- 队列为**模块级单例**：`apps/admin/src/lib/upload-manager.ts`（纯 TS、不依赖 React，依赖注入以便单测）——`enqueue(files)`（仅入列，不发起请求）/ `startAll()`（待上传批量转入排队并按并发执行）/ `cancel(id)` / `retry(id)` / `remove(id)` / `clearFinished()` / `subscribe(listener)` / `getSnapshot()` / `activeCount()`；
+- React 绑定用 `useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)`：快照必须**不可变替换**（变更时整体换新引用）并提供稳定的 `getServerSnapshot`（SSR 首帧空列表），避免无限重渲染；页面卸载只移除订阅者，**不中止 XHR**——这是「切换页面不影响上传」的实现前提；
+- **并发上限 2**（前端常量 `UPLOAD_CONCURRENCY = 2`，非服务端配置）：超出排队，任务结束后自动接续下一个；动机：单请求流式上传独占出口带宽，且服务端每请求在 `after()` 内跑一次 ffprobe，2 路是吞吐与资源的折中；
+- **两段式执行（2026-10-01 用户定）**：入队只加列表（`PENDING`）不占并发槽位；「开始上传」把全部 `PENDING` 批量转入 `QUEUED`，**并发槽位只消费 `QUEUED`**——重试与运行批次接续都不会拉起未开始（`PENDING`）的任务；
+- 上传实现沿用现有 XHR 范式（`POST /api/admin/media/upload?filename=…`、`xhr.send(file)`、`upload.onprogress`），从 `MediaList.tsx` 抽出并扩展 `abort()`、错误分类与队列调度；
+- **元数据阶段**复用 `lib/metadata-poll.ts` 的 `pollMetadataReady`（依赖注入不变）：任务成功后置 `METADATA` → 轮询详情 → `probe` 就绪置 `DONE(metadata=ready)`；序列耗尽置 `DONE(metadata=timeout)`；
+- 认证与错误：401 → 跳 `/login` 并终止队列（进行中任务置 `FAILED`，原因「登录已过期」），不再继续接续排队任务。
+
+### 9.5 边界与非目标
+
+- **v1 非目标**：断点续传 / 分片直传（`presignPut` multipart，ADR-0005 上传路径演进）、上传任务跨刷新 / 跨标签页持久化、服务端上传任务表与查询 API（open-questions #20）、暂停 / 恢复、上传限速；
+- 上传端点、协议、服务端并发语义不变：**无新端点、无 DB 迁移、无 Go 侧改动**；
+- 单文件大小沿用平台现状（上传路由 `maxDuration = 600`；S3 侧分片由 `@aws-sdk/lib-storage` 内部处理），本页不新增限制；
+- 上传任务与转码任务（`/jobs`，DB + SSE）是两条独立链路，不复用其模型。
+
+### 9.6 验收与测试
+
+- 单测（`apps/admin/test/upload-manager.test.ts`，`bun test`；上传器与轮询以依赖注入替身注入，不真实发请求）：入队不自动开始（暂存 `PENDING`）、「开始上传」批量执行与并发上限（第 3 个排队，前者结束自动开始）、运行中新入队不被拉起、进度换算、取消（中止 + `CANCELED`）、失败重试（新请求且不拉动待上传）、移除（待上传 / 终态）/ 清空已完成、`METADATA` → `DONE(ready)` / 超时 → `DONE(timeout)`、401 → 队列终止（待上传不受影响）；
+- 手工验收：① 拖入 3 个视频 → 全部「待上传」；点击「开始上传」→ 2 个并发上传 + 1 个排队，进度实时刷新；② 上传中切到 `/media`、`/jobs`、`/`，回到上传页进度连续未中断，侧边栏「视频上传」菜单项 Badge 显示进行中数量；③ 上传中刷新页面 → 任务清空（出现原生离开确认，若已确认）；④ 成功任务显示媒资 ID，`/media` 列表可见该媒资并最终出现 probe 元数据；⑤ 取消 / 失败 / 重试 / 清空路径与 §9.2 状态表一致。

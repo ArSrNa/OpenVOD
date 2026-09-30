@@ -14,7 +14,7 @@
  *   const secret = unwrap(await password({ message: "MASTER_KEYS" })); // 输入回显为掩码
  *   const ok = unwrap(await confirm({ message: "写入 .env？" }));
  */
-import { cancel, confirm, isCancel, log, multiselect, outro, password, select, text } from "@clack/prompts";
+import { cancel, confirm, intro, isCancel, log, multiselect, note, outro, password, select, text } from "@clack/prompts";
 
 /** Ctrl-C / Esc 取消时的退出码（与 shell 惯例一致：128 + SIGINT） */
 export const CANCEL_EXIT_CODE = 130;
@@ -38,4 +38,4 @@ export function unwrap<T>(value: T): Exclude<T, symbol> {
   return isCancel(value) ? cancelled() : (value as Exclude<T, symbol>);
 }
 
-export { confirm, log, multiselect, outro, password, select, text };
+export { confirm, intro, log, multiselect, note, outro, password, select, text };

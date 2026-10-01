@@ -12,6 +12,14 @@ import {
   MEDIA_TAGS_MAX,
   MEDIA_TAG_LENGTH_MAX,
   SUBTITLE_LABEL_MAX,
+  WATERMARK_ANCHORS,
+  WATERMARK_TEXT_MAX,
+  WATERMARK_BLEND_MODES,
+  WATERMARK_DESCRIPTION_MAX,
+  WATERMARK_FONTS,
+  WATERMARK_NAME_MAX,
+  WATERMARK_OFFSET_MAX,
+  WATERMARK_SHADOW_OFFSET_MAX,
 } from "@openvod/shared";
 
 // ---- 错误信封（ADR-0010：失败统一 { error: { code, message } }） ----
@@ -219,6 +227,130 @@ export const CreateTranscodeTemplateRequest = TranscodeTemplateInput.extend({
 
 /** PATCH 语义：字段缺省 = 不修改（不带默认值，避免误改） */
 export const UpdateTranscodeTemplateRequest = TranscodeTemplateInput.partial();
+
+// ---- 水印模板（spec.md §10 / ADR-0018；管理端与 Worker 消费。Go 分发端不消费，
+// 故本节 schema 不进 gen-json.ts 清单、不生成 Go struct） ----
+
+// 常量自 @openvod/shared 导入（见文件头部 import），此处原样再导出供管理端 UI 复用
+export { WATERMARK_ANCHORS, WATERMARK_BLEND_MODES, WATERMARK_FONTS };
+
+/** 水印图片尺寸：显式像素宽高 或 占画面比例（宽 / 高分别按画面对应边的百分比；spec.md §10.1） */
+export const WatermarkImageSize = z.discriminatedUnion("mode", [
+  z.object({
+    mode: z.literal("pixels"),
+    /** 两项给定时精确缩放（允许变形）；仅一项时按原图宽高比等比换算另一维 */
+    width: z.number().int().min(1).max(7680).optional(),
+    height: z.number().int().min(1).max(7680).optional(),
+  }),
+  z.object({
+    mode: z.literal("percent"),
+    /** 对应维 = 画面宽 / 高 × 百分比；仅一项时等比；两项时分别按对应边缩放（允许变形） */
+    width: z.number().int().min(1).max(100).optional(),
+    height: z.number().int().min(1).max(100).optional(),
+  }),
+]);
+
+/** 文字水印字号：显式像素 或 输出高度百分比（spec.md §10.1） */
+export const WatermarkTextSize = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("pixels"), size: z.number().int().min(4).max(512) }),
+  z.object({ mode: z.literal("percent"), size: z.number().int().min(1).max(100) }),
+]);
+
+/** 文字阴影（可关闭）：颜色 + x / y 偏移（drawtext shadowcolor / shadowx / shadowy 语义） */
+export const WatermarkShadow = z.object({
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/, "阴影颜色须为 #RRGGBB"),
+  offset_x: z.number().int().min(-WATERMARK_SHADOW_OFFSET_MAX).max(WATERMARK_SHADOW_OFFSET_MAX),
+  offset_y: z.number().int().min(-WATERMARK_SHADOW_OFFSET_MAX).max(WATERMARK_SHADOW_OFFSET_MAX),
+});
+
+/**
+ * 水印参数（watermark_templates.params JSON 的形状，含 type 字面量自描述；
+ * 快照自包含 —— 转码集成时随 template_snapshot 固化）。
+ * 公共参数（anchor / 偏移 / opacity / blend）两类一致，专属参数按 type 判别。
+ */
+const watermarkCommon = {
+  /** 九宫格锚点（spec.md §10.4 定位换算表） */
+  anchor: z.enum(WATERMARK_ANCHORS),
+  /** 锚点对齐后的带符号位移（x 正 = 右、y 正 = 下；右 / 下锚点常配负偏移做内边距） */
+  offset_x: z.number().int().min(-WATERMARK_OFFSET_MAX).max(WATERMARK_OFFSET_MAX).default(0),
+  offset_y: z.number().int().min(-WATERMARK_OFFSET_MAX).max(WATERMARK_OFFSET_MAX).default(0),
+  /** 透明度 0–100（%），两种混合方式下均生效 */
+  opacity: z.number().int().min(0).max(100).default(100),
+  /** 混合方式：normal（标准 alpha 叠加）| overlay（Overlay 混合模式） */
+  blend: z.enum(WATERMARK_BLEND_MODES).default("normal"),
+} as const;
+
+export const ImageWatermarkParams = z
+  .object({ type: z.literal("image"), ...watermarkCommon, size: WatermarkImageSize })
+  .superRefine((v, ctx) => {
+    if (v.size.width == null && v.size.height == null) {
+      ctx.addIssue({
+        code: "custom",
+        message: "水印尺寸至少提供宽或高",
+        path: ["size"],
+      });
+    }
+  });
+
+export const TextWatermarkParams = z.object({
+  type: z.literal("text"),
+  ...watermarkCommon,
+  /** 文字内容：1–64 字符，trim 后非空，不含控制字符（单行） */
+  text: z
+    .string()
+    .transform((s) => s.trim())
+    .refine((s) => s.length >= 1 && s.length <= WATERMARK_TEXT_MAX, {
+      message: `文字内容须为 1–${WATERMARK_TEXT_MAX} 个字符`,
+    })
+    .refine((s) => !/[\u0000-\u001f\u007f]/.test(s), { message: "文字内容不能包含控制字符" }),
+  /** 字体（Worker 内置 Noto CJK 清单，@openvod/shared WATERMARK_FONTS） */
+  font: z.enum(WATERMARK_FONTS),
+  /** 文字颜色 #RRGGBB */
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/, "颜色须为 #RRGGBB"),
+  /** 阴影：null = 无阴影（默认） */
+  shadow: WatermarkShadow.nullable().default(null),
+  size: WatermarkTextSize,
+});
+
+export const WatermarkParams = z.discriminatedUnion("type", [
+  ImageWatermarkParams,
+  TextWatermarkParams,
+]);
+
+export type WatermarkParamsValue = z.infer<typeof WatermarkParams>;
+
+/** 水印模板 DTO（API 输出形状；image_* 列仅图片型有值，文字型恒 null） */
+export const WatermarkTemplateDTO = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string().nullable(),
+  type: z.enum(["image", "text"]),
+  params: WatermarkParams,
+  image_ext: z.string().nullable(),
+  image_key: z.string().nullable(),
+  image_bytes: z.number().int().nullable(),
+  image_width: z.number().int().nullable(),
+  image_height: z.number().int().nullable(),
+  /** 图片可用性：text 恒 ready；image 型 missing = 尚未上传图片（不可被转码模板关联） */
+  image_status: z.enum(["ready", "missing"]),
+  /** 引用它的转码模板数（转码关联落地前恒为 0，字段先行对齐 spec.md §10.3） */
+  referenced_by: z.number().int(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+
+/** 模板字段基础对象（无默认值；create 附加默认值，update 取 partial） */
+const WatermarkTemplateInput = z.object({
+  name: z.string().trim().min(1, "模板名不能为空").max(WATERMARK_NAME_MAX),
+  description: z.string().max(WATERMARK_DESCRIPTION_MAX).optional(),
+  params: WatermarkParams,
+});
+
+/** 新建水印模板：type 由 params.type 判别（图片 / 文字专属参数互不可混） */
+export const CreateWatermarkRequest = WatermarkTemplateInput;
+
+/** PATCH 语义：字段缺省 = 不修改；params.type 必须与既有模板一致（服务端校验） */
+export const UpdateWatermarkRequest = WatermarkTemplateInput.partial();
 
 // ---- 转码任务（M2，ADR-0008/0014；仅管理端与 Worker 消费，Go 分发端不消费 → 不进 gen-json 清单） ----
 

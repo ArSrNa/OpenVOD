@@ -34,6 +34,7 @@ export const STORAGE_PARTITIONS = {
   proceed: "proceed", // 转码与处理产物（HLS 清单/分片、字幕等）
   cover: "cover", // 封面与图片资产
   metadata: "metadata", // 元数据（probe / 业务扩展）
+  watermark: "watermark", // 水印图片（按水印模板 ID 组织，平台级模板资产，spec.md §10.2）
 } as const;
 
 export type StoragePartition = (typeof STORAGE_PARTITIONS)[keyof typeof STORAGE_PARTITIONS];
@@ -58,6 +59,8 @@ export const STORAGE_KEYS = {
   // metadata
   metadataProbe: (mediaId: string) => `metadata/${mediaId}/probe.json`,
   metadataCustom: (mediaId: string) => `metadata/${mediaId}/custom.json`,
+  // watermark：水印图片按**水印模板 ID**组织（非媒资 ID；平台级模板资产，spec.md §10.2）
+  watermark: (templateId: string, ext: string) => `watermark/${templateId}.${ext}`,
 } as const;
 
 // ---- proceed 分区的产物目录识别（spec.md §1.3/§1.4） ----
@@ -93,6 +96,59 @@ export function generateSubtitleTrackId(): string {
   for (const b of bytes) id += alphabet[b % alphabet.length];
   return id;
 }
+
+// ---- 水印（图片 / 文字，spec.md §10 / ADR-0018）----
+// 模板落库（watermark_templates），图片资产落 watermark/ 分区；校验枚举与上限两端同源。
+
+/** 水印模板 ID 形状：cuid 形状（路由与存储键白名单校验，防路径注入） */
+export const WATERMARK_ID_PATTERN = /^c[a-z0-9]{20,}$/;
+/** 模板名长度上限（唯一） */
+export const WATERMARK_NAME_MAX = 64;
+/** 模板描述长度上限 */
+export const WATERMARK_DESCRIPTION_MAX = 191;
+/** 文字水印内容长度上限（单行、不含控制字符） */
+export const WATERMARK_TEXT_MAX = 64;
+/** 水印图片上限（字节）：2 MiB（spec.md §10.2） */
+export const WATERMARK_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+/** x / y 偏移绝对值上限（像素，spec.md §10.1） */
+export const WATERMARK_OFFSET_MAX = 4096;
+/** 文字阴影偏移绝对值上限（像素） */
+export const WATERMARK_SHADOW_OFFSET_MAX = 100;
+
+/** 九宫格锚点（spec.md §10.4 定位换算表）：锚点对齐后施加带符号偏移（x 正 = 右、y 正 = 下） */
+export const WATERMARK_ANCHORS = [
+  "top_left",
+  "top_center",
+  "top_right",
+  "middle_left",
+  "center",
+  "middle_right",
+  "bottom_left",
+  "bottom_center",
+  "bottom_right",
+] as const;
+
+export type WatermarkAnchor = (typeof WATERMARK_ANCHORS)[number];
+
+/** 混合方式（spec.md §10.4）：normal = 标准 alpha 叠加；overlay = Overlay 混合模式（「叠加」） */
+export const WATERMARK_BLEND_MODES = ["normal", "overlay"] as const;
+
+export type WatermarkBlendMode = (typeof WATERMARK_BLEND_MODES)[number];
+
+/**
+ * 文字水印字体枚举（spec.md §10.1）：Worker 镜像内置 Noto CJK 的固定清单，
+ * 管理端下拉与（后续转码集成的）fontfile 映射共用同一键集。
+ */
+export const WATERMARK_FONTS = ["sans", "sans_bold", "serif"] as const;
+
+export type WatermarkFont = (typeof WATERMARK_FONTS)[number];
+
+/** 字体展示名（管理端下拉用） */
+export const WATERMARK_FONT_LABELS: Record<WatermarkFont, string> = {
+  sans: "黑体（思源黑体）",
+  sans_bold: "黑体加粗（思源黑体 Bold）",
+  serif: "宋体（思源宋体）",
+};
 
 // 媒资 ID：纯数字字符串，默认 8 位（MEDIA_ID_LENGTH 可配，4–16），保留前导零；为
 // original/proceed/cover/metadata 四分区资产的唯一索引（spec.md §1.3）

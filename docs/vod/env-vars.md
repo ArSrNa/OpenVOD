@@ -96,7 +96,10 @@ STORAGE_CDN_BASE_URL=""               # 加速域名（仅替换 GET 预签名 U
 | `S3_ACCESS_KEY_ID` | **是** | 空 | 访问密钥 ID |
 | `S3_SECRET_ACCESS_KEY` | **是** | 空 | 访问密钥 |
 | `S3_FORCE_PATH_STYLE` | 否 | `true` | 寻址风格。**腾讯云 COS 必须显式 `false`**（virtual-hosted-style）；MinIO 保持 `true` |
-| `STORAGE_CDN_BASE_URL` | 否 | 空 | 对象存储加速域名（ADR-0005），仅替换 GET 预签名 URL 的 origin |
+| `STORAGE_CDN_BASE_URL` | 否 | 空 | 对象存储加速域名（ADR-0005）：`s3_presign` 模式仅替换 GET 预签名 URL 的 origin；`cdn_url_auth` 模式为签名 URL 的 host |
+| `STORAGE_SIGN_MODE` | 否 | `s3_presign` | GET 签名方式：`s3_presign`（S3 SigV4 预签名）\| `cdn_url_auth`（CDN URL 鉴权）。⏳ **设计定稿待实现（ADR-0019 / spec §6.7）** |
+| `STORAGE_CDN_AUTH_KEY` | 否 | 空 | CDN URL 鉴权密钥（`cdn_url_auth` 必填；system_settings 中 MK 封装，env 兜底）。⏳ 同上 |
+| `STORAGE_CDN_AUTH_TTL_SEC` | 否 | `3600` | CDN 鉴权 URL 有效期（timestamp 按窗口对齐 = 缓存友好窗口）。⏳ 同上 |
 
 > delivery **不读** `DATABASE_URL` / `DB_PROVIDER` / `BETTER_AUTH_SECRET`——它走独立的 `DELIVERY_DATABASE_URL`。
 > 部署环境变量清单另见 `docs/vod/deploy-delivery.md`。

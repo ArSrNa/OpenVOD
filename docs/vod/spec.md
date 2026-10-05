@@ -398,7 +398,7 @@ http 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_s
 1. `login` 取 JWT（业务 API 用；**不用于清单 / 密钥 / 分片**）；
 2. `play` 建会话并返回签名主清单 URL；
 3. 拉主清单 → 子清单（`tpl` + typ=m token）；
-4. 子清单里 `#EXT-X-KEY` 的 URI 已被改写为 `/v1/media/{id}/key?t=<typ=k>`（`METHOD` / 显式 `IV` 原样保留）；分片行一律改写为 **S3 预签名直出 URL**（字节不经过函数，P0；`STORAGE_CDN_BASE_URL` 可替换 origin）——`typ=s` 不再签发；
+4. 子清单里 `#EXT-X-KEY` 的 URI 已被改写为 `/v1/media/{id}/key?t=<typ=k>`（`METHOD` / 显式 `IV` 原样保留）；分片行一律改写为**签名直出 URL**（字节不经过函数，P0；签名方式由 `storage_sign_mode` 决定——S3 预签名或 CDN URL 鉴权，§6.7）——`typ=s` 不再签发；
 5. 播放器自动 GET key → 验签 + 会话有效 → **MK 解封 `wrapped_cek`** → 返回 16B CEK（`no-store`，绝不缓存）；
 6. 播放器用 CEK + 清单显式 IV 本地 AES-128-CBC 解密分片——Safari 原生 HLS / hls.js / ExoPlayer 均原生支持，**业务侧零解密代码**。
 
@@ -439,14 +439,58 @@ http 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_s
 | `PLAYBACK_MANIFEST_TTL_SEC` | `14400` | 清单 token / 预签名有效期上限（token exp ≤ 会话 exp；上限 7 天，同时约束 S3 SigV4 预签名） |
 | `PLAYBACK_SUBTITLE_TTL_SEC` | `86400` | 字幕 token 有效期上限（`@openvod/shared DEFAULTS.subtitleTtlSec`）；实际 `exp` 取与会话 `exp` 的较小值（§7.5） |
 | `STORAGE_ROOT_PREFIX` / `S3_*` | 对齐管理端 | 与 `packages/storage` 同源命名（§1.5）；仅 S3 兼容存储（ADR-0005 2026-09-22 修订，`STORAGE_DRIVER` / `STORAGE_LOCAL_ROOT` 已删除） |
-| `STORAGE_CDN_BASE_URL` | 空 | 对象存储加速域名（ADR-0005 统一加速域名方案，管理端 / 分发端共用命名）：配置后 **GET 预签名 URL 的 origin 替换**为该域名（管理端 original / 封面预览 302、presign 模式分片直出），路径与签名 query 原样保留；上传预签名不受影响。前提：CDN 回源 COS 且 **Host 透传 / 改写为桶端点**（SigV4 签名覆盖 Host），缓存按 query 不缓存或短 TTL 配置。**2026-10-05 实测踩坑**：CDN 缓存键若忽略查询串，① 同路径重转码后播放端**永远读到旧分片**（产物按模板树原位替换，路径不变；预签名 query 每次不同但缓存键相同），表现为「改了水印 / 模板重转后画面没变化」；② **无签名请求可命中缓存绕过 URL 鉴权**（裸打分片 URL 返回 200）。缓存键必须含完整 query（不过滤参数），或启用 CDN URL 鉴权，二者必居其一 |
+| `STORAGE_CDN_BASE_URL` | 空 | 对象存储加速域名（ADR-0005 统一加速域名方案，管理端 / 分发端共用命名）：配置后 **GET 预签名 URL 的 origin 替换**为该域名（管理端 original / 封面预览 302、presign 模式分片直出），路径与签名 query 原样保留；上传预签名不受影响。前提：CDN 回源 COS 且 **Host 透传 / 改写为桶端点**（SigV4 签名覆盖 Host），缓存按 query 不缓存或短 TTL 配置。**2026-10-05 实测踩坑**：CDN 缓存键若忽略查询串，① 同路径重转码后播放端**永远读到旧分片**（产物按模板树原位替换，路径不变；预签名 query 每次不同但缓存键相同），表现为「改了水印 / 模板重转后画面没变化」；② **无签名请求可命中缓存绕过 URL 鉴权**（裸打分片 URL 返回 200）。缓存键必须含完整 query（不过滤参数），或启用 CDN URL 鉴权，二者必居其一。`cdn_url_auth` 模式下本变量语义变为**签名 URL 的 host**（§6.7，ADR-0019） |
+| `STORAGE_SIGN_MODE` | `s3_presign` | GET 签名方式：`s3_presign`（S3 SigV4 预签名，现状）\| `cdn_url_auth`（CDN URL 鉴权）。**设计定稿待实现（ADR-0019 / §6.7）** |
 | `DELIVERY_CORS_ORIGINS` | `*` | 允许跨域读取清单 / 密钥 / 分片（管理端「产物解密播放」的 hls.js 需要）；播放鉴权全走 URL token、不带 Cookie，`*` 不引入凭证泄露面，可收敛为管理端源站（逗号分隔） |
 
-分发端消费的 `system_settings` 键（DB 优先、env 兜底；键名与 `packages/shared SETTING_KEYS` 手工对齐）：`s3_endpoint` / `s3_region` / `s3_bucket` / `s3_access_key_id` / `s3_secret_access_key`（MK 封装）/ `s3_force_path_style` / `storage_root_prefix` / `storage_cdn_base_url` / `url_sign_key_hex`（MK 封装）/ `url_sign_key_kid` / `jwt_ttl_sec` / `playback_session_ttl_sec` / `playback_manifest_ttl_sec` / `playback_subtitle_ttl_sec` / `cors_origins` / `playback_base_url`。
+分发端消费的 `system_settings` 键（DB 优先、env 兜底；键名与 `packages/shared SETTING_KEYS` 手工对齐）：`s3_endpoint` / `s3_region` / `s3_bucket` / `s3_access_key_id` / `s3_secret_access_key`（MK 封装）/ `s3_force_path_style` / `storage_root_prefix` / `storage_cdn_base_url` / `url_sign_key_hex`（MK 封装）/ `url_sign_key_kid` / `jwt_ttl_sec` / `playback_session_ttl_sec` / `playback_manifest_ttl_sec` / `playback_subtitle_ttl_sec` / `cors_origins` / `playback_base_url`。**设计定稿待实现（ADR-0019 / §6.7）**：追加 `storage_sign_mode` / `storage_cdn_auth_key`（MK 封装）/ `storage_cdn_auth_ttl_sec`。
+
+### 6.7 资产 URL 签名方式（sign mode，ADR-0019 设计定稿，**实现未开始**）
+
+> 2026-10-05 CDN 陈旧缓存实测（§6.5 踩坑条目）暴露 presign 直出架构的缓存两难：预签名 query 每次播放都不同 → 缓存键含 query 则命中率归零、忽略 query 则陈旧分片 + 无签名命中缓存绕过鉴权。本节把「URL 签名形态」升级为管理端可配置项并开放自定义提供者，决策源 [ADR-0019](./decisions/0019-signing-mode-pluggable.md)；本节为设计契约，**代码未落地**。
+
+**不变量：桶恒为私有**（ADR-0005 纪律，任何模式都不改变桶策略）；可变的只有「**签名发生在 S3 还是 CDN**」。`storage_sign_mode` 作用于所有 GET 形态签名 URL——分发端分片直出（§6.2 第 4 步）、管理端 original / 封面 / 水印图 302、Worker 取水印图喂 ffmpeg：
+
+| 模式 | 签名方 | URL 形态 | 回源与验签 | 缓存行为 |
+|---|---|---|---|---|
+| `s3_presign`（默认，现状） | **S3**（SigV4 预签名） | `https://{cdn或cos}/{key}?X-Amz-Signature=…` | CDN 透传 query 回源，**S3 验签** | query 每次不同 → 缓存键**必须含完整 query** 或对带 query 请求不缓存；跨会话命中率恒为 0 |
+| `cdn_url_auth`（EO TypeA） | **CDN**（URL 鉴权 Token） | `https://{cdn}/{key}?sign={timestamp}-{rand}-{uid}-{md5}`（**无 S3 签名**） | CDN **私有回源**：存储凭证配置在 CDN 控制台（EO「源站鉴权」/ COS 私有桶回源授权），CDN 以自有凭证直读私有对象 | URL 在签名窗口内**稳定** → 跨会话可缓存（缓存键含 query 即可）；CDN TTL ≤ 签名窗口 |
+
+- 由此推论：`cdn_url_auth` 下 admin **不配置任何存储回源凭证**——回源凭证是 CDN 控制台的部署配置，不入库；admin 只管边缘签名密钥（`storage_cdn_auth_key`）；
+- 公有桶免签不成立（违反不变量、无鉴权），不是备选。
+
+**设置键**（`system_settings` `storage` 组，ADR-0015 机制；env 兜底同名大写）：
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `storage_sign_mode` | `s3_presign` | `s3_presign` \| `cdn_url_auth` |
+| `storage_cdn_auth_key` | 空 | CDN **边缘** URL 鉴权密钥（`cdn_url_auth` 必填；secret，MK 封装存储，与 EO 控制台同款密钥**双侧一致**）。注意：CDN 私有回源的存储凭证不在此列——那是 CDN 控制台的部署配置，不入库 |
+| `storage_cdn_auth_ttl_sec` | `3600` | 鉴权 URL 有效期；timestamp 以该窗口对齐（保证窗口内 URL 稳定 = 缓存友好），即 URL 同时是缓存键的一部分 |
+| `storage_cdn_base_url` | 空 | 语义随模式：`s3_presign` = 预签名 origin 替换（现状）；`cdn_url_auth` = 签名 URL 的 host（加速域名） |
+
+**提供者契约（可插拔）**——统一语义 `sign(key, ttlSec) -> 绝对 URL`：
+
+- TS（`packages/storage`）：`UrlSigner`；`createStorage` 时按 settings 注入。内置 `s3PresignSigner`（重构现有 presignGet 的签名段）与 `edgeoneTypeASigner`；
+- Go（`apps/delivery/internal/blob`）：`URLSigner` 接口同语义，装配包注入；
+- **自定义提供者**：自托管自编译用户实现接口并在装配处注册（Go 编译期注入 / TS 工厂函数注入），面向非 EO 的 CDN / 存储组合；**运行时动态插件明确不做**（安全面与复杂度，理由同 ADR-0005 单一驱动）；
+- 签名**只**改变「播放端可见的 URL 形态」：分发端读清单对象（`storage.get`）、Worker 写入路径仍走 S3 SDK，存储凭据面不变。
+
+**EdgeOne URL 鉴权 TypeA 算法**（实现时以 EO 官方文档核对，并产 fixtures 对齐 `crypto-v1.json` 模式；`packages/crypto` 保留的废弃 TypeA 实现为起点）：
+
+```
+URL = https://{host}{path}?sign={timestamp}-{rand}-{uid}-{md5}
+md5 = md5("{path}-{timestamp}-{rand}-{uid}-{key}")    # path 含前导 /、不含 query
+timestamp = now + ttl，按 ttl 窗口向下取整对齐          # 窗口内 URL 稳定（缓存友好）
+rand / uid = 固定常量（不做随机，保 URL 稳定）
+```
+
+**切换运维**：模式切换经 settings 30s 快照生效（无需重启）；在途会话已改写的清单按旧模式继续有效至过期，新播放即时走新模式；切换后建议 CDN 全量刷新一次（清掉旧模式形态的缓存条目）。吊销语义不变：收敛在清单 / 会话层（typ=m 逐会话校验），单条分片 URL 仍无中心吊销（与 presign 一致）。
+
+**实现清单**（后续 PR，按 ADR-0019）：storage / blob 双侧 UrlSigner 与两内置实现 + fixtures；contracts settings schema 与管理端设置 UI（storage 组新字段，secret 字段 MK 封装对齐 `url_sign_key_hex`）；`api.md` §1.8 分组字段随实现补录；deploy 文档补两模式各自的 CDN 控制台配置清单。
 
 ### 6.6 M3 已落地范围外（演进项）
 
-- ~~CDN + EdgeOne TypeA 分片鉴权~~ —— **已关闭（2026-09-20 用户修订，ADR-0005）**：不再引入 EdgeOne CDN，s3 形态 **S3 预签名直出定为最终形态**（M3 已实现并验证；曾短暂引入分发端代理模式后回退删除）；可配 `STORAGE_CDN_BASE_URL` 加速域名替换预签名 origin；
+- **CDN URL 鉴权（EO TypeA）** —— **2026-10-06 重开（ADR-0019 / §6.7）**：签名方式升级为管理端可配置（`s3_presign` 现状默认 / `cdn_url_auth` 私有回源 + CDN 签名）+ 自定义签名提供者契约，**设计定稿、实现未开始**；`s3_presign` + CDN 透传仍为默认形态（~~2026-09-20 曾关闭~~：当时否决的是「EO 强绑定」，本次以可插拔 + admin 驱动的方式重新纳入，厂商中立性不回退）；
 - 登录 / play **限频**（ADR-0010）；严格模式（key 一次性 nonce、IP / UA 绑定、并发上限的踢下线，ADR-0006 §7 默认关）；
 - 会话吊销的进程内 60s 缓存（当前每请求查库，语义更严格、量级可接受）；
 - SQLite 自托管驱动（当前 Go 侧仅 MySQL；ADR-0004 的单机同卷形态待补）；

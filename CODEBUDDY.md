@@ -5,7 +5,7 @@ This file provides guidance to CodeBuddy when working with code in this reposito
 
 OpenVOD：自建云点播系统（媒资 → 转码加密 → 元数据 / 字幕 → 鉴权分发播放）。Bun workspaces monorepo，双语言双端架构，部署目标为腾讯云 EdgeOne Pages / SCF（Docker），保留自托管 Compose 退路。
 
-本仓库是 **ADR 驱动**开发：`docs/vod/decisions/0001~0013` 是权威决策源，代码注释普遍以 `ADR-xxxx` 引用；改动设计前先读对应 ADR，决策变化时同步更新 ADR。排错先查 `docs/vod/dev-workflow.md §8`（`Module not found: '../generated/sqlite'`、`P2021`、`P3014` 等高频坑均有条目）。
+本仓库是 **ADR 驱动**开发：`docs/vod/decisions/0001~0019` 是权威决策源，代码注释普遍以 `ADR-xxxx` 引用；改动设计前先读对应 ADR，决策变化时同步更新 ADR。排错先查 `docs/vod/dev-workflow.md §8`（`Module not found: '../generated/sqlite'`、`P2021`、`P3014`、CDN 陈旧缓存等高频坑均有条目）。
 
 ## 常用命令
 

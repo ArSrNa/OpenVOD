@@ -18,9 +18,11 @@ import {
   compileKeepOriginal,
   compileSourceMatched,
   compileTemplate,
+  describeWatermark,
   ffprobeJSON,
   runFFmpeg,
   summarizeProbe,
+  type CompileOpts,
   type LadderEntry,
   type SourceInfo,
   type VariantPlan,
@@ -111,11 +113,18 @@ function estimateVideoKbps(height: number, declared?: number | null): number {
  * 常规模板若**全部档位均无降级维度**（分辨率 / 帧率 / 码率都 ≥ 源），
  * 不空手失败：追加一档「源规格兜底」（compileSourceMatched）——编码器 / 加密按模板，
  * 分辨率 / 帧率 / 码率保持原视频（intent 规则 3，2026-09-18 修订）。
+ * 水印（spec.md §10.4）挂在各档重编码路径上：keep_original 不重编码，契约层已拒绝与水印并存。
  */
 function buildPlans(
   snapshot: TranscodeSnapshot,
   source: SourceInfo,
-  opts: { input: string; outRoot: string; keyInfoPath?: string; hlsTimeSec: number },
+  opts: {
+    input: string;
+    outRoot: string;
+    keyInfoPath?: string;
+    hlsTimeSec: number;
+    watermark?: CompileOpts["watermark"];
+  },
 ): { plans: VariantPlan[]; entries: LadderEntry[]; sourceFallback: boolean } {
   let plans: VariantPlan[];
   let sourceFallback = false;
@@ -141,6 +150,7 @@ function buildPlans(
       outRoot: opts.outRoot,
       keyInfoPath: opts.keyInfoPath,
       hlsTimeSec: opts.hlsTimeSec,
+      watermark: opts.watermark,
     });
     if (plans.every((p) => p.skipped)) {
       plans = [
@@ -150,6 +160,7 @@ function buildPlans(
           outRoot: opts.outRoot,
           keyInfoPath: opts.keyInfoPath,
           hlsTimeSec: opts.hlsTimeSec,
+          watermark: opts.watermark,
         }),
       ];
       sourceFallback = true;
@@ -172,6 +183,26 @@ function buildPlans(
 /** 源片输入：S3 预签名 GET URL（字节不经 Worker 落盘，ffmpeg 原生支持 http 输入） */
 function resolveInput(storage: StorageAdapter, key: string): Promise<string> {
   return storage.presignGet(key, 6 * 3600);
+}
+
+/**
+ * 水印快照 → 编译入参（spec.md §10.4）：Worker **只读快照**，不回查 watermark_templates；
+ * 图片型按快照里的 image_key 预签名取图（同样不落盘，ffmpeg 原生支持 http 输入）。
+ * 文字型不需要第二输入；图片型缺 image_key（脏快照）在此报错而非产出无水印的片。
+ */
+async function resolveWatermark(
+  storage: StorageAdapter,
+  snapshot: TranscodeSnapshot,
+): Promise<CompileOpts["watermark"]> {
+  const wm = snapshot.watermark;
+  if (!wm) return null;
+  if (wm.type === "image") {
+    if (!wm.image_key) {
+      throw new JobExecutionError(`水印「${wm.name}」快照缺少 image_key，无法烧录（提交时水印图尚未上传）`);
+    }
+    return { snapshot: wm, imageUrl: await storage.presignGet(wm.image_key, 6 * 3600) };
+  }
+  return { snapshot: wm };
 }
 
 async function resolveSourceKey(storage: StorageAdapter, mediaId: string, sourceKey: string | null): Promise<string> {
@@ -290,11 +321,16 @@ export async function executeClaimedJob(
     }
 
     // 3) 编译计划（三维度均不低于源的档位在此被跳过；全档跳过则按源规格兜底出一档）
+    const watermark = await resolveWatermark(deps.storage, snapshot);
+    if (watermark) {
+      log(`任务 ${job.id}：烧录水印 ${describeWatermark(watermark.snapshot)}`);
+    }
     const { plans, entries, sourceFallback } = buildPlans(snapshot, source, {
       input,
       outRoot,
       keyInfoPath,
       hlsTimeSec,
+      watermark,
     });
     const executed = plans.filter((p) => !p.skipped && p.argv);
     const skipped = plans.filter((p) => p.skipped).map((p) => `${p.name}：${p.skipReason ?? "跳过"}`);

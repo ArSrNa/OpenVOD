@@ -70,6 +70,7 @@ OpenVOD：自建云点播系统（媒资 → 转码加密 → 元数据 / 字幕
 - 媒资分类为独立表 `media_categories`（**无限层级**邻接表，`media.category_id` 外键 `SetNull`，删除分类只把媒资迁入默认分类、不删媒资）；**系统默认分类「其他」**（`is_system`，未设置分类的媒资默认归入：上传即落库 / 留空 =「其他」/ 读取空值回退 / 不可删除）；「分类 / 描述 / 标签」构成 v1 **自定义元数据**：投影进 `media.custom_data`（稀疏，含分类 name/path 快照）+ 导出 `metadata/{id}/custom.json`，分发端 `custom` 按公开白名单下发（ADR-0016 / spec.md §8）。
 - Go 侧不用 Prisma：`database/sql + sqlx` 只读读模型 + 播放会话写入，靠集成测试对齐表结构。
 - 任务队列不引入 Redis：MySQL `FOR UPDATE SKIP LOCKED` / SQLite CAS 认领，带 `lease_until` 崩溃重派（ADR-0004/0008）。
+- 水印模板为独立表 `watermark_templates`（图片 / 文字两类，图片资产落 `watermark/{模板id}.{ext}` 第五分区）；`transcode_templates.watermark_id` 可空外键（`SetNull`，应用层引用检查在前）。水印**只经任务快照**进 Worker（`template_snapshot.watermark`），模板 / 图片变更不影响已入队任务；`keep_original`（`-c copy`）与水印互斥（模板保存 + 任务发起两层校验）。烧录由 `packages/transcode/src/watermark.ts` 的纯函数编译为 ffmpeg 滤镜链（ADR-0018 / spec.md §10）。
 
 ### 两套鉴权体系（勿混用）
 
@@ -98,8 +99,8 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可轮换）
 ### 当前实现状态（scaffold 骨架）
 
 - `apps/delivery` 播放链路（M3）已实现：`internal/{config,contracts,server,token,auth,blob,mk,playback,store}` 与装配包 `app`——login（bcrypt + ES256 JWT）、media 列表/详情、play（会话幂等 / 并发上限）、主 + 子清单改写、`/key`、分片 S3 预签名直出、字幕下发（`play` 附 typ=v 签名 URL；`.vtt` 按 `storage_key` 代理输出 `no-store`，spec.md §7.5）、`custom` 自定义元数据公开白名单（`internal/server/custom.go`：分类 / 描述 / 标签，spec.md §8.4）。未覆盖项见 `docs/vod/spec.md §6.6`。
-- `apps/worker/src/index.ts` 的转码执行链已实现（ADR-0008：认领 → ffprobe → key_info → 转码 → 上传 → 写 `hls_keys`）。
-- `apps/admin` 的 `/api/auth/*`（better-auth）、`/healthz`、登录页与建号脚本可用；`/api/admin/*` 业务端点按里程碑逐条落地——已实现：媒资（上传 / 列表 / 详情 / 重命名 + **自定义元数据字段更新**（描述 / 标签 / 分类）/ 删除 / 预览 / 封面 / 元数据 / 产物 / 转码发起）、`/api/admin/categories`（分类 CRUD，无限层级，spec.md §8）、`/api/admin/templates`、`/api/admin/keys`（含 MK 轮换）、`/api/admin/jobs`（列表 + SSE + 停止 / 重启）、`/api/admin/stats`、`/api/admin/users`（播放端用户 CRUD + 重置口令 + 吊销会话，spec.md §2.1.1）、`/api/admin/media/{id}/subtitles`（字幕轨道 CRUD + 覆盖文本，spec.md §7）；其余路径仍由 `/api/admin/[...path]` 会话守卫后返回 501。
+- `apps/worker/src/index.ts` 的转码执行链已实现（ADR-0008：认领 → ffprobe → key_info → 转码 → 上传 → 写 `hls_keys`）；**水印烧录已实现**（ADR-0018 / spec.md §10.4：读 `template_snapshot.watermark` → 图片型按 `image_key` 预签名取图 → `packages/transcode` 编译滤镜链，逐档挂在 scale 之后、编码切片之前；启动自检水印字体）。
+- `apps/admin` 的 `/api/auth/*`（better-auth）、`/healthz`、登录页与建号脚本可用；`/api/admin/*` 业务端点按里程碑逐条落地——已实现：媒资（上传 / 列表 / 详情 / 重命名 + **自定义元数据字段更新**（描述 / 标签 / 分类）/ 删除 / 预览 / 封面 / 元数据 / 产物 / 转码发起）、`/api/admin/categories`（分类 CRUD，无限层级，spec.md §8）、`/api/admin/templates`（含可选 `watermark_id` 关联 + 两层校验）、`/api/admin/watermarks`（水印模板 CRUD + 图片上传 / 预览 + `referenced_by` + 删除 409，spec.md §10）、`/api/admin/keys`（含 MK 轮换）、`/api/admin/jobs`（列表 + SSE + 停止 / 重启）、`/api/admin/stats`、`/api/admin/users`（播放端用户 CRUD + 重置口令 + 吊销会话，spec.md §2.1.1）、`/api/admin/media/{id}/subtitles`（字幕轨道 CRUD + 覆盖文本，spec.md §7）；其余路径仍由 `/api/admin/[...path]` 会话守卫后返回 501。
 
 ## 仓库约定
 

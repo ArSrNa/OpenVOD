@@ -4,7 +4,9 @@
 // ADR-0015：启动只要求 DATABASE_URL / DB_PROVIDER / MASTER_KEYS；存储凭据与队列参数
 // 从 system_settings 读取（首次启动向导写入，MK 封装密钥解封），env 同名键兜底。
 import type { MasterKey } from "@openvod/crypto";
-import { DEFAULT_LADDER } from "@openvod/transcode";
+import { DEFAULT_LADDER, WATERMARK_FONT_FILES, WATERMARK_FONT_ROOT } from "@openvod/transcode";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { executeClaimedJob } from "./executor";
 import { createHttpWorker } from "./http-mode";
 import { createPrismaTranscodeJobStore } from "./job-store";
@@ -29,6 +31,25 @@ function checkTools(): ToolCheck[] {
   return checks.map(([name, bin]) => ({ name, bin, ok: Boolean(Bun.which(bin)) }));
 }
 
+/**
+ * 文字水印字体自检（spec.md §10.6 / ADR-0018）：drawtext 的 fontfile 缺失时 ffmpeg **不会报错**，
+ * 而是静默回退到 fontconfig 默认字体——中文会渲染成豆腐块且任务仍报成功。故在此显式告警。
+ * 与 ffmpeg 一样按「非必需」处理（只有用到文字水印的模板才受影响），不阻断启动。
+ */
+function checkWatermarkFonts(): void {
+  const missing = Object.entries(WATERMARK_FONT_FILES)
+    .filter(([, file]) => !existsSync(join(WATERMARK_FONT_ROOT, file)))
+    .map(([font, file]) => `${font}→${file}`);
+  if (!missing.length) {
+    console.log(`[worker] 字体   ok    # 水印字体 ${WATERMARK_FONT_ROOT}（${Object.keys(WATERMARK_FONT_FILES).length} 种）`);
+    return;
+  }
+  console.warn(
+    `[worker] 字体   MISSING  # 水印字体缺失：${missing.join(", ")}（镜像应装 fonts-noto-cjk，见 .ide/Dockerfile）` +
+      `—— 文字水印将回退到系统默认字体，中文可能渲染为豆腐块`,
+  );
+}
+
 const REQUIRED = ["ffmpeg", "ffprobe"];
 const tools = checkTools();
 for (const t of tools) {
@@ -41,6 +62,7 @@ if (missing.length) {
 }
 
 console.log(`[worker] ladder = ${DEFAULT_LADDER.map((e) => e.name).join(" / ")}`);
+checkWatermarkFonts();
 
 // 密钥前置自检（spec.md §4.2）：加密任务必需 MASTER_KEYS，未加密任务不依赖它 → 告警而非退出
 let masterKeys: MasterKey[] | undefined;

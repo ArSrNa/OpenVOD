@@ -45,6 +45,18 @@ enum TemplateFormat {
   HLS
 }
 
+/// 水印类型（spec.md §10 / ADR-0018）
+enum WatermarkType {
+  image
+  text
+}
+
+/// 水印混合方式（spec.md §10.4）：normal = 标准 alpha 叠加；overlay = Overlay 混合模式（「叠加」）
+enum WatermarkBlend {
+  normal
+  overlay
+}
+
 enum SigningKeyKind {
   JWT
   URL_SIGN
@@ -297,10 +309,43 @@ model TranscodeTemplate {
   /// keep_original=true 时为 NULL（只加密流程无重编码参数）
   params      Json?
   isDefault   Boolean        @default(false) @map("is_default")
+  /// 关联水印模板（spec.md §10.4 / ADR-0018）：可空外键，一个转码模板至多一个水印、
+  /// 一个水印可被多个转码模板引用；keep_original=true 时恒为 NULL（烧录必须重编码）
+  watermarkId String?        @map("watermark_id")
   createdAt   DateTime       @default(now()) @map("created_at")
   updatedAt   DateTime       @updatedAt @map("updated_at")
 
+  watermark WatermarkTemplate? @relation(fields: [watermarkId], references: [id], onDelete: SetNull)
+
+  @@index([watermarkId])
   @@map("transcode_templates")
+}
+
+/// 水印模板（spec.md §10 / ADR-0018：管理端 CRUD；Worker 只读任务快照消费）。
+/// 图片资产落 watermark/{模板ID}.{ext}（平台级模板资产分区，非媒资 ID 索引）；
+/// params JSON 含 type 字面量自描述（与 type 列保持一致），快照语义对齐 ADR-0014
+model WatermarkTemplate {
+  id          String         @id @default(cuid())
+  name        String         @unique
+  description String?
+  type        WatermarkType
+  /// 图片型专属（文字型恒 NULL）：扩展名（png / jpg / webp，按内容识别）
+  imageExt    String?        @map("image_ext")
+  /// 不含 root 的存储键（watermark/{id}.{ext}）
+  imageKey    String?        @map("image_key")
+  imageBytes  Int?           @map("image_bytes")
+  /// 像素宽高：上传时管理端 ffprobe 探测回填（spec.md §10.2），供比例尺寸等比换算
+  imageWidth  Int?           @map("image_width")
+  imageHeight Int?           @map("image_height")
+  /// 结构化参数 JSON（anchor / 偏移 / opacity / blend + 类型专属，spec.md §10.1）
+  params      Json
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+
+  /// 反向引用：引用本水印的转码模板（应用层删除保护在前，DB SetNull 兜底，spec.md §10.2）
+  templates TranscodeTemplate[]
+
+  @@map("watermark_templates")
 }
 
 /// 每媒资 HLS 内容密钥（明文 CEK 不入库，ADR-0006）；media_id 唯一 = 「每媒资一份密钥」的

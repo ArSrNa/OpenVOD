@@ -492,3 +492,202 @@ describe("M2 执行器", () => {
     45_000,
   );
 });
+
+// ---- 水印烧录（spec.md §10.4 / ADR-0018）：快照自带水印 → Worker 只读快照、按 image_key 取图 ----
+describe("M2 执行器：水印烧录", () => {
+  const WATERMARK_ID = "cwmkimg0000000000000001";
+  const WATERMARK_KEY = `watermark/${WATERMARK_ID}.png`;
+  /** 文字水印不需第二输入，用它验证「无 image_key 也可烧录」与 keep_original 互斥的快照兜底 */
+  const TEXT_WATERMARK_ID = "cwmktext0000000000000002";
+
+  /** 水印图（纯红 40×20）写入 watermark/ 分区：与真实链路同键布局 */
+  async function seedWatermarkImage(env: TestEnv): Promise<void> {
+    const png = join(dirname(sourcePathOf(env)), "wm.png");
+    const gen = Bun.spawnSync({
+      cmd: ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=red:s=40x20:d=1", "-frames:v", "1", png],
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (gen.exitCode !== 0) throw new Error(`水印图生成失败：${new TextDecoder().decode(gen.stderr)}`);
+    await env.storage.put(WATERMARK_KEY, new Uint8Array(readFileSync(png)), "image/png");
+  }
+
+  it.skipIf(!hasFFmpeg)(
+    "图片水印：按快照 image_key 取图并烧录，产物字节与无水印不同",
+    async () => {
+      const env = setup();
+      await seedSource(env, sourcePathOf(env));
+      await seedWatermarkImage(env);
+
+      const plain = await executeClaimedJob(job(TEMPLATE_ENCRYPTED), env.deps);
+      const plainSegment = (
+        await env.storage.listObjects(`${prefixOf(TEMPLATE_A)}/`)
+      ).find((o) => o.key.endsWith(".ts"))!;
+      const plainBytes = new Uint8Array(await env.storage.get(plainSegment.key));
+
+      const withWatermark = await executeClaimedJob(
+        job({
+          ...TEMPLATE_ENCRYPTED,
+          watermark: {
+            id: WATERMARK_ID,
+            name: "右下角红块",
+            type: "image",
+            params: {
+              type: "image",
+              anchor: "bottom_right",
+              offset_x: -4,
+              offset_y: -4,
+              opacity: 100,
+              blend: "normal",
+              size: { mode: "percent", width: 20 },
+            },
+            image_key: WATERMARK_KEY,
+            image_ext: "png",
+            image_width: 40,
+            image_height: 20,
+          },
+        }),
+        env.deps,
+      );
+
+      // 计划与状态机与无水印时一致（同一档、同一落位）
+      expect(withWatermark.variants).toEqual(plain.variants);
+      expect(withWatermark.outputPrefix).toBe(prefixOf(TEMPLATE_A));
+      expect(withWatermark.encrypted).toBe(true);
+      const wmSegment = (
+        await env.storage.listObjects(`${prefixOf(TEMPLATE_A)}/`)
+      ).find((o) => o.key.endsWith(".ts"))!;
+      const wmBytes = new Uint8Array(await env.storage.get(wmSegment.key));
+
+      // 水印已烧进画面 → 加密后的分片字节必然不同（同一 CEK 复用，只有画面变了）
+      expect(wmBytes.length).toBeGreaterThan(0);
+      expect(Buffer.from(wmBytes).equals(Buffer.from(plainBytes))).toBe(false);
+
+      // 音频必须保留（2026-10-05 踩坑：-map 使自动流选择失效，漏 -map 0:a? → 无声视频）。
+      // 分片已 AES-128 加密，ffprobe 读不了——沿用本测试既有的解密路径取明文 TS 落临时文件再探
+      const storedKey = env.keyStore.rows.get(MEDIA_ID)!;
+      const cek = openMediaKey(pickWrappingMasterKey(MK), storedKey.wrappedCekHex);
+      const decipher = createDecipheriv("aes-128-cbc", cek, Buffer.from(storedKey.ivHex, "hex"));
+      const plainTs = Buffer.concat([decipher.update(Buffer.from(wmBytes)), decipher.final()]);
+      expect(plainTs[0]).toBe(0x47); // TS 同步字节，确认解密正确
+      const tsFile = join(env.jobsRoot, "wm-audio-check.ts");
+      writeFileSync(tsFile, plainTs);
+      const probed = Bun.spawnSync({
+        cmd: ["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", tsFile],
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (probed.exitCode !== 0) {
+        throw new Error(`ffprobe 解密分片失败：${new TextDecoder().decode(probed.stderr).slice(-300)}`);
+      }
+      const streams = (JSON.parse(new TextDecoder().decode(probed.stdout)) as { streams?: Array<{ codec_type: string }> }).streams ?? [];
+      expect(streams.some((s) => s.codec_type === "audio")).toBe(true);
+
+      env.cleanup();
+    },
+    60_000,
+  );
+
+  it.skipIf(!hasFFmpeg)(
+    "文字水印：无需第二输入即可烧录（drawtext 直接落在全帧画布上）",
+    async () => {
+      const env = setup();
+      await seedSource(env, sourcePathOf(env));
+      // 字体目录取镜像内置路径；本机无该字体时 ffmpeg 走 fontconfig 回退，字形不同但链路一致
+      const result = await executeClaimedJob(
+        job({
+          ...TEMPLATE_ENCRYPTED,
+          watermark: {
+            id: TEXT_WATERMARK_ID,
+            name: "文字水印",
+            type: "text",
+            params: {
+              type: "text",
+              anchor: "bottom_right",
+              offset_x: -4,
+              offset_y: -4,
+              opacity: 100,
+              blend: "normal",
+              text: "OpenVOD",
+              font: "sans",
+              color: "#ffffff",
+              shadow: null,
+              size: { mode: "percent", size: 12 },
+            },
+          },
+        }),
+        env.deps,
+      );
+      expect(result.variants).toHaveLength(1);
+      expect(result.outputPrefix).toBe(prefixOf(TEMPLATE_A));
+      env.cleanup();
+    },
+    60_000,
+  );
+
+  it("脏快照：keep_original 却带水印 → 任务直接判失败（不产出无水印的片）", async () => {
+    const env = setup();
+    await seedSource(env, sourcePathOf(env));
+    await expect(
+      executeClaimedJob(
+        job({
+          template_id: TEMPLATE_A,
+          name: "脏快照",
+          keep_original: true,
+          encrypt: false,
+          format: "HLS",
+          params: null,
+          watermark: {
+            id: TEXT_WATERMARK_ID,
+            name: "文字水印",
+            type: "text",
+            params: {
+              type: "text",
+              anchor: "center",
+              offset_x: 0,
+              offset_y: 0,
+              opacity: 100,
+              blend: "normal",
+              text: "x",
+              font: "sans",
+              color: "#ffffff",
+              shadow: null,
+              size: { mode: "pixels", size: 20 },
+            },
+          },
+        }),
+        env.deps,
+      ),
+    ).rejects.toThrow(/快照/);
+    expect(env.jobStore.statuses).toEqual([]);
+    env.cleanup();
+  });
+
+  it("脏快照：图片水印缺 image_key → 任务失败（不静默产出无水印的片）", async () => {
+    const env = setup();
+    await seedSource(env, sourcePathOf(env));
+    await expect(
+      executeClaimedJob(
+        job({
+          ...TEMPLATE_ENCRYPTED,
+          watermark: {
+            id: WATERMARK_ID,
+            name: "缺图",
+            type: "image",
+            params: {
+              type: "image",
+              anchor: "center",
+              offset_x: 0,
+              offset_y: 0,
+              opacity: 100,
+              blend: "normal",
+              size: { mode: "percent", width: 20 },
+            },
+          },
+        }),
+        env.deps,
+      ),
+    ).rejects.toThrow(/image_key/);
+    env.cleanup();
+  });
+});

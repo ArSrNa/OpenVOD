@@ -18,6 +18,9 @@
 //   已实现（分类与自定义元数据，spec.md §8 / ADR-0016）：/api/admin/categories（GET 列表 / POST 新建）、
 //                         /categories/[id]（PATCH 更新 / DELETE 删除）；
 //                         /media/[id] 的 PATCH 已扩展为「重命名 + 描述 / 标签 / 分类」
+//   已实现（水印模板，spec.md §10 / ADR-0018）：/api/admin/watermarks（GET 列表 / POST 新建）、
+//                         /watermarks/[id]（GET 详情 / PATCH 更新 / DELETE 删除）、
+//                         /watermarks/[id]/image（PUT 上传替换图片 / GET 图片预览 302）
 import { NextRequest, NextResponse } from "next/server";
 import { getAuth } from "@/lib/auth";
 

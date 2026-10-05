@@ -6,6 +6,7 @@
 #
 #   管理端 Control Plane  Bun + Hono / React + Vite / Drizzle ORM（Bun/Node 基础镜像已覆盖）
 #   转码 Worker           ffmpeg + Shaka Packager + Bento4（常驻容器专用，禁止上函数）
+#                         + fonts-noto-cjk（文字水印 drawtext 的 fontfile，与 worker 镜像同源）
 #   分发端 Data Plane     Go 1.26（EdgeOne Cloud Functions 原生运行时，配 Chi/Echo/Gin/Fiber）
 #   双语言契约            quicktype（zod -> JSON Schema -> Go struct，防模型漂移）
 #   数据库                MySQL 8 客户端（TDSQL-C）+ sqlite3（Drizzle 方言切换余地）
@@ -41,6 +42,7 @@ RUN set -eux; \
         ca-certificates tzdata \
         openssh-client procps less vim iputils-ping netcat-openbsd bind9-dnsutils \
         ffmpeg \
+        fonts-noto-cjk \
         mysql-client \
         sqlite3 \
         jq \

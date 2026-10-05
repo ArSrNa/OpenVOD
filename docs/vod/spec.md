@@ -25,9 +25,11 @@ root 下按资产类别分四个分区，互不嵌套：
 | `proceed/` | 转码与处理产物：HLS 主/子清单、分片、字幕等 | Worker / 管理端 | 分发端（预签名直出）、管理端 |
 | `cover/` | 封面与图片资产（poster、缩略图等） | Worker / 管理端 | 分发端、管理端 |
 | `metadata/` | 元数据：ffprobe 结果、业务扩展元数据（自定义元数据投影 `custom.json`，§8.3） | 管理端 / Worker | 管理端 / 分发端 |
+| `watermark/` | 水印图片（按水印模板 ID 组织，§10.2） | 管理端 | Worker（转码烧录） |
 
 - P0 纪律不变：**密钥材料绝不入对象存储**（wrapped CEK、JWT 私钥仅入数据库，ADR-0006）；
-- 原视频与转码产物分区分开的动机：`original/` 只增不改（审计友好、误删可恢复），产物可随时按 ladder 重转并整体重建。
+- 原视频与转码产物分区分开的动机：`original/` 只增不改（审计友好、误删可恢复），产物可随时按 ladder 重转并整体重建；
+- `watermark/` 是**平台级模板资产**分区：按水印模板 ID（cuid）组织，不按媒资 ID 索引，不属于任何媒资的资产集合（§10.2）。
 
 ### 1.3 媒资 ID（数字索引）
 
@@ -48,6 +50,8 @@ root 下按资产类别分四个分区，互不嵌套：
 {root}/metadata/{id}/custom.json                            # 业务扩展元数据（自定义元数据投影，§8.3）
 ```
 
+`watermark/` 分区**不参与媒资 ID 索引**：水印图片按**水印模板 ID** 组织（`{root}/watermark/{templateId}.{ext}`，规则见 §10.2），是平台级模板资产而非媒资产物——媒资删除与重转码都不触碰该分区。
+
 `proceed/` 的**两级分组**（2026-09-18 定，M2 落地）：
 
 - 第一级是媒资 ID，第二级是**模板 ID**（即 `transcode_templates.id`，cuid）：目录名就是模板 ID，所以「这份产物是哪个模板转出来的」可以直接从存储键读出；
@@ -60,7 +64,7 @@ root 下按资产类别分四个分区，互不嵌套：
 
 - **媒资集合以 `original/` 分区为准**：每个 `original/{id}.{ext}` 对象即一个媒资，`id` = 文件名去扩展名；
 - `id` 必须为纯数字（`MEDIA_ID_PATTERN`）；非数字文件名或更深层级的对象不属于媒资，列举时忽略；
-- 其余三个分区**只按 id 归组补充资产状态**（各分区下该 id 的对象数量），不反向定义媒资；
+- 其余三个分区**只按 id 归组补充资产状态**（各分区下该 id 的对象数量），不反向定义媒资；`watermark/` 不参与媒资列举（不按媒资 ID 组织，§10.2），媒资列表 API 不扫描该分区；
 - `proceed/` 额外按「媒资 → 模板」归组为 `products[]`（M2 实现）：每项给出 `template_id`、`template_name`（查 `transcode_templates`，模板已删为 `null`）、`objects`（对象数）、`bytes`（体积）、`variants[]`（变体目录名，如 `1080p` / `720p`）——列表与详情都用它回答「这份产物是哪个模板转的」；`proceed/{id}/subtitles/` 等保留段不参与分组；
 - 管理端 `GET /api/admin/media` 一次列举四个分区并按 id 内存聚合返回（每条另附 `subtitleCount` = `proceed/{id}/subtitles/*.vtt` 对象数，供字幕管理页选择器使用）；v1 全量列举即可，分页 / 前缀裁剪留待媒资规模需要时再加；
 - 列表同时合并 `media` 表（M1 实现，见 §2.1）：展示名（`title`）与生命周期状态由数据库补充，DB 查询失败时降级为纯存储视角（字段置 null）；数据库行**不参与**媒资集合定义（仍以 `original/` 分区为准）。
@@ -110,7 +114,7 @@ root 下按资产类别分四个分区，互不嵌套：
 | `/api/admin/media/{id}/products/{templateId}` | DELETE | 删除一套转码产物：`templateId` 为模板 cuid（删 `proceed/{id}/{templateId}/` 子树）或 `legacy`（旧布局：删 `proceed/{id}/` 顶层非保留段对象）。**只删存储对象**：`hls_keys`（可能被其它模板产物共用）与 `transcode_jobs` 历史保留；同模板存在未终结任务 → 409；不存在 → 404；落 `audit_logs`（`media.product_delete`，detail 含 template_id / objects / bytes） |
 | `/api/admin/jobs/{id}/stop` | POST | 停止（取消）任务：置 FAILED（`last_error=已手动停止（管理端）`）+ 清租约。仅对 **QUEUED**（撤下队列，不再被认领）或**租约已过期**的执行中任务（worker 失联，安全终止）开放；租约有效（worker 正在执行）→ 409。写入用 CAS（状态未变才生效）。落 `audit_logs`（`transcode.stop`） |
 | `/api/admin/jobs/{id}/restart` | POST | 重启（重新入队）：仅 **FAILED**（失败或手动停止）——`attempts` 清零（否则认领逻辑会立即判「超过重试上限」）+ 清错误 / 租约 / 时间戳 → QUEUED，由 worker 重新认领。落 `audit_logs`（`transcode.restart`） |
-| `/api/admin/stats` | GET | 控制台总览七项真实统计：`media`（`total` 为 `original/` 下去重媒资 ID 数、`ready` 为已入库且 READY、`not_ingested` 为无 DB 行）、`jobs`（QUEUED / PROBING / ENCODING / PACKAGING + `active`）、`users`（`total/active/disabled`）；`storage.used_bytes` 为当前 root 四分区对象大小总和（含分片 / 字幕 / 封面 / 未入库文件，不含桶内其它业务前缀）；`subtitles`（实际 VTT 文件 `total` / 覆盖 `media_count`）；`products`（按媒资 × 模板归组的 `total` / 覆盖 `media_count`，兼容旧布局并排除字幕）；`metadata`（数字媒资目录下对象 `total/probe/custom/other`，`probe.json` / `custom.json` 单独计数）。四分区各列举一次、自动遍历 S3 分页，目录占位不计文件；媒资复用原视频列表 + 两次 DB COUNT，任务四次 COUNT，用户两次 COUNT。契约为 `DashboardStatsResponse`（仅管理端，不生成 Go）；列举失败返回错误，不返回部分用量。首页只显示已用空间，不展示配额 / 百分比 / 分区进度条 / 活跃播放会话 |
+| `/api/admin/stats` | GET | 控制台总览七项真实统计：`media`（`total` 为 `original/` 下去重媒资 ID 数、`ready` 为已入库且 READY、`not_ingested` 为无 DB 行）、`jobs`（QUEUED / PROBING / ENCODING / PACKAGING + `active`）、`users`（`total/active/disabled`）；`storage.used_bytes` 为当前 root 五分区（`original/proceed/cover/metadata/watermark`）对象大小总和（含分片 / 字幕 / 封面 / 水印图片 / 未入库文件，不含桶内其它业务前缀；`watermark/` 为 2026-10-02 水印管理新增）；`subtitles`（实际 VTT 文件 `total` / 覆盖 `media_count`）；`products`（按媒资 × 模板归组的 `total` / 覆盖 `media_count`，兼容旧布局并排除字幕）；`metadata`（数字媒资目录下对象 `total/probe/custom/other`，`probe.json` / `custom.json` 单独计数）。五分区各列举一次、自动遍历 S3 分页，目录占位不计文件；媒资复用原视频列表 + 两次 DB COUNT，任务四次 COUNT，用户两次 COUNT。契约为 `DashboardStatsResponse`（仅管理端，不生成 Go）；列举失败返回错误，不返回部分用量。首页只显示已用空间，不展示配额 / 百分比 / 分区进度条 / 活跃播放会话 |
 | `/api/admin/users` | GET | 播放端用户列表（ADR-0004 `users` 表；ADR-0007 账户域，创建时间倒序）：用户名 / 展示名 / 状态 / 并发上限 / 进行中会话数 / 最近登录 / 注册时间。**响应不含 `password_hash`**（契约层不定义该字段，管理端无查看口令哈希的入口）。「进行中会话数」= `playback_sessions` 中未吊销且未过期的条数（批量 groupBy 一次统计） |
 | `/api/admin/users` | POST | 新建播放端用户：`username` + `password`（后者 bcrypt cost 12 摘要后入库，ADR-0007）→ 默认 `ACTIVE`；可选 `display_name` / `max_concurrent_sessions`。用户名重复 409；用户名或口令不合法 400。落 `audit_logs`（`user.create`） |
 | `/api/admin/users/{id}` | GET | 用户详情：DTO + 进行中会话数（404 若用户不存在） |
@@ -152,7 +156,7 @@ root 下按资产类别分四个分区，互不嵌套：
 
 ### 2.2 未实现（501 占位，随里程碑落地）
 
-本文件已列出的端点均已实现（M1~M4）；**未列出的路径**统一由 `/api/admin/[...path]` 返回 501 `not_implemented`（会话守卫仍然生效）。
+§2.1 已列出的端点均已实现（M1~M4，含 §10 的水印端点与转码模板的 `watermark_id` 关联）；**未列出的路径**统一由 `/api/admin/[...path]` 返回 501 `not_implemented`（会话守卫仍然生效）。
 
 - 未实现端点统一由 `/api/admin/[...path]` 返回 501 `not_implemented`（会话守卫仍然生效）；管理端 UI 对应项为 TODO 提示（点击提示所属里程碑）。
 
@@ -182,7 +186,7 @@ root 下按资产类别分四个分区，互不嵌套：
 - 所有管理相关表格**必须**「表体限高、内部纵向滚动、表头固定」，页面本身不随条目数增长；内容超长必须滚动，不得撑开页面；
 - 超宽表格同时横向滚动（antd `scroll.x` = 各列宽合计）；
 - 统一复用 `apps/admin/src/components/tableScroll.ts` 的 `useTableBodyHeight`（视口高度推算 + resize 重算 + 极窄视口兜底），**不得各自实现**；
-- 已实现页面：`/media`（媒资列表）、`/categories`（分类管理，树形表格）、`/templates`（转码模板）、`/subtitles`（字幕管理）、`/users`（播放端用户）、`/keys`（密钥）、`/jobs`（转码任务）；后续所有表格页面同样遵循。
+- 已实现页面：`/media`（媒资列表）、`/media/upload`（视频上传，§9）、`/categories`（分类管理，树形表格）、`/templates`（转码模板）、`/watermarks`（水印管理）、`/subtitles`（字幕管理）、`/users`（播放端用户）、`/keys`（密钥）、`/jobs`（转码任务）；后续所有表格页面同样遵循。
 
 ### 3.1 已实现页面
 
@@ -193,7 +197,8 @@ root 下按资产类别分四个分区，互不嵌套：
   - 播放失败的常见排查提示直接展示在弹窗内：分发端 CORS（`DELIVERY_CORS_ORIGINS`）或对象桶 CORS 未放行管理端源站；预览账号未配置时接口 501（dev-workflow §5.3）；
 - `/media/upload`（上传视频，2026-10-01 已实现；§9 权威）：拖拽区（多文件、`video/*`）+ **上传任务列表**（进度条 / 状态 / 媒资 ID / 失败原因；取消 / 重试 / 移除 / 清空已完成）；任务为**客户端队列**——页面切换不中断、并发 2、刷新即中断（有进行中任务时离开给原生确认提示）；右上角全局入口显示「x 个上传任务进行中」并跳转本页；媒资列表页「上传视频」按钮改为跳转本页。
 - `/subtitles`（字幕管理，M4 已实现）：顶部可搜索媒资选择器（选项标注已有字幕条数，默认选中已有字幕的媒资）+ 该媒资的轨道面板（预览 / 上传 / 编辑 / 替换内容 / 删除，与媒资页抽屉同一组件）；规范见 §7.6。
-- `/templates`（转码模板，ADR-0014 已实现）：模板列表表格——模板名（默认标记）、描述、模式（转码 / 保持原视频）、加密（AES-128）、格式（M3U8）、参数摘要（编码器 / 码率或 CRF / 分辨率档位 / 帧率 / preset）、更新时间；操作：新建 / 编辑（弹窗表单，含分辨率档位多行编辑：固定宽×高或自适应上限约束）、删除（确认弹窗注明已发起任务不受影响）；API 见 §2（`/api/admin/templates`）。
+- `/templates`（转码模板，ADR-0014 已实现，2026-10-05 增水印关联 §10）：模板列表表格——模板名（默认标记）、描述、模式（转码 / 保持原视频）、加密（AES-128）、格式（M3U8）、**水印（关联的水印模板名 Tag，未关联显示「无」；`keep_original` 恒为「无」——不重编码无法烧录）**、参数摘要（编码器 / 码率或 CRF / 分辨率档位 / 帧率 / preset）、更新时间；操作：新建 / 编辑（弹窗表单，含**水印下拉**（来自 `/api/admin/watermarks`，未上传图片的图片型水印置灰并标「待上传图片」；`keep_original` 时不渲染该字段并在说明里注明不可关联）、分辨率档位多行编辑：固定宽×高、自适应上限约束或**保持原分辨率**（2026-10-05 增，不缩放、仍重编码；是否执行由帧率 / 码率维度判定，§5.4））、删除（确认弹窗注明已发起任务不受影响）；API 见 §2（`/api/admin/templates`）。
+- `/watermarks`（水印管理，2026-10-02 已实现，独立模块，§10 权威）：模板列表表格——预览缩略（图片型经 GET `/{id}/image`；文字型按字体 / 颜色渲染小样）、名称、类型（图片 / 文字 Tag）、参数摘要（锚点 / 偏移 / 透明度 / 混合 / 尺寸或字号）、**被引用数（`referenced_by`，>0 时删除按钮的确认文案给出具体数量与「先解除关联」）**、图片状态（图片型 `missing` 黄标「待上传」）、更新时间；操作：新建 / 编辑（弹窗：类型选择（创建后不可改）+ 公共参数 + 类型专属 + **浏览器侧实时预览**）、上传 / 替换图片、删除。
 - `/users`（播放端用户，ADR-0004 `users` 表 / ADR-0007 账户域）：用户列表表格——用户名（加粗，已封禁标红 Tag）、展示名、状态（可用 / 封禁 Tag）、并发上限（`0` 悬停提示「0 = 不限制」）、进行中会话数、最近登录、注册时间；操作：新建 / 编辑（弹窗表单：用户名创建后为只读，口令仅新建时可填，状态用 Switch，并发上限 0–10000）、重置密码（独立弹窗，双口令确认，提示将吊销全部会话）、吊销会话（有会话时才可点）、封禁 / 启用、删除（确认弹窗区分「级联删除会话」与「封禁后可恢复」）。页面**不提供口令 / 哈希的查看与导出入口**；API 见 §2.1.1。
 - `/keys`（密钥管理，已实现）：密钥列表表格——媒资 ID、展示名、媒资状态、kid（截断 + Tooltip 全量）、算法、MK 版本（非当前版本标「待轮换」）、加密产物对象数、生成时间；顶部条展示当前封装版本与各版本密钥用量；操作：详情（弹窗：kid / IV / mk_ver / 生成时间 / 使用中会话数，并明确标注「明文密钥不展示」）、删除（确认弹窗警告需重转码才能恢复可播）、「轮换 MK」（确认后重封装旧版本，无需重转码）；API 见 §2.1 与 §4.3。**页面不提供任何明文密钥的展示 / 导出入口**。
 - `/jobs`（转码任务，M2 已实现，M3 增停止 / 重启）：任务列表表格——任务 ID、媒资（ID + 展示名）、状态（排队 / 探测中 / 转码中 / 封装上传中 / 完成 / 失败；worker 失联的执行中任务标「中断」）、模板名（取任务快照）、尝试次数、耗时、失败原因、创建时间；**操作列**：停止（取消）/ 重启（重新入队），规则见 §5.1；**实时推送（SSE）**——连接即回放全量快照，任务变化由服务端主动推送（客户端零轮询），断线自动重连并展示连接状态；「刷新」= 重建连接（服务端随即回放最新快照），「耗时」列由本地时钟每秒重算（不发请求）；**侧边栏「转码任务」菜单项 Badge**（2026-10-01 用户定）：存在进行中任务（`QUEUED / PROBING / ENCODING / PACKAGING`）时显示数量，与任务页同一 SSE 快照源，无进行中任务不渲染；API 见 §2.1（`/api/admin/jobs`、`/api/admin/jobs/stream`、`/api/admin/jobs/{id}/stop|restart`），执行规则见 §5。
@@ -277,6 +282,7 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 ## 5. 转码执行（Worker，M2）
 
 > 队列与状态机的原始决策在 ADR-0008；本节记录进入实现后的具体规则与不变量（与 ADR 冲突时以本节为准并回写 ADR）。
+> 转码模板可关联水印模板：水印烧录发生在**每档缩放之后、编码与切片之前**（滤镜链 / 快照 / 两层校验规则见 §10.4）。
 
 ### 5.1 状态机与认领
 
@@ -305,15 +311,16 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 - 否则 → `FAILED`；
 - 失败原因写 `transcode_jobs.last_error`（管理端「转码任务」页展示，支持重派）。
 
-### 5.4 档位判定与全档跳过兜底（2026-09-18 修订）
+### 5.4 档位判定与全档跳过兜底（2026-09-18 修订，2026-10-05 增保持原分辨率档）
 
-判定发生在 Worker 探测之后，以 `media.probe` 实测参数为唯一事实来源；判定维度为 **分辨率 / 帧率 / 码率**（intent.md「转码模板管理」规则 1–4）：
+判定发生在 Worker 探测之后，以 `media.probe` 实测参数为唯一事实来源；判定维度为 **分辨率 / 帧率 / 码率**（intent.md「转码模板管理」规则 1–5）：
 
 - **只降不升、高位取源**：低于源的维度按模板执行（缩放 / `-r` 降帧率 / `-b:v` 降码率）；**不低于源的维度一律取源值**——不写 `scale` 滤镜、不写 `-r`、`-b:v` 取源码率，即分辨率 / 帧率可「保持原视频」；
 - **跳过**：三维度全部不低于源 → 该档跳过（保留 `skipReason` 供日志追溯，不产 argv，不占变体目录名）；
 - **全档跳过兜底**：某模板**全部档位**均被判跳过时，Worker 追加一档**源规格兜底**（`compileSourceMatched`）——编码器 / preset / CRF / 加密按模板，分辨率 / 帧率 / 码率保持原视频；任务不再以「所有档位均被跳过」失败，必有产物（`ExecuteJobResult.sourceFallback = true` 供日志与排查）；
 - **码率比较口径**：源码率优先取视频轨 `probe.video.bitrate`，缺失回退容器总码率；源码率未知或模板为 CRF 模式（无目标码率）时码率维度不参与降级判定（按模板原值编码）；
 - 自适应档：源已在约束内 → 分辨率维度取源值，是否执行由三维度合并判定（open-questions #18 已收敛）；
+- **保持原分辨率档**（`{mode:"source"}`，2026-10-05 增）：分辨率维度恒取源值（不写 `scale` 滤镜，变体目录名按源输出高度），是否执行由帧率 / 码率维度判定——三维度均不低于源 → 该档跳过；仍重编码，与「保持原视频配置」（`-c copy` 不重编码）不是同一语义；
 - 兜底档的变体目录名按源输出高度命名（如 `1080p`），与主清单 `RESOLUTION` 一致。
 
 ### 5.5 产物布局与清单
@@ -432,7 +439,7 @@ http 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_s
 | `PLAYBACK_MANIFEST_TTL_SEC` | `14400` | 清单 token / 预签名有效期上限（token exp ≤ 会话 exp；上限 7 天，同时约束 S3 SigV4 预签名） |
 | `PLAYBACK_SUBTITLE_TTL_SEC` | `86400` | 字幕 token 有效期上限（`@openvod/shared DEFAULTS.subtitleTtlSec`）；实际 `exp` 取与会话 `exp` 的较小值（§7.5） |
 | `STORAGE_ROOT_PREFIX` / `S3_*` | 对齐管理端 | 与 `packages/storage` 同源命名（§1.5）；仅 S3 兼容存储（ADR-0005 2026-09-22 修订，`STORAGE_DRIVER` / `STORAGE_LOCAL_ROOT` 已删除） |
-| `STORAGE_CDN_BASE_URL` | 空 | 对象存储加速域名（ADR-0005 统一加速域名方案，管理端 / 分发端共用命名）：配置后 **GET 预签名 URL 的 origin 替换**为该域名（管理端 original / 封面预览 302、presign 模式分片直出），路径与签名 query 原样保留；上传预签名不受影响。前提：CDN 回源 COS 且 **Host 透传 / 改写为桶端点**（SigV4 签名覆盖 Host），缓存按 query 不缓存或短 TTL 配置 |
+| `STORAGE_CDN_BASE_URL` | 空 | 对象存储加速域名（ADR-0005 统一加速域名方案，管理端 / 分发端共用命名）：配置后 **GET 预签名 URL 的 origin 替换**为该域名（管理端 original / 封面预览 302、presign 模式分片直出），路径与签名 query 原样保留；上传预签名不受影响。前提：CDN 回源 COS 且 **Host 透传 / 改写为桶端点**（SigV4 签名覆盖 Host），缓存按 query 不缓存或短 TTL 配置。**2026-10-05 实测踩坑**：CDN 缓存键若忽略查询串，① 同路径重转码后播放端**永远读到旧分片**（产物按模板树原位替换，路径不变；预签名 query 每次不同但缓存键相同），表现为「改了水印 / 模板重转后画面没变化」；② **无签名请求可命中缓存绕过 URL 鉴权**（裸打分片 URL 返回 200）。缓存键必须含完整 query（不过滤参数），或启用 CDN URL 鉴权，二者必居其一 |
 | `DELIVERY_CORS_ORIGINS` | `*` | 允许跨域读取清单 / 密钥 / 分片（管理端「产物解密播放」的 hls.js 需要）；播放鉴权全走 URL token、不带 Cookie，`*` 不引入凭证泄露面，可收敛为管理端源站（逗号分隔） |
 
 分发端消费的 `system_settings` 键（DB 优先、env 兜底；键名与 `packages/shared SETTING_KEYS` 手工对齐）：`s3_endpoint` / `s3_region` / `s3_bucket` / `s3_access_key_id` / `s3_secret_access_key`（MK 封装）/ `s3_force_path_style` / `storage_root_prefix` / `storage_cdn_base_url` / `url_sign_key_hex`（MK 封装）/ `url_sign_key_kid` / `jwt_ttl_sec` / `playback_session_ttl_sec` / `playback_manifest_ttl_sec` / `playback_subtitle_ttl_sec` / `cors_origins` / `playback_base_url`。
@@ -720,3 +727,160 @@ http 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_s
 
 - 单测（`apps/admin/test/upload-manager.test.ts`，`bun test`；上传器与轮询以依赖注入替身注入，不真实发请求）：入队不自动开始（暂存 `PENDING`）、「开始上传」批量执行与并发上限（第 3 个排队，前者结束自动开始）、运行中新入队不被拉起、进度换算、取消（中止 + `CANCELED`）、失败重试（新请求且不拉动待上传）、移除（待上传 / 终态）/ 清空已完成、`METADATA` → `DONE(ready)` / 超时 → `DONE(timeout)`、401 → 队列终止（待上传不受影响）；
 - 手工验收：① 拖入 3 个视频 → 全部「待上传」；点击「开始上传」→ 2 个并发上传 + 1 个排队，进度实时刷新；② 上传中切到 `/media`、`/jobs`、`/`，回到上传页进度连续未中断，侧边栏「视频上传」菜单项 Badge 显示进行中数量；③ 上传中刷新页面 → 任务清空（出现原生离开确认，若已确认）；④ 成功任务显示媒资 ID，`/media` 列表可见该媒资并最终出现 probe 元数据；⑤ 取消 / 失败 / 重试 / 清空路径与 §9.2 状态表一致。
+
+## 10. 水印（图片 / 文字，转码烧录，2026-10-02）
+
+> 决策源 ADR-0018（模板落库 + `watermark/` 分区 + 仅 ffmpeg 滤镜烧录）；本节为 specification 细化，冲突时以本节为准并回写 ADR。
+> 一句话：水印是**管理端维护的模板**（图片 / 文字两类），转码模板可选关联其一，Worker 在转码重编码阶段用 **ffmpeg 原生滤镜**把水印**烧录进各档画面像素**；分发端 / 播放端 / 播放契约零感知，产物布局与分发链路零改动。
+
+### 10.1 模板模型与参数校验
+
+**`watermark_templates` 表**（Prisma 双方言 + `db:parity` 门禁；对齐 ADR-0014 模式：管理端写 CRUD，Worker 只读**任务快照**消费，不回查模板表）：
+
+| 列 | 说明 |
+|---|---|
+| `id` | 模板 ID（cuid），同时是图片存储文件名 |
+| `name` | 展示名，唯一，≤64 字符 |
+| `description` | ≤191 字符，可空 |
+| `type` | enum `image` / `text`（`WatermarkType`），**创建后不可改** |
+| `image_ext` / `image_key` / `image_bytes` / `image_width` / `image_height` | 仅图片型（文字型恒 null）：扩展名（png / jpg / webp）、不含 root 的存储键、字节数、像素宽高（**上传时管理端 ffprobe 探测回填**） |
+| `params` | JSON（`WatermarkParams`，zod 唯一真相源，见下） |
+| `created_at` / `updated_at` | 时间戳 |
+
+**`WatermarkParams`（公共参数，两类一致）**：
+
+| 参数 | 规则 |
+|---|---|
+| `anchor` | 九宫格锚点枚举：`top_left` / `top_center` / `top_right` / `middle_left` / `center` / `middle_right` / `bottom_left` / `bottom_center` / `bottom_right`（必填） |
+| `offset_x` / `offset_y` | 整数 −4096…4096，默认 0；带符号位移（x 正 = 右移、y 正 = 下移），施加在锚点对齐之后（换算表见 §10.4） |
+| `opacity` | 0–100 整数，默认 100 |
+| `blend` | `normal`（默认）/ `overlay`——混合方式「正常 / 叠加」 |
+
+**尺寸 `size`**（两类同形、含义按类型；`mode: "pixels" | "percent"` 二选一）：
+
+- **图片型**：
+  - `pixels`：`width` / `height` **至少一项**（1–7680 px）——两项给定时**精确缩放**到该尺寸（允许变形）；仅一项时按**原图宽高比等比**换算另一维（用 `image_width` / `image_height`）；
+  - `percent`：`width` / `height` **至少一项**（1–100）——对应维 = 画面宽 / 高 × 百分比；仅一项时等比（同上）；两项时分别按对应边缩放（允许变形）。
+- **文字型**：
+  - `pixels`：`size` = 字号像素（4–512）；
+  - `percent`：`size` = 字号 = 输出高度 × size%（取整）。
+
+**文字型专属**：
+
+| 参数 | 规则 |
+|---|---|
+| `text` | 1–64 字符（`WATERMARK_TEXT_MAX`），trim 后非空，不含控制字符（单行）；**另不含 ASCII 单引号 `'`**——ffmpeg 的滤镜 / 选项分词器（`av_get_token`）遇 `'` 即进入引号区且不处理反斜杠，字面 `'` 无法送达 `drawtext`（2026-10-05 实测标定，见 §10.4 末） |
+| `font` | 枚举，取值 = `@openvod/shared WATERMARK_FONTS`（v1：`sans` / `sans_bold` / `serif`，对应 Worker 镜像内置 Noto CJK 字体；键 → fontfile 映射两端同源） |
+| `color` | `#RRGGBB` hex（大小写均可） |
+| `shadow` | `null`（默认，无阴影）或对象 `{ color: "#RRGGBB", offset_x: −100…100, offset_y: −100…100 }` |
+
+校验失败 400 `bad_request`（消息指出字段与原因）；`name` 重复 409。**无透明通道格式（jpg）的图片水印在「正常」模式下是不透明矩形**——透明底水印应使用 png / webp（表单提示）。
+
+### 10.2 存储与生命周期
+
+- 图片落 `watermark/{templateId}.{ext}`（`STORAGE_KEYS.watermark`，§1.2 / §1.3）：按模板 ID 组织，**不属于任何媒资的资产集合**——媒资删除 / 重转码不触碰；Content-Type 按扩展名映射（`image/png` 等）；
+- **两步创建（图片型）**：`POST /watermarks`（JSON）建行 → `PUT /watermarks/{id}/image`（octet-stream 字节）写对象并回填 `image_*` 列；图片未上传（`image_key` 为空）的模板**不可被转码模板关联**（§10.4 校验拒绝）；文字型一步完成；
+- **换图 = 覆盖式 PUT** 同一键（与封面 poster 同语义）：扩展名变化时删除旧对象；`image_*` 列重探重写，尺寸换算口径随新图生效；
+- **删除**：先删 `watermark/` 下该模板全部对象，再删 DB 行（幂等可重试，对象已不存在视为成功）；**被任一转码模板引用 → 409**（先解除引用；已入队 / 已完成任务不受影响——快照自包含）；审计 `watermark.delete`；
+- 图片上限 `WATERMARK_IMAGE_MAX_BYTES` = **2 MiB**；格式白名单 png / jpg / webp，**按内容识别**（与扩展名无关，同字幕 §7.3 的内容识别思路）；
+- 文字型无任何存储对象；水印图片与媒资上传、封面共用 S3 凭据面，不新增权限。
+
+### 10.3 管理端 API（`/api/admin/watermarks`）
+
+沿用 §2 通用约定（better-auth 会话守卫、统一错误信封、响应 `no-store`、敏感操作落 `audit_logs`）；端点文档见 `api.md §1.4b`。
+
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/api/admin/watermarks` | GET | 模板列表（创建时间倒序）：全部列 + `image_status`（文字型恒 `ready`；图片型 `ready` / `missing`）+ `referenced_by`（引用它的转码模板数，一次 groupBy） |
+| `/api/admin/watermarks` | POST | 新建（JSON：`type` / `name` / `description` / `params`）：文字型一步完成；图片型返回 `image_status="missing"`，随后必须 PUT 图片；审计 `watermark.create` |
+| `/api/admin/watermarks/{id}` | GET | 详情（全列 + `referenced_by`） |
+| `/api/admin/watermarks/{id}` | PATCH | 更新 `name` / `description` / `params`（`type` 不可改）；审计 `watermark.update` |
+| `/api/admin/watermarks/{id}/image` | PUT | 上传 / 替换图片（octet-stream ≤2 MiB，内容识别格式）→ 写 `watermark/{id}.{ext}` → ffprobe 探测宽高回填 `image_*` 列；审计 `watermark.image_upload` |
+| `/api/admin/watermarks/{id}/image` | GET | 图片预览（列表缩略图 / 表单预览）：s3 预签名 302（同 cover 语义，`STORAGE_CDN_BASE_URL` 替换 origin）；文字型 404 |
+| `/api/admin/watermarks/{id}` | DELETE | 删除（§10.2；被引用 409）；审计 `watermark.delete` |
+
+### 10.4 转码集成（关联、快照、滤镜链）
+
+**关联与两层校验**
+
+- `transcode_templates.watermark_id`：可空外键 → `watermark_templates.id`（应用层删除引用检查在前，DB `SetNull` 兜底）；一个转码模板至多关联一个水印，一个水印可被多个转码模板引用；
+- 非法组合在**模板保存与任务发起两层**拒绝（同「加密必须 HLS」模式）：
+  - `keep_original=true && watermark_id` → 400（烧录必须重编码，`-c copy` 无法叠加画面）；
+  - `watermark_id` 指向图片型但 `image_key` 缺失 → 400（提示先上传水印图）；
+- **快照**：submit 时把水印模板内容随任务快照固化进 `transcode_jobs.template_snapshot.watermark`：`{ id, name, type, params, image_key?, image_ext?, image_width?, image_height? }`——模板 / 图片后续变更**不影响已入队任务**（ADR-0014 快照机制沿用）；Worker 只读快照；submit 审计 detail 含 `watermark_id`。
+
+**滤镜链（v1 全部 ffmpeg 原生滤镜）**——统一「**全帧水印层 → 合成**」两段管线，两类水印 × 两种混合方式共用同一编译路径：
+
+1. **构建水印层 L**（与该档输出同尺寸的全帧透明画布 `color=black@0.0:s=WxH,format=rgba`）：
+   - **图片**：图片作为 ffmpeg **第二输入**（单帧，`-i <预签名 URL>`，argv builder 固定**不加** `-loop 1`）→ `scale` 到目标尺寸（**编译期数值**，见下）→ `format=rgba,colorchannelmixer=aa=<opacity>` → `overlay` 到画布的编译期坐标（带 `shortest=1` 把画布收敛为单帧）→ 最终合成时由 overlay 的 `eof_action=repeat` 铺满主输入时长；
+   - **文字**：画布上直接 `drawtext`——`fontfile`（`font` 枚举映射）、`text`（统一纯函数按 drawtext 转义规则转义，绝不经 shell）、`fontsize`（编译期数值）、`fontcolor=<color>@<opacity>`、`shadowcolor` / `shadowx` / `shadowy`（可选）、`x` / `y` **运行期表达式**（`main_w` / `main_h` / `text_w` / `text_h`）；文字型**不需要第二输入**；
+2. **合成到视频**：
+   - **正常**（`blend=normal`）：`[主输入][L]overlay=0:0:format=auto,format=yuv420p`——标准 alpha 合成，水印层外区域自然不受影响；
+   - **叠加**（`blend=overlay`）：`[主输入]format=gbrp,split=2` → `[va][L→gbrp]blend=all_mode=overlay`（全帧逐像素 Overlay 混合）→ `[L 的 rgba 副本]alphaextract,format=gray` 得掩码 → `[vb][混合结果][掩码]maskedmerge,format=yuv420p`——掩码把混合**限制在水印像素内**（无水印区域保持原画面；边缘抗锯齿像素按 alpha 部分混合）；透明度已烘进 L 的 alpha，由掩码加权生效。
+
+**格式与坐标的实测约束**（2026-10-05 在 ffmpeg 6.1 上标定，单测与端到端测试锁死）：
+
+- **画布内 alpha=0 区域必须恒为纯黑**（`color=black@0.0` 已保证）——这是 maskedmerge 正确性的前提：掩码为 0 处取原画面，画布 RGB 不参与结果；
+- **合成输出像素格式显式钉 `yuv420p`**：`overlay=format=auto` 会协商出 `yuva420p` / `yuv444p`（带 alpha 或 4:4:4），既浪费码率又可能不被部分播放器接受。副作用：10-bit 源在**带水印**时会被降到 8-bit（不带水印的模板不受影响），v1 接受；
+- **叠加模式的 blend / maskedmerge 走 `gbrp`**（无 alpha 的平面 RGB）而非 `rgba`：rgba 下 alpha 平面会参与逐平面混合，实测得不到预期结果（ffmpeg 6.1）；
+- **水印存在时改走 `-filter_complex` + `-map [wmwm_out]` + `-map 0:a?`**（`-vf` 无法表达「水印层 + 合成」两段）；无水印的模板 argv 形态与既有实现逐字一致，不受牵连。**音频映射必须显式带上**：一旦出现任一 `-map`，ffmpeg 对该输出文件的自动流选择整体失效（不再自动挑最佳音轨），只映射视频滤镜输出会产出**无声视频**（2026-10-05 实测踩坑，两层端到端测试以「去映射必红」守卫）；`?` 表示源无音轨时静默忽略，与 `compileKeepOriginal` 的 `-map 0:a?` 同形态；
+- **全档跳过（intent 规则 2）时由 `compileSourceMatched` 兜底出一档，水印照常烧录**——不会出现「配了水印却没烧录」；
+- **drawtext `text` 转义规则**：ffmpeg 在 `-filter_complex` 与选项值上各做一遍分词，字面量还要穿过 `drawtext` 自身的 `%` 展开器。实测标定：整串单引号包裹，`\`→`\\`、`%`→`\\%`（裸 `%` 触发 `Stray %` 且**整段文字不渲染**）、`:`→`\:`、`,;[]`→`\c`；字面 `'` 不可达（故 §10.1 拒绝该字符）。规则集中在 `packages/transcode/src/watermark.ts::escapeDrawtextText`，纯函数 + 单测。
+
+**定位换算表**（九宫格锚点 + 偏移；`W`/`H` = 该档输出宽高；`w`/`h` = 水印渲染尺寸——图片为缩放后尺寸（编译期已知），文字为 `text_w`/`text_h`（运行期））：
+
+| 锚点 | x | y |
+|---|---|---|
+| `top_left` | off_x | off_y |
+| `top_center` | (W − w)/2 + off_x | off_y |
+| `top_right` | W − w + off_x | off_y |
+| `middle_left` | off_x | (H − h)/2 + off_y |
+| `center` | (W − w)/2 + off_x | (H − h)/2 + off_y |
+| `middle_right` | W − w + off_x | (H − h)/2 + off_y |
+| `bottom_left` | off_x | H − h + off_y |
+| `bottom_center` | (W − w)/2 + off_x | H − h + off_y |
+| `bottom_right` | W − w + off_x | H − h + off_y |
+
+- 偏移为**带符号**位移（x 正 = 右、y 正 = 下）；右 / 下锚点常配**负偏移**做内边距；偏移可把水印移出画面（ffmpeg 按坐标裁剪，不做额外限制）；坐标取整遵循滤镜原生 `trunc` 行为；
+- **尺寸换算全部在 argv 编译期完成**（纯函数）：Worker 已知该档输出宽高（§5.4 判定结果：缩放档为模板目标尺寸、保持档为源尺寸）与快照参数（含 `image_width` / `image_height`），直接产出数值 argv——不依赖 scale 滤镜做画面百分比（scale 无 `main_w` 变量）；文字坐标例外，用 drawtext 运行期表达式；
+- **执行位置**：滤镜链挂**每档变体缩放之后、编码与切片之前**（烧录进像素后才编码）；逐档独立构建水印层（比例尺寸与定位按**各档实际输出分辨率**换算）；与加密 / HLS 切片同一 ffmpeg 管线，不新增独立处理步骤；
+- **性能注记**：「叠加」为全帧逐像素处理（rgba + blend + maskedmerge），转码耗时显著高于「正常」模式——v1 接受，模板作者按需选择。
+
+**产物与播放**：烧录后水印即画面像素的一部分——产物布局（§1.3 / §5.5）、清单改写、分发链路、播放端**零改动**；`hls_keys` 与水印无关（同一模板产物共用 CEK 不变）；**更新水印 = 重新转码**，模板 / 图片变更不影响已产出内容。
+
+### 10.5 管理端页面
+
+- **侧边栏「水印管理」（`/watermarks`，独立模块，加入 `ROUTE_PAGES`）**：模板列表表格（遵循 §3.0 滚动约定）——预览缩略（图片型经 GET `/{id}/image`；文字型按所选字体 / 颜色渲染小样）、名称、类型（图片 / 文字 Tag）、参数摘要（锚点 / 偏移 / 透明度 / 混合 / 尺寸或字号）、被引用数、图片状态（图片型 `missing` 黄标「待上传」）、更新时间；
+- **新建 / 编辑弹窗**：类型选择（图片 / 文字，创建后不可改）+ 公共参数（九宫格位置选择器、x / y 偏移、透明度 Slider 0–100、混合方式 Radio：正常 / 叠加）+ 类型专属（图片：图片上传（拖拽 / 选择，png / jpg / webp）+ 尺寸模式表单；文字：文本内容、字体下拉（`WATERMARK_FONTS`）、颜色选择器、阴影开关与颜色 / 偏移）+ 名称 / 描述；
+- **实时预览**：弹窗内以**浏览器侧 CSS / DOM** 按当前参数在 16:9 样板画面上叠加示意（图片 `<img>` 或按所选字体样式渲染的文字），**服务端不渲染预览图**——预览与 ffmpeg 成像的一致性由 §10.4 的参数语义唯一保证；
+- **删除**：确认弹窗注明「已产出的视频不受影响；被转码模板引用时需先解除引用（409）」。
+
+### 10.6 相关常量
+
+| 名称 | 默认 | 说明 |
+|---|---|---|
+| `WATERMARK_IMAGE_MAX_BYTES` | `2 * 1024 * 1024` | 水印图片上限（常量，非环境变量） |
+| `WATERMARK_NAME_MAX` / `WATERMARK_DESC_MAX` | `64` / `191` | 模板名 / 描述上限（对齐分类管理口径） |
+| `WATERMARK_TEXT_MAX` | `64` | 文字内容上限 |
+| `WATERMARK_OFFSET_MAX` | `4096` | x / y 偏移绝对值上限（阴影偏移 ±100） |
+| `WATERMARK_FONTS` | `sans` / `sans_bold` / `serif` | 字体枚举（`@openvod/shared`），Worker 镜像内置 Noto CJK 对应 fontfile |
+| `WATERMARK_FONT_DIR` | `/usr/share/fonts/opentype/noto` | 镜像内置字体目录（Debian `fonts-noto-cjk` 安装路径），drawtext `fontfile` 根 |
+
+无新增环境变量；字体文件随 Worker 镜像分发（`apps/worker/Dockerfile` 装 `fonts-noto-cjk` 并在**构建期** `test -f` 自检三份字体；`apps/worker/src/index.ts` 启动时再自检一次并**告警不退出**——`drawtext` 的 `fontfile` 缺失时 ffmpeg 不报错而是静默回退 fontconfig 默认字体，中文会渲染成豆腐块且任务仍报成功）。换字体需同步改 `WATERMARK_FONT_FILES`（`@openvod/transcode`）与镜像层。
+
+### 10.7 契约、迁移与生成物
+
+- **zod（`packages/contracts`）**：`WatermarkParamsSchema`（按 `type` 判别联合：公共参数 + 图片尺寸 / 文字专属）、`WatermarkTemplateDTO` / `WatermarkCreateRequest` / `WatermarkUpdateRequest`——仅管理端与 Worker（TS）消费，**不进 `gen-json.ts` 清单、不生成 Go struct**（与模板 / 密钥 / 用户组同规则，§7.8）；`TranscodeTemplateDTO` / `Create` / `Update` 增加可选 `watermark_id` 透传字段；`TranscodeTemplateSnapshot` 增加 `watermark` 可选段（`WatermarkSnapshot`）并带 `superRefine` 兜底（`keep_original` 携带水印 / 图片水印缺 `image_key` → 快照非法，Worker 直接判任务不可执行）；`TranscodeSubmitJob` 增加 `watermark_id`；
+- **`@openvod/shared`**：`STORAGE_KEYS.watermark(id, ext)`、`WATERMARK_ANCHORS`（九宫格枚举）、`WATERMARK_BLEND_MODES`、`WATERMARK_FONTS` / `WATERMARK_FONT_DIR` 与 §10.6 常量（Go 侧不消费，无需对齐）；
+- **Prisma**：新增 `watermark_templates` 模型与 `WatermarkType` / `WatermarkBlend` 枚举；`transcode_templates.watermark_id` 可空外键（`SetNull`）+ 反向关系 `WatermarkTemplate.templates`——双方言 schema **逐字一致**（`task db:parity`），expand 迁移 `20261002100000_watermark_templates`（建表）与 `20261005100000_transcode_template_watermark`（加列 + 索引 + 外键，只加不改）；改 schema 后必须 `task db:generate`（dev-workflow §8）；
+- **Worker**：`template_snapshot.watermark` 只读消费——图片型按 `image_key` 预签名取图（`presignGet`，字节不落盘，ffmpeg 原生支持 http 输入），文字型无第二输入；argv builder 扩展水印滤镜链编译（`packages/transcode/src/watermark.ts`）——**纯函数、单测覆盖**：两类 × 两混合方式 × 九宫格边界（负偏移 / 贴边 / 越界）× 等比与变形缩放 × opacity 0/100 × drawtext 转义；
+- **审计**：新增动作 `watermark.create` / `watermark.update` / `watermark.image_upload` / `watermark.delete`；`media.transcode_submit` detail 含 `watermark_ids`（多选模板故为列表，§10.4）。
+
+### 10.8 验收与测试
+
+- **纯函数单测**（`packages/transcode/test/watermark.test.ts`，`bun test`）：图片尺寸换算（pixels 两项精确 / 单项等比、percent 逐档按各自输出分辨率、结果下限 1px、缺原图尺寸报错）、文字字号（pixels / percent 逐档）、九宫格定位换算表全 9 项 + 负偏移 / 越界 / 正偏移带号、drawtext 转义（`\` `%` `:` `,;[]` 中文空格）、fontfile 映射、滤镜链编译（正常 / 叠加两条链的完整形状、缺 imageUrl 报错、脏参数报错、比例尺寸逐档差异、opacity 0/35/100）；
+- **argv 接入单测**（`packages/transcode/test/template.test.ts`）：有水印走 `-filter_complex` + `-map`、无水印 argv 形态不变、逐档编译、跳过的档位不产 argv、`compileSourceMatched` 兜底档带水印、文字水印不追加第二输入、`keep_original` 路径不含滤镜链；
+- **真 ffmpeg 端到端**（`packages/transcode/test/watermark.ffmpeg.test.ts`，缺 ffmpeg 整组跳过）：源片**带音轨**（sine，防「无声视频」回归），用编译出的 argv 真跑一遍，与「同模板无水印」产物逐像素比对——图片正常模式的**变化像素包围盒 == 期望矩形**（`(640−100−20, 360−50−20)` 起、100×50）、比例尺寸的等比换算、移出画面 / `opacity=0` 画面**完全不变**、叠加模式区域外无污染、文字水印落在右下且不越界、**产物音轨与无水印基准一致**（ffprobe 断言，漏 `-map 0:a?` 必红）；
+- **编排单测**（`apps/admin/test/transcode-submit.test.ts`）：水印快照固化（含图片元数据）、无水印时快照 `watermark` 为 `null`、`keep_original` 携带水印 → 400、图片水印未上传 → 400、水印已被删 → 404；
+- **Worker 端到端**（`apps/worker/test/executor.test.ts`）：图片水印按 `image_key` 取图并烧录（产物字节与无水印不同）、文字水印无需第二输入、两类脏快照（`keep_original` 带水印 / 图片水印缺 `image_key`）直接判任务失败；
+- **手工验收**：① 新建图片水印 → 上传图（宽高自动回填）→ 转码模板关联它 → 发起转码 → 产物右下角出现水印且画面其余部分无变化；② 改文字水印为「叠加」→ 重新转码 → 效果与「正常」明显不同；③ 保持原视频模板的水印下拉不出现；④ 解除关联后可删除水印模板，仍被引用时删除返回 409。

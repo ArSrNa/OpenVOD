@@ -234,6 +234,66 @@ describe("规则 4：自适应分辨率", () => {
   });
 });
 
+// 保持原分辨率档（mode=source，2026-10-05 增）：分辨率维度恒取源值（不写 scale），
+// 是否执行由帧率 / 码率维度判定；仍重编码，与 keep_original（-c copy）不是同一语义。
+describe("保持原分辨率档（mode=source）", () => {
+  test("码率降级：执行、不缩放、分辨率取源，变体名按源高度", () => {
+    const plans = compileTemplate(
+      params({ bitrate_kbps: 2000, resolutions: [{ mode: "source" }] }),
+      { width: 1600, height: 900, fps: 30, bitrateBps: 6_000_000 },
+      OPTS,
+    );
+    expect(executed(plans)).toHaveLength(1);
+    expect(plans[0].name).toBe("900p");
+    expect(plans[0].width).toBe(1600);
+    expect(plans[0].height).toBe(900);
+    expect(plans[0].argv).not.toContain("-vf");
+    expect(plans[0].videoBitrateK).toBe(2000);
+  });
+
+  test("帧率降级：执行、写 -r、不缩放", () => {
+    const plans = compileTemplate(
+      params({ fps: 30, resolutions: [{ mode: "source" }] }),
+      { width: 1920, height: 1080, fps: 60 },
+      OPTS,
+    );
+    expect(executed(plans)).toHaveLength(1);
+    const argv = plans[0].argv!;
+    expect(argv[argv.indexOf("-r") + 1]).toBe("30");
+    expect(argv).not.toContain("-vf");
+    expect(plans[0].width).toBe(1920);
+    expect(plans[0].height).toBe(1080);
+  });
+
+  test("三维度均不低于源：跳过，原因含「保持原分辨率」", () => {
+    const plans = compileTemplate(
+      params({ bitrate_kbps: 9000, resolutions: [{ mode: "source" }] }),
+      { width: 1600, height: 900, fps: 30, bitrateBps: 6_000_000 },
+      OPTS,
+    );
+    expect(skipped(plans)).toHaveLength(1);
+    expect(plans[0].skipReason).toContain("保持原分辨率");
+    expect(plans[0].skipReason).toContain("无降级维度");
+  });
+
+  test("ladder 混配：[保持原分辨率, 720p] 各自独立判定且目录名不冲突", () => {
+    const plans = compileTemplate(
+      params({
+        bitrate_kbps: 3000,
+        resolutions: [{ mode: "source" }, { mode: "fixed", width: 1280, height: 720 }],
+      }),
+      { width: 1920, height: 1080, fps: 30, bitrateBps: 8_000_000 },
+      OPTS,
+    );
+    const exec = executed(plans);
+    expect(exec.map((p) => p.name)).toEqual(["1080p", "720p"]);
+    expect(exec[0].width).toBe(1920);
+    expect(exec[0].height).toBe(1080);
+    expect(exec[0].argv).not.toContain("-vf");
+    expect(exec[1].argv).toContain("scale=1280:720:force_original_aspect_ratio=decrease");
+  });
+});
+
 describe("多档 ladder 与 argv 组装", () => {
   test("ladder 逐档独立判定：超规格档跳过、降级档执行", () => {
     const plans = compileTemplate(
@@ -349,5 +409,153 @@ describe("key_info（ADR-0006 §2）", () => {
     expect(buildKeyInfoFile({ keyUriPlaceholder: "u", cekFilePath: "p", ivHex: `0X${plain.toUpperCase()}` })).toBe(
       `u\np\n${plain}\n`,
     );
+  });
+});
+
+// 水印接入 argv（spec.md §10.4 / ADR-0018）：编译入口层面的契约——有水印走 filter_complex，
+// 无水印保持原 -vf 形态（不无谓改动既有 argv），水印随快照进每一档且跳过档不产片。
+describe("水印接入 argv 编译（spec.md §10.4）", () => {
+  const IMAGE_WM = {
+    id: "cwmkimg0000000000000001",
+    name: "图片水印",
+    type: "image",
+    params: {
+      type: "image",
+      anchor: "bottom_right",
+      offset_x: -20,
+      offset_y: -20,
+      opacity: 100,
+      blend: "normal",
+      size: { mode: "percent", width: 20 },
+    },
+    image_key: "watermark/cwmkimg0000000000000001.png",
+    image_ext: "png",
+    image_width: 240,
+    image_height: 120,
+  };
+  const opts = (watermark?: unknown) =>
+    ({ ...OPTS, ...(watermark ? { watermark } : {}) }) as Parameters<typeof compileTemplate>[2];
+
+  test("有水印：-vf 换成 -filter_complex + -map，图片型追加第二输入", () => {
+    const plan = compileTemplate(
+      params({ resolutions: [{ mode: "fixed", width: 1280, height: 720 }] }),
+      { width: 1920, height: 1080, fps: 60 },
+      opts({ snapshot: IMAGE_WM, imageUrl: "https://example.invalid/wm.png" }),
+    )[0];
+    const argv = plan.argv!;
+    expect(argv).not.toContain("-vf");
+    expect(argv[argv.indexOf("-filter_complex") + 1]).toContain("s=1280x720");
+    expect(argv[argv.indexOf("-map") + 1]).toBe("[wmwm_out]");
+    // 第二输入紧跟主输入之后（ffmpeg 要求 -i 在使用它的滤镜之前）
+    const inputs = argv.reduce<number[]>((acc, a, i) => (a === "-i" ? [...acc, i] : acc), []);
+    expect(inputs).toHaveLength(2);
+    expect(argv[inputs[0] + 1]).toBe(OPTS.input);
+    expect(argv[inputs[1] + 1]).toBe("https://example.invalid/wm.png");
+  });
+
+  test("无水印：argv 形态与既有实现完全一致（-vf，无 filter_complex）", () => {
+    const argv = compileTemplate(
+      params({ resolutions: [{ mode: "fixed", width: 1280, height: 720 }] }),
+      { width: 1920, height: 1080, fps: 60 },
+      OPTS,
+    )[0].argv!;
+    expect(argv).toContain("-vf");
+    expect(argv).not.toContain("-filter_complex");
+    expect(argv).not.toContain("-map");
+  });
+
+  test("水印逐档编译：各档按各自输出分辨率换算画布与尺寸", () => {
+    const plans = executed(
+      compileTemplate(
+        params({
+          resolutions: [
+            { mode: "fixed", width: 1280, height: 720 },
+            { mode: "fixed", width: 854, height: 480 },
+          ],
+        }),
+        { width: 1920, height: 1080, fps: 60 },
+        opts({ snapshot: IMAGE_WM, imageUrl: "https://example.invalid/wm.png" }),
+      ),
+    );
+    expect(plans).toHaveLength(2);
+    const fc = plans.map((p) => p.argv![p.argv!.indexOf("-filter_complex") + 1]);
+    expect(fc[0]).toContain("s=1280x720");
+    expect(fc[1]).toContain("s=854x480");
+    // 20% 宽：1280 → 256（等比高 128）；854 → 171（等比高 86，854×0.2=170.8 取整 171）
+    expect(fc[0]).toContain("scale=256:128");
+    expect(fc[1]).toContain("scale=171:86");
+  });
+
+  test("水印路径必须显式带音频（-map 会使自动流选择失效，漏映射 → 无声视频，2026-10-05 踩坑）", () => {
+    const plans = compileTemplate(
+      params({ resolutions: [{ mode: "fixed", width: 1280, height: 720 }] }),
+      { width: 1920, height: 1080, fps: 60 },
+      opts({ snapshot: IMAGE_WM, imageUrl: "https://example.invalid/wm.png" }),
+    );
+    const argv = plans[0].argv!;
+    // 视频（滤镜输出标签）+ 音频（0:a?）两条映射，缺一不可：出现任一 -map 后
+    // ffmpeg 不再自动挑最佳音轨，只映射视频就会产出无声视频
+    expect(argv[argv.indexOf("-map") + 1]).toBe("[wmwm_out]");
+    expect(argv[argv.lastIndexOf("-map") + 1]).toBe("0:a?");
+    expect(argv).toContain("-c:a");
+    expect(argv).toContain("-b:a");
+  });
+
+  test("跳过的档位不产 argv（compileTemplate 只标跳过；兜底档由 Worker 的 buildPlans 追加）", () => {
+    const plans = compileTemplate(
+      params({ resolutions: [{ mode: "fixed", width: 1920, height: 1080 }] }),
+      { width: 1920, height: 1080, fps: 30, bitrateBps: 1_000_000 },
+      opts({ snapshot: IMAGE_WM, imageUrl: "https://example.invalid/wm.png" }),
+    );
+    expect(skipped(plans)).toHaveLength(1);
+    expect(skipped(plans)[0].argv).toBeUndefined();
+  });
+
+  test("compileSourceMatched 兜底档同样带水印（转码侧模板不变体路径）", () => {
+    const plan = compileSourceMatched(
+      params(),
+      { width: 1920, height: 1080, fps: 60 },
+      opts({ snapshot: IMAGE_WM, imageUrl: "https://example.invalid/wm.png" }),
+    );
+    expect(plan.argv).toContain("-filter_complex");
+    expect(plan.argv![plan.argv!.indexOf("-filter_complex") + 1]).toContain("colorchannelmixer");
+  });
+
+  test("文字水印不追加第二输入", () => {
+    const plan = compileTemplate(
+      params({ resolutions: [{ mode: "fixed", width: 1280, height: 720 }] }),
+      { width: 1920, height: 1080, fps: 60 },
+      opts({
+        snapshot: {
+          id: "cwmktext0000000000000002",
+          name: "文字水印",
+          type: "text",
+          params: {
+            type: "text",
+            anchor: "center",
+            offset_x: 0,
+            offset_y: 0,
+            opacity: 100,
+            blend: "normal",
+            text: "OpenVOD",
+            font: "sans",
+            color: "#ffffff",
+            shadow: null,
+            size: { mode: "percent", size: 5 },
+          },
+        },
+      }),
+    )[0];
+    const argv = plan.argv!;
+    expect(argv.filter((a) => a === "-i")).toHaveLength(1);
+    expect(argv[argv.indexOf("-filter_complex") + 1]).toContain("drawtext=");
+    // 文字比例字号按该档输出高度换算：720 × 5% = 36
+    expect(argv[argv.indexOf("-filter_complex") + 1]).toContain("fontsize=36");
+  });
+
+  test("keep_original 路径不接受水印（-c copy 不解码，契约层已拒绝并存）", () => {
+    const argv = compileKeepOriginal({ input: OPTS.input, outDir: "/tmp/out/1080p" });
+    expect(argv).toContain("-c");
+    expect(argv).not.toContain("-filter_complex");
   });
 });

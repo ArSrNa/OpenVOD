@@ -17,7 +17,7 @@ function inventory(objects: StorageObject[]) {
 }
 
 describe("首页 S3 资产统计", () => {
-  it("只累加四个业务分区的实际大小，包含分片、字幕、封面和未入库文件", async () => {
+  it("只累加五个业务分区的实际大小，包含分片、字幕、封面、水印图片和未入库文件", async () => {
     const storage = inventory([
       object("original/00000001.mp4", 5_000_000_000),
       object("original/unregistered.mp4", 500),
@@ -26,12 +26,13 @@ describe("首页 S3 资产统计", () => {
       object("proceed/00000001/subtitles/zh.vtt", 300),
       object("cover/00000001/poster.jpg", 400),
       object("metadata/00000001/probe.json", 100),
+      object("watermark/clogo0000000000000000.png", 401),
       object("other-business/asset.bin", 999_999),
     ]);
     const result = await getStorageStats(storage);
-    expect(result.storage.used_bytes).toBe(5_000_021_500);
+    expect(result.storage.used_bytes).toBe(5_000_021_901);
     expect(result.originals).toHaveLength(2);
-    expect(storage.prefixes.sort()).toEqual(["cover/", "metadata/", "original/", "proceed/"]);
+    expect(storage.prefixes.sort()).toEqual(["cover/", "metadata/", "original/", "proceed/", "watermark/"]);
   });
 
   it("多模板和旧布局按组计数，分片与字幕不增加组数，覆盖媒资去重", async () => {

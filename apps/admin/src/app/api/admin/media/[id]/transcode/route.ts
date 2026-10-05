@@ -23,6 +23,8 @@ export async function POST(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
     await auditAction(req, session, "media.transcode_submit", id, {
       job_ids: result.jobs.map((j) => j.job_id),
       template_ids: result.jobs.map((j) => j.template_id),
+      // 水印关联溯源（spec.md §10.7）：多选模板故为列表，null 已被过滤
+      watermark_ids: result.jobs.map((j) => j.watermark_id).filter((v): v is string => v != null),
     });
     return apiJson(result, 202);
   } catch (e) {

@@ -38,6 +38,12 @@ task image:worker     # docker build -f apps/worker/Dockerfile -t openvod-worker
    bun 只用于安装与跑构建脚本；admin 运行时仍是 Node 22（ADR-0013）。
 3. **worker 必须带 ffmpeg/ffprobe**：worker 启动即自检，缺任一直接 `exit 1`。
    `shaka-packager` / `bento4` 是 CENC 演进项，镜像不装（自检里显示 MISSING 但不阻断）。
+4. **worker 必须带水印字体 `fonts-noto-cjk`**（2026-10-05，spec.md §10.6）：文字水印的
+   `drawtext fontfile` 取镜像内 `/usr/share/fonts/opentype/noto/NotoSans{,Bold}-CJK-Regular.ttc`
+   与 `NotoSerifCJK-Regular.ttc`（键 → 文件映射见 `@openvod/transcode` 的 `WATERMARK_FONT_FILES`）。
+   Dockerfile 在**构建期** `test -f` 三份字体（缺则构建失败），Worker 启动时再自检一次并**告警不退出**——
+   因为 `drawtext` 的 `fontfile` 不存在时 ffmpeg 不报错而是静默回退系统默认字体，中文会渲染成豆腐块而任务仍报成功。
+   自建镜像若裁掉了字体，必须同步改 `WATERMARK_FONT_DIR`（`@openvod/shared`）与映射。
 4. **admin 镜像的构建与运行阶段都必须装 openssl**（2026-09-22 实测踩坑）：Prisma 生成客户端时按检测到的
    libssl 选择查询引擎——构建阶段缺 openssl 会退化为 `debian-openssl-1.1.x`，与运行阶段（bookworm libssl3）
    不匹配，启动报 `generated for "debian-openssl-1.1.x", but the actual deployment required "debian-openssl-3.0.x"`，
@@ -62,7 +68,8 @@ docker run -d --name openvod-worker -p 9001:9001 --env-file .env \
 ```
 
 接通验证：admin `curl -fsS localhost:8787/healthz` 返回 `{"ok":true,"db":true}`；
-resident worker 日志出现 `[worker] ffmpeg ok` / `[worker] ffprobe ok` 与 `polling every ...`；
+resident worker 日志出现 `[worker] ffmpeg ok` / `[worker] ffprobe ok` / `[worker] 字体 ok` 与 `polling every ...`；
+（`字体 MISSING` 不阻断启动，但用到文字水印的模板会渲染成豆腐块，见上文第 4 条）
 http 模式为 `http 门铃模式 listening :9001`，且 `curl -fsS localhost:9001/healthz` 返回 200。
 
 ## Compose 运行（单机常驻，CNB / 任意 Docker 宿主）

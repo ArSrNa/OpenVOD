@@ -12,3 +12,15 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
     "Microsoft YaHei", sans-serif;
 }
+
+/*
+ * 水印编辑弹窗的实时预览图（WatermarkManager::WatermarkPreview）。
+ * antd Image 把 style / className 落在外层 .ant-image 包裹层，内层 .ant-image-img 仍按原始
+ * 像素渲染——只约束外层会被定位示意框（overflow:hidden + maxWidth:60%）裁掉而非缩放，
+ * 故这里补一条把内层也限制住。点击放大由 antd Image 自带预览层负责。
+ */
+.wm-preview-image .ant-image-img {
+  display: block;
+  max-width: 100%;
+}
+

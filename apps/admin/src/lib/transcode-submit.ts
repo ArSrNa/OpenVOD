@@ -1,10 +1,14 @@
 // 发起转码的编排核心（**多选**模板，ADR-0014）：一次提交 → 每个模板各入队一条任务。
 // 本模块只依赖 contracts（zod）：DB / 存储 / 模板查询全部经 deps 注入，
 // 无 next/db/模板运行时依赖，便于纯单测（不起 mock、不连库）。
+// 水印（spec.md §10.4）：模板保存侧已校验过一次，这里在**任务发起侧**再校验一次，
+// 并把水印模板内容快照进 transcode_jobs.template_snapshot.watermark（Worker 只读快照）。
 import {
   TranscodeSubmitRequest,
   TranscodeSubmitResponse,
   TranscodeTemplateDTO,
+  WatermarkSnapshot,
+  WatermarkTemplateDTO,
   z,
 } from "@openvod/contracts";
 
@@ -19,6 +23,9 @@ export class TranscodeSubmitError extends Error {
   }
 }
 
+/** 快照中的水印段（contracts WatermarkSnapshot：自包含，图片元数据一并固化） */
+type SnapshotWatermark = z.infer<typeof WatermarkSnapshot>;
+
 /** 待写入 transcode_jobs 的一行（模板快照已就绪） */
 export interface SubmitJobRow {
   mediaId: string;
@@ -31,6 +38,7 @@ export interface SubmitJobRow {
     encrypt: boolean;
     format: string;
     params: unknown;
+    watermark: SnapshotWatermark | null;
   };
 }
 
@@ -43,14 +51,33 @@ export interface SubmitTranscodeDeps {
   resolveOriginalKey(mediaId: string): Promise<string | null>;
   /** 取模板（不存在应抛带 code/status 的业务错误） */
   getTemplate(id: string): Promise<z.infer<typeof TranscodeTemplateDTO>>;
+  /** 取水印模板（模板已关联水印时调用；不存在应抛带 code/status 的业务错误） */
+  getWatermark(id: string): Promise<z.infer<typeof WatermarkTemplateDTO>>;
   /** 查询该媒资未终结任务（同模板冲突判定用） */
   listActiveJobs(mediaId: string): Promise<Array<{ id: string; templateId: string | null }>>;
   /** 批量创建任务（同一事务）；返回顺序须与入参一致 */
   createJobs(rows: SubmitJobRow[]): Promise<Array<{ id: string }>>;
 }
 
+/** 水印模板 → 快照段（只取 Worker 编译必需的字段；类型即 contracts WatermarkSnapshot） */
+function watermarkSnapshotOf(watermark: z.infer<typeof WatermarkTemplateDTO>): SnapshotWatermark {
+  return {
+    id: watermark.id,
+    name: watermark.name,
+    type: watermark.type,
+    params: watermark.params,
+    image_key: watermark.image_key,
+    image_ext: watermark.image_ext,
+    image_width: watermark.image_width,
+    image_height: watermark.image_height,
+  };
+}
+
 /** 模板快照（ADR-0014 防漂移）：Worker 只吃快照，模板后续改删不影响本任务 */
-function snapshotOf(template: z.infer<typeof TranscodeTemplateDTO>): SubmitJobRow["templateSnapshot"] {
+function snapshotOf(
+  template: z.infer<typeof TranscodeTemplateDTO>,
+  watermark: SnapshotWatermark | null,
+): SubmitJobRow["templateSnapshot"] {
   return {
     template_id: template.id,
     name: template.name,
@@ -58,6 +85,7 @@ function snapshotOf(template: z.infer<typeof TranscodeTemplateDTO>): SubmitJobRo
     encrypt: template.encrypt,
     format: template.format,
     params: template.params,
+    watermark,
   };
 }
 
@@ -108,10 +136,32 @@ export async function submitTranscodeWithDeps(
 
   // 逐个模板取回并校验非法组合（ADR-0014：模板保存与任务发起各拦一次）——任一非法则整批拒绝
   const templates: Array<z.infer<typeof TranscodeTemplateDTO>> = [];
+  const watermarks: Array<SnapshotWatermark | null> = [];
   for (const templateId of templateIds) {
     const template = await deps.getTemplate(templateId).catch((e) => rethrowBusiness(e));
     if (template.encrypt && template.format !== "HLS") {
       throw new TranscodeSubmitError("bad_request", `模板「${template.name}」选择了加密，输出格式必须为 HLS`, 400);
+    }
+    // 水印两层校验之一（任务发起侧，spec.md §10.4）：模板可能被绕过管理端直接改库，故再拦一次
+    if (template.watermark_id && template.keep_original) {
+      throw new TranscodeSubmitError(
+        "bad_request",
+        `模板「${template.name}」为「保持原视频配置」，不重编码无法烧录水印`,
+        400,
+      );
+    }
+    if (template.watermark_id) {
+      const watermark = await deps.getWatermark(template.watermark_id).catch((e) => rethrowBusiness(e));
+      if (watermark.type === "image" && !watermark.image_key) {
+        throw new TranscodeSubmitError(
+          "bad_request",
+          `模板「${template.name}」关联的水印「${watermark.name}」尚未上传图片，请先上传或解除关联`,
+          400,
+        );
+      }
+      watermarks.push(watermarkSnapshotOf(watermark));
+    } else {
+      watermarks.push(null);
     }
     templates.push(template);
   }
@@ -131,11 +181,11 @@ export async function submitTranscodeWithDeps(
 
   // 每个模板各入队一条任务（整批同一事务内创建）；产物各落 proceed/{mediaId}/{templateId}/
   const created = await deps.createJobs(
-    templates.map((template) => ({
+    templates.map((template, i) => ({
       mediaId,
       status: "QUEUED" as const,
       templateId: template.id,
-      templateSnapshot: snapshotOf(template),
+      templateSnapshot: snapshotOf(template, watermarks[i]),
     })),
   );
 
@@ -144,6 +194,7 @@ export async function submitTranscodeWithDeps(
       job_id: created[i].id,
       template_id: template.id,
       template_name: template.name,
+      watermark_id: watermarks[i]?.id ?? null,
       status: "QUEUED" as const,
     })),
   };

@@ -620,7 +620,7 @@ function ResolutionRow({
         />
       </Form.Item>
       {mode === "source" ? (
-        <Tooltip title="分辨率跟随源视频（不缩放），仍重编码；是否执行由帧率 / 码率维度判定——三维度均不低于源时该档跳过。需完全不重编码请用模板级「保持原视频配置」">
+        <Tooltip title="此处设置的分辨率高于目标分辨率时，将保留原视频分辨率">
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             分辨率取源视频（不缩放）
           </Typography.Text>

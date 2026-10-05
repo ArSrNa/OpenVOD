@@ -1606,13 +1606,13 @@ export function MediaList() {
           scroll={{ y: "calc(100vh - 320px)" }}
           locale={{ emptyText: <Empty description="尚无转码产物，请在「更多 → 转码」发起" /> }}
         />
-        <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 12, marginBottom: 0 }}>
+        {/* <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 12, marginBottom: 0 }}>
           播放：管理端只向分发端换一个签名主清单 URL，清单 / 密钥 / 分片直达浏览器——
           明文密钥（CEK）只由分发端下发、浏览器本地解密。若画面不加载：多为分发端 CORS
           （<Typography.Text code>DELIVERY_CORS_ORIGINS</Typography.Text>）或对象桶 CORS 未放行管理端源站；
           预览账号未配置时接口返回 501
           删除：仅移除该模板子树的存储对象；加密密钥与转码任务历史保留。存在进行中的同模板任务时拒绝删除。
-        </Typography.Paragraph>
+        </Typography.Paragraph> */}
       </Drawer>
 
       {/* 字幕管理（M4，spec.md §7）：一媒资多轨 WebVTT 的上传 / 编辑 / 替换内容 / 删除 */}

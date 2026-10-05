@@ -11,6 +11,7 @@ import {
   ColorPicker,
   Empty,
   Form,
+  Image,
   Input,
   InputNumber,
   Modal,
@@ -372,6 +373,8 @@ export function WatermarkManager() {
 
   const columns: ColumnsType<WatermarkItem> = [
     {
+      // 预览（首列缩略图，spec.md §3.1）：图片型经 GET /api/admin/watermarks/{id}/image 读取，
+      // antd Image 点击预览大图（同媒资封面交互）；文字型按字体 / 颜色 / 阴影渲染小样。
       title: "预览",
       key: "preview",
       width: 96,
@@ -390,11 +393,13 @@ export function WatermarkManager() {
             {row.params.type === "text" ? row.params.text : ""}
           </span>
         ) : row.image_status === "ready" ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
+          // contain 而非 cover：水印要看全貌，不能裁边
+          <Image
             src={`/api/admin/watermarks/${row.id}/image`}
-            alt={row.name}
-            style={{ maxHeight: 40, maxWidth: 88, objectFit: "contain", display: "block" }}
+            alt={`水印图片：${row.name}`}
+            width={88}
+            height={40}
+            style={{ objectFit: "contain", borderRadius: 4, background: "#f5f5f5" }}
           />
         ) : (
           <Typography.Text type="warning" style={{ fontSize: 12 }}>
@@ -476,7 +481,11 @@ export function WatermarkManager() {
           )}
           <Popconfirm
             title="删除水印模板"
-            description="已产出的视频不受影响；被转码模板引用时需先解除引用"
+            description={
+              row.referenced_by > 0
+                ? `正被 ${row.referenced_by} 个转码模板引用，需先在转码模板中解除关联（否则返回 409）`
+                : "已产出的视频不受影响；已入队的转码任务用快照，不受影响"
+            }
             onConfirm={() => void remove(row)}
           >
             <Button type="link" size="small" danger icon={<DeleteOutlined />}>
@@ -704,7 +713,7 @@ export function WatermarkManager() {
               <Form.Item name="opacity" label="透明度（%）">
                 <Slider min={0} max={100} style={{ width: 160 }} />
               </Form.Item>
-              <Form.Item name="blend" label="混合方式" tooltip="正常 = 标准 alpha 叠加；叠加 = Overlay 混合模式（逐像素混合，转码更耗时）">
+              <Form.Item name="blend" label="混合方式" tooltip="叠加模式下，水印与画面更融合，但会增加转码时间。">
                 <Radio.Group
                   options={WATERMARK_BLEND_MODES.map((b) => ({ value: b, label: WATERMARK_BLEND_LABELS[b] }))}
                   optionType="button"
@@ -816,7 +825,10 @@ function WatermarkPreview(props: {
   return (
     <div style={{ width: 300, flexShrink: 0 }}>
       <Typography.Text type="secondary" style={{ fontSize: 12, display: "block", marginBottom: 6 }}>
-        预览（示意；成像以 ffmpeg 编译为准）
+        预览（仅作位置示意，实际大小请以转码后画面为准
+        {/* 图片型可点击放大，给一个明确的可点击提示（antd 默认遮罩只说明「可点」，不说「点了干什么」） */}
+        {type === "image" && previewUrl ? "；点击图片可放大查看" : ""}
+        ）
       </Typography.Text>
       <div
         style={{
@@ -852,8 +864,13 @@ function WatermarkPreview(props: {
               {text || "文字水印"}
             </span>
           ) : previewUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={previewUrl} alt="水印预览" style={{ maxWidth: "100%", display: "block" }} />
+            // 定位示意框整体 pointerEvents:none（避免干扰表单交互），此处单独恢复点击以启用放大预览
+            <Image
+              src={previewUrl}
+              alt="水印预览"
+              rootClassName="wm-preview-image"
+              style={{ maxWidth: "100%", pointerEvents: "auto" }}
+            />
           ) : (
             <Typography.Text type="warning" style={{ fontSize: 12 }}>
               选择图片后预览

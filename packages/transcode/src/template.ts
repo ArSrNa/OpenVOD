@@ -5,9 +5,12 @@
 // 规则 3（全档跳过兜底）/ 规则 4（自适应等比缩放），判定维度为 **分辨率 / 帧率 / 码率**（2026-09-18 修订）：
 //   - 只降不升、高位取源：低于源的维度按模板执行；**不低于源的维度一律取源值**（不放大 / 不补帧 / 不抬码率）；
 //   - 三维度全部不低于源 → 该档跳过（无重编码意义，不产 argv）；跳过档由 Worker 用 compileSourceMatched 兜底出片；
-//   - 自适应档：源已在约束内 → 分辨率维度取源值（open-questions #18 已收敛）。
+//   - 自适应档：源已在约束内 → 分辨率维度取源值（open-questions #18 已收敛）；
+//   - 保持原分辨率档（mode=source，2026-10-05 增）：分辨率维度恒取源值、不写 scale 滤镜，
+//     是否执行由帧率 / 码率维度判定（三维度均不低于源则跳过）；仍重编码，与 keep_original（-c copy）不同。
 // argv 只做数组插值，永不经 shell 拼接（ADR-0008 安全边界）；密钥路径仅 Worker 注入。
 import { TranscodeTemplateParams, z } from "@openvod/contracts";
+import { compileWatermarkFilter, type WatermarkSnapshotValue } from "./watermark";
 
 /**
  * 模板结构化参数的 TS 类型（zod schema 的 infer 结果）。
@@ -82,9 +85,18 @@ interface TargetSize {
  * - 目标高于源（升格）→ **取源分辨率**（不放大）；
  * - 目标与源一致 → 取源分辨率；
  * - 目标低于源 → 缩放至目标（真降级）；
- * - adaptive：源已在全部约束内 → 取源分辨率（open-questions #18）。
+ * - adaptive：源已在全部约束内 → 取源分辨率（open-questions #18）；
+ * - source（保持原分辨率，2026-10-05 增）：恒取源分辨率、不缩放。
  */
 function resolveTargetSize(res: TemplateParams["resolutions"][number], source: SourceInfo): TargetSize {
+  if (res.mode === "source") {
+    return {
+      width: source.width,
+      height: source.height,
+      scale: false,
+      note: `保持原分辨率（${source.width}×${source.height}）`,
+    };
+  }
   if (res.mode === "fixed") {
     if (source.width < res.width || source.height < res.height) {
       return {
@@ -176,6 +188,66 @@ export interface CompileOpts {
   /** AES-128 key_info 文件路径（ADR-0006）；缺省 = 不加密 */
   keyInfoPath?: string;
   hlsTimeSec?: number;
+  /**
+   * 水印快照（spec.md §10.4 / ADR-0018）：非空则该次编译把水印烧录进每档画面。
+   * 图片型还需 Worker 注入预签名后的 imageUrl（ffmpeg 第二输入）；字体目录可覆盖（单测）。
+   */
+  watermark?: { snapshot: WatermarkSnapshotValue; imageUrl?: string; fontDir?: string } | null;
+}
+
+/**
+ * 把「变体滤镜 + 视频编码参数 + HLS 输出」组装成 argv；水印存在时改走 filter_complex
+ * （滤镜链必须挂在缩放之后、编码与切片之前，spec.md §10.4）。
+ */
+function buildVariantArgv(opts: {
+  params: TemplateParams;
+  effectiveBitrateK: number | null;
+  fpsDowngrade: boolean;
+  scaleFilter: string | null;
+  outDir: string;
+  input: string;
+  keyInfoPath?: string;
+  hlsTimeSec: number;
+  watermark?: CompileOpts["watermark"];
+  variant: { width: number; height: number };
+}): string[] {
+  const codecArgs = videoArgs(opts.params, opts.effectiveBitrateK);
+  const tail = [
+    ...codecArgs,
+    // 仅降帧率时写 -r；升格 / 持平 → 不写（保持源帧率）
+    ...(opts.fpsDowngrade ? ["-r", String(opts.params.fps)] : []),
+    "-c:a", "aac",
+    "-b:a", `${opts.params.audio_bitrate_kbps}k`,
+    "-hls_time", String(opts.hlsTimeSec),
+    "-hls_playlist_type", "vod",
+    "-hls_segment_filename", `${opts.outDir}/seg-%05d.ts`,
+    ...(opts.keyInfoPath ? ["-hls_key_info_file", opts.keyInfoPath] : []),
+    `${opts.outDir}/index.m3u8`,
+  ];
+
+  if (!opts.watermark) {
+    return [
+      "-y",
+      "-i", opts.input,
+      ...(opts.scaleFilter ? ["-vf", opts.scaleFilter] : []),
+      ...tail,
+    ];
+  }
+
+  // 水印路径：filter_complex（主输入分支 → 水印层 → 合成），额外输入紧随主输入之后
+  const plan = compileWatermarkFilter(opts.scaleFilter, opts.variant, {
+    snapshot: opts.watermark.snapshot,
+    imageUrl: opts.watermark.imageUrl,
+    fontDir: opts.watermark.fontDir,
+  });
+  return [
+    "-y",
+    "-i", opts.input,
+    ...plan.extraInputs,
+    "-filter_complex", plan.filterComplex,
+    "-map", "[wmwm_out]",
+    ...tail,
+  ];
 }
 
 /**
@@ -225,24 +297,21 @@ export function compileTemplate(rawParams: unknown, source: SourceInfo, opts: Co
     }
 
     const outDir = `${opts.outRoot}/${name}`;
-    const argv = [
-      "-y",
-      "-i", opts.input,
+    const argv = buildVariantArgv({
+      params,
+      effectiveBitrateK,
+      fpsDowngrade,
       // 仅分辨率真降级时缩放；升格 / 持平 / 源已满足约束 → 不写 scale（遵循原视频）
-      ...(size.scale
-        ? ["-vf", `scale=${size.width}:${size.height}:force_original_aspect_ratio=decrease`]
-        : []),
-      ...videoArgs(params, effectiveBitrateK),
-      // 仅降帧率时写 -r；升格 / 持平 → 不写（保持源帧率）
-      ...(fpsDowngrade ? ["-r", String(params.fps)] : []),
-      "-c:a", "aac",
-      "-b:a", `${params.audio_bitrate_kbps}k`,
-      "-hls_time", String(opts.hlsTimeSec ?? 6),
-      "-hls_playlist_type", "vod",
-      "-hls_segment_filename", `${outDir}/seg-%05d.ts`,
-      ...(opts.keyInfoPath ? ["-hls_key_info_file", opts.keyInfoPath] : []),
-      `${outDir}/index.m3u8`,
-    ];
+      scaleFilter: size.scale
+        ? `scale=${size.width}:${size.height}:force_original_aspect_ratio=decrease`
+        : null,
+      outDir,
+      input: opts.input,
+      keyInfoPath: opts.keyInfoPath,
+      hlsTimeSec: opts.hlsTimeSec ?? 6,
+      watermark: opts.watermark,
+      variant: { width: size.width, height: size.height },
+    });
     return {
       name,
       width: size.width,
@@ -264,18 +333,18 @@ export function compileSourceMatched(rawParams: unknown, source: SourceInfo, opt
   const name = source.height > 0 ? `${source.height}p` : "source";
   const outDir = `${opts.outRoot}/${name}`;
   const effectiveBitrateK = resolveEffectiveBitrateK(params, source);
-  const argv = [
-    "-y",
-    "-i", opts.input,
-    ...videoArgs(params, effectiveBitrateK),
-    "-c:a", "aac",
-    "-b:a", `${params.audio_bitrate_kbps}k`,
-    "-hls_time", String(opts.hlsTimeSec ?? 6),
-    "-hls_playlist_type", "vod",
-    "-hls_segment_filename", `${outDir}/seg-%05d.ts`,
-    ...(opts.keyInfoPath ? ["-hls_key_info_file", opts.keyInfoPath] : []),
-    `${outDir}/index.m3u8`,
-  ];
+  const argv = buildVariantArgv({
+    params,
+    effectiveBitrateK,
+    fpsDowngrade: false,
+    scaleFilter: null,
+    outDir,
+    input: opts.input,
+    keyInfoPath: opts.keyInfoPath,
+    hlsTimeSec: opts.hlsTimeSec ?? 6,
+    watermark: opts.watermark,
+    variant: { width: source.width, height: source.height },
+  });
   return {
     name,
     width: source.width,
@@ -290,6 +359,8 @@ export function compileSourceMatched(rawParams: unknown, source: SourceInfo, opt
 /**
  * 「保持原视频配置」编译（只加密流程）：不重编码，-c copy 重封装 + HLS 切片 + 可选加密。
  * 注：TS 容器要求源视频为 H.264（HEVC 直封可能不可播），校验见 open-questions #19。
+ * **不支持水印**：-c copy 不解码，无法叠加画面——`keep_original && watermark` 在快照校验
+ * 与管理端两层校验均已拒绝（spec.md §10.4），这里不再接受水印入参。
  */
 export function compileKeepOriginal(opts: {
   input: string;

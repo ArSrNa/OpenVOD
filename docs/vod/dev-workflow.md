@@ -240,6 +240,7 @@ task contracts            # 契约生成物变更后需入库（契约门禁）
 |---|---|
 | `Module not found: Can't resolve '../generated/sqlite'`（或 mysql） | 只生成了一份客户端；`task db:generate` 生成两份，然后重启 dev |
 | `P2021 The table xxx does not exist` | 目标库未建表；SQLite 用 `task db:push`，MySQL 用 §4.3 迁移/baseline |
+| `The column xxx.yyy does not exist in the current database`（P2021 的列形态） | **改了 Prisma schema 但没把迁移应用到目标库**——生成客户端（`task db:generate`）只更新类型与查询引擎，**不会**改库。MySQL 跑 `task db:migrate`（= `prisma migrate deploy`），SQLite 跑 `task db:push`；先跑 `bunx prisma migrate status --schema prisma/schema.mysql.prisma`（只读）确认是「not yet been applied」还是 failed / drift。additive 迁移（加列 / 加表）向后兼容，放心补跑 |
 | `P1012 the URL must start with file:`（跑 `task db:push` 时） | `.env` 的 `DATABASE_URL` 是 MySQL——`db:push` 只服务 SQLite 开发库；MySQL 用 `task db:migrate`。临时要 SQLite 库可内联覆盖：`DATABASE_URL="file:./dev.db" bun run --cwd packages/db push:sqlite` |
 | `P3009 failed migrations` + MySQL `1064` near `'--…'` | 迁移 SQL 的 `--` 注释后**必须跟空格**（紧跟文字时 MySQL 不识别为注释，整个文件报 1064 且被记为 failed 挡住后续迁移）。修正 SQL 后：`bunx prisma migrate resolve --rolled-back <迁移名> --schema prisma/schema.mysql.prisma`，再 `task db:migrate` |
 | `P3014 could not create the shadow database` | 账号无建库权限；按 §4.3 的 baseline 四步，不要用 `migrate dev` |

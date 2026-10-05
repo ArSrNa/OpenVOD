@@ -118,7 +118,10 @@ export const PageResponse = z.object({
 // ---- 转码模板（ADR-0014；管理端与 Worker 共用校验。Go 分发端不消费模板，
 // 故本节 schema 不进 gen-json.ts 清单、不生成 Go struct） ----
 
-/** 分辨率档位：固定宽×高 或 自适应上限约束（intent.md「转码模板管理」规则 4：等比缩放） */
+/**
+ * 分辨率档位：固定宽×高 / 自适应上限约束（intent.md「转码模板管理」规则 4：等比缩放）/
+ * 保持原分辨率（2026-10-05 增）——恒取源分辨率、不缩放，是否执行由帧率 / 码率维度判定。
+ */
 export const TemplateResolution = z.discriminatedUnion("mode", [
   z.object({
     mode: z.literal("fixed"),
@@ -130,6 +133,8 @@ export const TemplateResolution = z.discriminatedUnion("mode", [
     max_width: z.number().int().min(16).max(7680).optional(),
     max_height: z.number().int().min(16).max(4320).optional(),
   }),
+  /** 保持原分辨率：无参数，编译期取源尺寸且不写 scale 滤镜（与「保持原视频配置」不同——仍重编码） */
+  z.object({ mode: z.literal("source") }),
 ]);
 
 /** x264/x265 速度档（ffmpeg preset） */
@@ -200,6 +205,8 @@ export const TranscodeTemplateDTO = z.object({
   format: z.enum(TEMPLATE_FORMATS),
   params: TranscodeTemplateParams.nullable(),
   is_default: z.boolean(),
+  /** 关联的水印模板 ID（spec.md §10.4；null = 不烧录水印；keep_original=true 时恒为 null） */
+  watermark_id: z.string().nullable(),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -213,17 +220,31 @@ const TranscodeTemplateInput = z.object({
   format: z.enum(TEMPLATE_FORMATS),
   params: TranscodeTemplateParams.optional(),
   is_default: z.boolean(),
+  /** 关联水印模板（透传字段；显式 null = 解除关联；缺省 = 不修改） */
+  watermark_id: z.string().min(1).nullable().optional(),
 });
+
+/**
+ * keep_original（只加密，`-c copy`）与水印烧录互斥：无法在不解码的情况下叠加画面。
+ * 任务发起侧再拦一次（spec.md §10.4「模板保存与任务发起两层校验」）。
+ */
+const assertNoWatermarkOnKeepOriginal = (v: { keep_original: boolean; watermark_id?: string | null }) =>
+  !v.keep_original || v.watermark_id == null;
 
 export const CreateTranscodeTemplateRequest = TranscodeTemplateInput.extend({
   keep_original: z.boolean().default(false),
   encrypt: z.boolean().default(false),
   format: z.enum(TEMPLATE_FORMATS).default("HLS"),
   is_default: z.boolean().default(false),
-}).refine((v) => v.keep_original || v.params != null, {
-  message: "非保持原视频模板必须提供 params",
-  path: ["params"],
-});
+})
+  .refine((v) => v.keep_original || v.params != null, {
+    message: "非保持原视频模板必须提供 params",
+    path: ["params"],
+  })
+  .refine(assertNoWatermarkOnKeepOriginal, {
+    message: "「保持原视频配置」不重编码，无法烧录水印（请关闭保持原视频或取消水印关联）",
+    path: ["watermark_id"],
+  });
 
 /** PATCH 语义：字段缺省 = 不修改（不带默认值，避免误改） */
 export const UpdateTranscodeTemplateRequest = TranscodeTemplateInput.partial();
@@ -295,14 +316,16 @@ export const ImageWatermarkParams = z
 export const TextWatermarkParams = z.object({
   type: z.literal("text"),
   ...watermarkCommon,
-  /** 文字内容：1–64 字符，trim 后非空，不含控制字符（单行） */
+  /** 文字内容：1–64 字符，trim 后非空，不含控制字符（单行）；也不含 `'`——ffmpeg 滤镜选项分词器
+   *  无法把字面单引号送进 drawtext（spec.md §10.1 / ADR-0018 转义约束） */
   text: z
     .string()
     .transform((s) => s.trim())
     .refine((s) => s.length >= 1 && s.length <= WATERMARK_TEXT_MAX, {
       message: `文字内容须为 1–${WATERMARK_TEXT_MAX} 个字符`,
     })
-    .refine((s) => !/[\u0000-\u001f\u007f]/.test(s), { message: "文字内容不能包含控制字符" }),
+    .refine((s) => !/[\u0000-\u001f\u007f]/.test(s), { message: "文字内容不能包含控制字符" })
+    .refine((s) => !s.includes("'"), { message: "文字内容不能包含单引号 '（ffmpeg drawtext 无法渲染该字符）" }),
   /** 字体（Worker 内置 Noto CJK 清单，@openvod/shared WATERMARK_FONTS） */
   font: z.enum(WATERMARK_FONTS),
   /** 文字颜色 #RRGGBB */
@@ -333,7 +356,7 @@ export const WatermarkTemplateDTO = z.object({
   image_height: z.number().int().nullable(),
   /** 图片可用性：text 恒 ready；image 型 missing = 尚未上传图片（不可被转码模板关联） */
   image_status: z.enum(["ready", "missing"]),
-  /** 引用它的转码模板数（转码关联落地前恒为 0，字段先行对齐 spec.md §10.3） */
+  /** 引用它的转码模板数（spec.md §10.3 一次 groupBy；>0 时删除返回 409） */
   referenced_by: z.number().int(),
   created_at: z.string(),
   updated_at: z.string(),
@@ -357,15 +380,54 @@ export const UpdateWatermarkRequest = WatermarkTemplateInput.partial();
 /** transcode_jobs.status 取值（与 Prisma `JobStatus` 枚举逐字一致） */
 export const JOB_STATUSES = ["QUEUED", "PROBING", "ENCODING", "PACKAGING", "DONE", "FAILED"] as const;
 
-/** 发起任务时写入 `transcode_jobs.template_snapshot` 的模板快照（防漂移：模板后续改删不影响已入队任务） */
-export const TranscodeTemplateSnapshot = z.object({
-  template_id: z.string(),
+/**
+ * 任务快照中的水印段（spec.md §10.4 / ADR-0018）：**自包含**——submit 时把水印模板内容
+ * （含图片元数据）固化进 transcode_jobs.template_snapshot.watermark，模板 / 图片后续变更
+ * 不影响已入队任务；Worker 只读快照，不回查 watermark_templates。
+ */
+export const WatermarkSnapshot = z.object({
+  id: z.string(),
   name: z.string(),
-  keep_original: z.boolean(),
-  encrypt: z.boolean(),
-  format: z.enum(TEMPLATE_FORMATS),
-  params: TranscodeTemplateParams.nullable(),
+  type: z.enum(["image", "text"]),
+  params: WatermarkParams,
+  /** 图片型专属（文字型为 null）：Worker 据此预签名取图并作为 ffmpeg 第二输入 */
+  image_key: z.string().nullable().optional(),
+  image_ext: z.string().nullable().optional(),
+  image_width: z.number().int().nullable().optional(),
+  image_height: z.number().int().nullable().optional(),
 });
+
+export type WatermarkSnapshotValue = z.infer<typeof WatermarkSnapshot>;
+
+/** 发起任务时写入 `transcode_jobs.template_snapshot` 的模板快照（防漂移：模板后续改删不影响已入队任务） */
+export const TranscodeTemplateSnapshot = z
+  .object({
+    template_id: z.string(),
+    name: z.string(),
+    keep_original: z.boolean(),
+    encrypt: z.boolean(),
+    format: z.enum(TEMPLATE_FORMATS),
+    params: TranscodeTemplateParams.nullable(),
+    /** 关联水印快照（null / 缺省 = 不烧录水印） */
+    watermark: WatermarkSnapshot.nullable().optional(),
+  })
+  .superRefine((v, ctx) => {
+    // 「模板保存 + 任务发起」两层校验的 Worker 侧兜底：脏快照直接判不可执行，而不是产出错片
+    if (v.keep_original && v.watermark != null) {
+      ctx.addIssue({
+        code: "custom",
+        message: "keep_original 模板不能携带水印快照（不重编码无法烧录水印）",
+        path: ["watermark"],
+      });
+    }
+    if (v.watermark?.type === "image" && !v.watermark.image_key) {
+      ctx.addIssue({
+        code: "custom",
+        message: "图片水印快照缺少 image_key（提交时水印图尚未上传）",
+        path: ["watermark", "image_key"],
+      });
+    }
+  });
 
 /** submit 单次最多可选的模板数（每个模板各入队一条任务；products 各落 proceed/{mediaId}/{templateId}/） */
 export const TRANSCODE_SUBMIT_MAX_TEMPLATES = 10;
@@ -383,6 +445,8 @@ export const TranscodeSubmitJob = z.object({
   job_id: z.string(),
   template_id: z.string(),
   template_name: z.string(),
+  /** 该任务快照里固化的水印（null = 不烧录水印；spec.md §10.4） */
+  watermark_id: z.string().nullable(),
   status: z.enum(JOB_STATUSES),
 });
 

@@ -150,6 +150,12 @@ export const WATERMARK_FONT_LABELS: Record<WatermarkFont, string> = {
   serif: "宋体（思源宋体）",
 };
 
+/**
+ * Worker 镜像内置字体目录（Debian `fonts-noto-cjk` 安装路径）。
+ * drawtext 的 fontfile 根目录；字体随镜像分发、无环境变量（spec.md §10.6 / ADR-0018 §后果）。
+ */
+export const WATERMARK_FONT_DIR = "/usr/share/fonts/opentype/noto";
+
 // 媒资 ID：纯数字字符串，默认 8 位（MEDIA_ID_LENGTH 可配，4–16），保留前导零；为
 // original/proceed/cover/metadata 四分区资产的唯一索引（spec.md §1.3）
 /** 字符模式（无锚点，供拼接复合正则，如按存储键解析媒资 ID） */

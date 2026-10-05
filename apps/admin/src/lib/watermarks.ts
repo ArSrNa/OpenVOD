@@ -1,4 +1,4 @@
-// 水印模板业务逻辑（spec.md §10 / ADR-0018：管理端 CRUD + 图片资产上传；转码关联为后续里程碑）
+// 水印模板业务逻辑（spec.md §10 / ADR-0018：管理端 CRUD + 图片资产上传 + 被转码模板引用的统计与删除保护）
 // 校验唯一真相源为 @openvod/contracts 的 zod schema（WatermarkParams 含 type 字面量自描述）；
 // 图片落 watermark/{模板ID}.{ext}（平台级模板资产分区，spec.md §10.2），宽高由 ffprobe 探测回填。
 import {
@@ -60,7 +60,7 @@ function assertWatermarkId(id: string): string {
 }
 
 /** DB 行 → DTO（camelCase → snake_case；params JSON 已在写入时校验，透传） */
-function toDto(row: WatermarkRow): z.infer<typeof WatermarkTemplateDTO> {
+function toDto(row: WatermarkRow, referencedBy = 0): z.infer<typeof WatermarkTemplateDTO> {
   return {
     id: row.id,
     name: row.name,
@@ -74,11 +74,26 @@ function toDto(row: WatermarkRow): z.infer<typeof WatermarkTemplateDTO> {
     image_height: row.imageHeight,
     // spec.md §10.3：text 恒 ready；image 型 missing = 尚未上传图片（不可被转码模板关联）
     image_status: row.type === "text" || row.imageKey ? "ready" : "missing",
-    // 转码模板关联（transcode_templates.watermark_id）为后续里程碑；字段先行对齐 spec.md §10.3
-    referenced_by: 0,
+    referenced_by: referencedBy,
     created_at: row.createdAt.toISOString(),
     updated_at: row.updatedAt.toISOString(),
   };
+}
+
+/**
+ * 一次 groupBy 统计各水印被引用的转码模板数（spec.md §10.3 `referenced_by`）。
+ * 引用关系在 transcode_templates.watermark_id 上，非列表请求可跳过。
+ */
+async function referencedCounts(ids: string[]): Promise<Map<string, number>> {
+  if (!ids.length) return new Map();
+  const rows = await db.transcodeTemplate
+    .groupBy({ by: ["watermarkId"], where: { watermarkId: { in: ids } }, _count: { _all: true } })
+    .catch(() => []);
+  const out = new Map<string, number>();
+  for (const row of rows as Array<{ watermarkId: string | null; _count: { _all: number } }>) {
+    if (row.watermarkId) out.set(row.watermarkId, row._count._all);
+  }
+  return out;
 }
 
 /** zod 校验失败 → 400（取首条 issue，带字段路径） */
@@ -99,14 +114,19 @@ function isRecordNotFound(e: unknown): boolean {
 
 export async function listWatermarks(): Promise<{ total: number; items: z.infer<typeof WatermarkTemplateDTO>[] }> {
   const rows = await db.watermarkTemplate.findMany({ orderBy: { createdAt: "desc" } });
-  return { total: rows.length, items: rows.map(toDto) };
+  const counts = await referencedCounts(rows.map((r: WatermarkRow) => r.id));
+  return {
+    total: rows.length,
+    items: rows.map((row: WatermarkRow) => toDto(row, counts.get(row.id) ?? 0)),
+  };
 }
 
 export async function getWatermark(id: string): Promise<z.infer<typeof WatermarkTemplateDTO>> {
   assertWatermarkId(id);
   const row = await db.watermarkTemplate.findUnique({ where: { id } });
   if (!row) throw new WatermarkError("not_found", `水印模板不存在：${id}`, 404);
-  return toDto(row);
+  const counts = await referencedCounts([id]);
+  return toDto(row, counts.get(id) ?? 0);
 }
 
 // ---- 创建 ----
@@ -180,7 +200,17 @@ export async function deleteWatermark(id: string): Promise<{ id: string; removed
   assertWatermarkId(id);
   const row = await db.watermarkTemplate.findUnique({ where: { id } }).catch(() => null);
   if (!row) throw new WatermarkError("not_found", `水印模板不存在：${id}`, 404);
-  // 转码关联落地后此处校验 transcode_templates 引用计数 → 409（spec.md §10.2 删除保护）
+  // 删除保护（spec.md §10.2）：被任一转码模板引用 → 409，要求先解除引用。
+  // 已入队 / 已完成任务不受影响（快照自包含）；DB 侧还有 watermark_id SetNull 兜底。
+  const counts = await referencedCounts([id]);
+  const referencedBy = counts.get(id) ?? 0;
+  if (referencedBy > 0) {
+    throw new WatermarkError(
+      "bad_request",
+      `水印模板正被 ${referencedBy} 个转码模板引用，请先在转码模板中解除关联后再删除`,
+      409,
+    );
+  }
   const storage = await getStorage();
   const objects = await storage
     .listObjects(`${STORAGE_PARTITIONS.watermark}/`)

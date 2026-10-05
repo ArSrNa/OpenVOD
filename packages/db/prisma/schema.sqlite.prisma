@@ -309,13 +309,19 @@ model TranscodeTemplate {
   /// keep_original=true 时为 NULL（只加密流程无重编码参数）
   params      Json?
   isDefault   Boolean        @default(false) @map("is_default")
+  /// 关联水印模板（spec.md §10.4 / ADR-0018）：可空外键，一个转码模板至多一个水印、
+  /// 一个水印可被多个转码模板引用；keep_original=true 时恒为 NULL（烧录必须重编码）
+  watermarkId String?        @map("watermark_id")
   createdAt   DateTime       @default(now()) @map("created_at")
   updatedAt   DateTime       @updatedAt @map("updated_at")
 
+  watermark WatermarkTemplate? @relation(fields: [watermarkId], references: [id], onDelete: SetNull)
+
+  @@index([watermarkId])
   @@map("transcode_templates")
 }
 
-/// 水印模板（spec.md §10 / ADR-0018：管理端 CRUD；转码关联与 Worker 烧录为后续里程碑）。
+/// 水印模板（spec.md §10 / ADR-0018：管理端 CRUD；Worker 只读任务快照消费）。
 /// 图片资产落 watermark/{模板ID}.{ext}（平台级模板资产分区，非媒资 ID 索引）；
 /// params JSON 含 type 字面量自描述（与 type 列保持一致），快照语义对齐 ADR-0014
 model WatermarkTemplate {
@@ -335,6 +341,9 @@ model WatermarkTemplate {
   params      Json
   createdAt   DateTime       @default(now()) @map("created_at")
   updatedAt   DateTime       @updatedAt @map("updated_at")
+
+  /// 反向引用：引用本水印的转码模板（应用层删除保护在前，DB SetNull 兜底，spec.md §10.2）
+  templates TranscodeTemplate[]
 
   @@map("watermark_templates")
 }

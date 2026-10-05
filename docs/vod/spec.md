@@ -439,7 +439,7 @@ http 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_s
 | `PLAYBACK_MANIFEST_TTL_SEC` | `14400` | 清单 token / 预签名有效期上限（token exp ≤ 会话 exp；上限 7 天，同时约束 S3 SigV4 预签名） |
 | `PLAYBACK_SUBTITLE_TTL_SEC` | `86400` | 字幕 token 有效期上限（`@openvod/shared DEFAULTS.subtitleTtlSec`）；实际 `exp` 取与会话 `exp` 的较小值（§7.5） |
 | `STORAGE_ROOT_PREFIX` / `S3_*` | 对齐管理端 | 与 `packages/storage` 同源命名（§1.5）；仅 S3 兼容存储（ADR-0005 2026-09-22 修订，`STORAGE_DRIVER` / `STORAGE_LOCAL_ROOT` 已删除） |
-| `STORAGE_CDN_BASE_URL` | 空 | 对象存储加速域名（ADR-0005 统一加速域名方案，管理端 / 分发端共用命名）：配置后 **GET 预签名 URL 的 origin 替换**为该域名（管理端 original / 封面预览 302、presign 模式分片直出），路径与签名 query 原样保留；上传预签名不受影响。前提：CDN 回源 COS 且 **Host 透传 / 改写为桶端点**（SigV4 签名覆盖 Host），缓存按 query 不缓存或短 TTL 配置 |
+| `STORAGE_CDN_BASE_URL` | 空 | 对象存储加速域名（ADR-0005 统一加速域名方案，管理端 / 分发端共用命名）：配置后 **GET 预签名 URL 的 origin 替换**为该域名（管理端 original / 封面预览 302、presign 模式分片直出），路径与签名 query 原样保留；上传预签名不受影响。前提：CDN 回源 COS 且 **Host 透传 / 改写为桶端点**（SigV4 签名覆盖 Host），缓存按 query 不缓存或短 TTL 配置。**2026-10-05 实测踩坑**：CDN 缓存键若忽略查询串，① 同路径重转码后播放端**永远读到旧分片**（产物按模板树原位替换，路径不变；预签名 query 每次不同但缓存键相同），表现为「改了水印 / 模板重转后画面没变化」；② **无签名请求可命中缓存绕过 URL 鉴权**（裸打分片 URL 返回 200）。缓存键必须含完整 query（不过滤参数），或启用 CDN URL 鉴权，二者必居其一 |
 | `DELIVERY_CORS_ORIGINS` | `*` | 允许跨域读取清单 / 密钥 / 分片（管理端「产物解密播放」的 hls.js 需要）；播放鉴权全走 URL token、不带 Cookie，`*` 不引入凭证泄露面，可收敛为管理端源站（逗号分隔） |
 
 分发端消费的 `system_settings` 键（DB 优先、env 兜底；键名与 `packages/shared SETTING_KEYS` 手工对齐）：`s3_endpoint` / `s3_region` / `s3_bucket` / `s3_access_key_id` / `s3_secret_access_key`（MK 封装）/ `s3_force_path_style` / `storage_root_prefix` / `storage_cdn_base_url` / `url_sign_key_hex`（MK 封装）/ `url_sign_key_kid` / `jwt_ttl_sec` / `playback_session_ttl_sec` / `playback_manifest_ttl_sec` / `playback_subtitle_ttl_sec` / `cors_origins` / `playback_base_url`。
@@ -823,7 +823,7 @@ http 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_s
 - **画布内 alpha=0 区域必须恒为纯黑**（`color=black@0.0` 已保证）——这是 maskedmerge 正确性的前提：掩码为 0 处取原画面，画布 RGB 不参与结果；
 - **合成输出像素格式显式钉 `yuv420p`**：`overlay=format=auto` 会协商出 `yuva420p` / `yuv444p`（带 alpha 或 4:4:4），既浪费码率又可能不被部分播放器接受。副作用：10-bit 源在**带水印**时会被降到 8-bit（不带水印的模板不受影响），v1 接受；
 - **叠加模式的 blend / maskedmerge 走 `gbrp`**（无 alpha 的平面 RGB）而非 `rgba`：rgba 下 alpha 平面会参与逐平面混合，实测得不到预期结果（ffmpeg 6.1）；
-- **水印存在时改走 `-filter_complex` + `-map [wmwm_out]`**（`-vf` 无法表达「水印层 + 合成」两段）；无水印的模板 argv 形态与既有实现逐字一致，不受牵连；
+- **水印存在时改走 `-filter_complex` + `-map [wmwm_out]` + `-map 0:a?`**（`-vf` 无法表达「水印层 + 合成」两段）；无水印的模板 argv 形态与既有实现逐字一致，不受牵连。**音频映射必须显式带上**：一旦出现任一 `-map`，ffmpeg 对该输出文件的自动流选择整体失效（不再自动挑最佳音轨），只映射视频滤镜输出会产出**无声视频**（2026-10-05 实测踩坑，两层端到端测试以「去映射必红」守卫）；`?` 表示源无音轨时静默忽略，与 `compileKeepOriginal` 的 `-map 0:a?` 同形态；
 - **全档跳过（intent 规则 2）时由 `compileSourceMatched` 兜底出一档，水印照常烧录**——不会出现「配了水印却没烧录」；
 - **drawtext `text` 转义规则**：ffmpeg 在 `-filter_complex` 与选项值上各做一遍分词，字面量还要穿过 `drawtext` 自身的 `%` 展开器。实测标定：整串单引号包裹，`\`→`\\`、`%`→`\\%`（裸 `%` 触发 `Stray %` 且**整段文字不渲染**）、`:`→`\:`、`,;[]`→`\c`；字面 `'` 不可达（故 §10.1 拒绝该字符）。规则集中在 `packages/transcode/src/watermark.ts::escapeDrawtextText`，纯函数 + 单测。
 
@@ -880,7 +880,7 @@ http 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_s
 
 - **纯函数单测**（`packages/transcode/test/watermark.test.ts`，`bun test`）：图片尺寸换算（pixels 两项精确 / 单项等比、percent 逐档按各自输出分辨率、结果下限 1px、缺原图尺寸报错）、文字字号（pixels / percent 逐档）、九宫格定位换算表全 9 项 + 负偏移 / 越界 / 正偏移带号、drawtext 转义（`\` `%` `:` `,;[]` 中文空格）、fontfile 映射、滤镜链编译（正常 / 叠加两条链的完整形状、缺 imageUrl 报错、脏参数报错、比例尺寸逐档差异、opacity 0/35/100）；
 - **argv 接入单测**（`packages/transcode/test/template.test.ts`）：有水印走 `-filter_complex` + `-map`、无水印 argv 形态不变、逐档编译、跳过的档位不产 argv、`compileSourceMatched` 兜底档带水印、文字水印不追加第二输入、`keep_original` 路径不含滤镜链；
-- **真 ffmpeg 端到端**（`packages/transcode/test/watermark.ffmpeg.test.ts`，缺 ffmpeg 整组跳过）：用编译出的 argv 真跑一遍，与「同模板无水印」产物逐像素比对——图片正常模式的**变化像素包围盒 == 期望矩形**（`(640−100−20, 360−50−20)` 起、100×50）、比例尺寸的等比换算、移出画面 / `opacity=0` 画面**完全不变**、叠加模式区域外无污染、文字水印落在右下且不越界；
+- **真 ffmpeg 端到端**（`packages/transcode/test/watermark.ffmpeg.test.ts`，缺 ffmpeg 整组跳过）：源片**带音轨**（sine，防「无声视频」回归），用编译出的 argv 真跑一遍，与「同模板无水印」产物逐像素比对——图片正常模式的**变化像素包围盒 == 期望矩形**（`(640−100−20, 360−50−20)` 起、100×50）、比例尺寸的等比换算、移出画面 / `opacity=0` 画面**完全不变**、叠加模式区域外无污染、文字水印落在右下且不越界、**产物音轨与无水印基准一致**（ffprobe 断言，漏 `-map 0:a?` 必红）；
 - **编排单测**（`apps/admin/test/transcode-submit.test.ts`）：水印快照固化（含图片元数据）、无水印时快照 `watermark` 为 `null`、`keep_original` 携带水印 → 400、图片水印未上传 → 400、水印已被删 → 404；
 - **Worker 端到端**（`apps/worker/test/executor.test.ts`）：图片水印按 `image_key` 取图并烧录（产物字节与无水印不同）、文字水印无需第二输入、两类脏快照（`keep_original` 带水印 / 图片水印缺 `image_key`）直接判任务失败；
 - **手工验收**：① 新建图片水印 → 上传图（宽高自动回填）→ 转码模板关联它 → 发起转码 → 产物右下角出现水印且画面其余部分无变化；② 改文字水印为「叠加」→ 重新转码 → 效果与「正常」明显不同；③ 保持原视频模板的水印下拉不出现；④ 解除关联后可删除水印模板，仍被引用时删除返回 409。

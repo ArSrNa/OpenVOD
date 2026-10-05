@@ -563,6 +563,26 @@ describe("M2 执行器：水印烧录", () => {
       expect(wmBytes.length).toBeGreaterThan(0);
       expect(Buffer.from(wmBytes).equals(Buffer.from(plainBytes))).toBe(false);
 
+      // 音频必须保留（2026-10-05 踩坑：-map 使自动流选择失效，漏 -map 0:a? → 无声视频）。
+      // 分片已 AES-128 加密，ffprobe 读不了——沿用本测试既有的解密路径取明文 TS 落临时文件再探
+      const storedKey = env.keyStore.rows.get(MEDIA_ID)!;
+      const cek = openMediaKey(pickWrappingMasterKey(MK), storedKey.wrappedCekHex);
+      const decipher = createDecipheriv("aes-128-cbc", cek, Buffer.from(storedKey.ivHex, "hex"));
+      const plainTs = Buffer.concat([decipher.update(Buffer.from(wmBytes)), decipher.final()]);
+      expect(plainTs[0]).toBe(0x47); // TS 同步字节，确认解密正确
+      const tsFile = join(env.jobsRoot, "wm-audio-check.ts");
+      writeFileSync(tsFile, plainTs);
+      const probed = Bun.spawnSync({
+        cmd: ["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", tsFile],
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (probed.exitCode !== 0) {
+        throw new Error(`ffprobe 解密分片失败：${new TextDecoder().decode(probed.stderr).slice(-300)}`);
+      }
+      const streams = (JSON.parse(new TextDecoder().decode(probed.stdout)) as { streams?: Array<{ codec_type: string }> }).streams ?? [];
+      expect(streams.some((s) => s.codec_type === "audio")).toBe(true);
+
       env.cleanup();
     },
     60_000,

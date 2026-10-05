@@ -486,6 +486,21 @@ describe("水印接入 argv 编译（spec.md §10.4）", () => {
     expect(fc[1]).toContain("scale=171:86");
   });
 
+  test("水印路径必须显式带音频（-map 会使自动流选择失效，漏映射 → 无声视频，2026-10-05 踩坑）", () => {
+    const plans = compileTemplate(
+      params({ resolutions: [{ mode: "fixed", width: 1280, height: 720 }] }),
+      { width: 1920, height: 1080, fps: 60 },
+      opts({ snapshot: IMAGE_WM, imageUrl: "https://example.invalid/wm.png" }),
+    );
+    const argv = plans[0].argv!;
+    // 视频（滤镜输出标签）+ 音频（0:a?）两条映射，缺一不可：出现任一 -map 后
+    // ffmpeg 不再自动挑最佳音轨，只映射视频就会产出无声视频
+    expect(argv[argv.indexOf("-map") + 1]).toBe("[wmwm_out]");
+    expect(argv[argv.lastIndexOf("-map") + 1]).toBe("0:a?");
+    expect(argv).toContain("-c:a");
+    expect(argv).toContain("-b:a");
+  });
+
   test("跳过的档位不产 argv（compileTemplate 只标跳过；兜底档由 Worker 的 buildPlans 追加）", () => {
     const plans = compileTemplate(
       params({ resolutions: [{ mode: "fixed", width: 1920, height: 1080 }] }),

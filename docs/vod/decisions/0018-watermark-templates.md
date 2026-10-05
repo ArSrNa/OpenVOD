@@ -31,7 +31,7 @@ intent 新增「水印管理」（2026-10-02）：转码时可以加上水印；
 - **静态图片输入不加 `-loop 1`**：图片作为第二输入（单帧），画布 overlay 带 `shortest=1` 收敛为单帧，最终合成由 overlay 的 `eof_action=repeat` 铺满主输入时长。argv builder 固定此方式（决策 4 允许二选一）。
 - **合成输出像素格式显式钉 `yuv420p`**：`overlay=format=auto` 会协商出 `yuva420p` / `yuv444p`（带 alpha 或 4:4:4），浪费码率且可能不被部分播放器接受。副作用：10-bit 源在带水印时被降到 8-bit（不带水印的模板不受影响），v1 接受。
 - **叠加模式的 `blend` / `maskedmerge` 走 `gbrp`**（无 alpha 的平面 RGB）而非 `rgba`：rgba 下 alpha 平面会参与逐平面混合，实测（ffmpeg 6.1）得不到预期结果。画布内 alpha=0 区域恒为纯黑是 maskedmerge 正确性的前提。
-- **有水印时改走 `-filter_complex` + `-map`**：`-vf` 无法表达「水印层 + 合成」两段；无水印的模板 argv 形态与既有实现逐字一致。
+- **有水印时改走 `-filter_complex` + `-map`，且音频必须显式 `-map 0:a?`**：`-vf` 无法表达「水印层 + 合成」两段；无水印的模板 argv 形态与既有实现逐字一致。**实测踩坑（2026-10-05）**：ffmpeg 一旦见到 `-map` 就对该输出文件关闭自动流选择——只映射视频滤镜输出会产出无声视频；上线后由真实媒资发现，已在两层端到端测试中以「去掉音频映射必红」锁死。
 - **全档跳过时由 `compileSourceMatched` 兜底出一档并照常烧录**——不会出现「配了水印却没烧录」。
 - **文字内容额外拒绝 ASCII 单引号 `'`**：ffmpeg 的滤镜 / 选项分词器（`av_get_token`）遇 `'` 即进入引号区且不处理反斜杠，字面 `'` 无法送达 `drawtext`（实测：任何转义写法都只会被丢弃）。其余特殊字符的转义规则（`\`→`\\`、`%`→`\\%`、`:`→`\:`、`,;[]`→`\c`，整串单引号包裹）已在 `packages/transcode/src/watermark.ts::escapeDrawtextText` 集中为纯函数并被单测锁定；裸 `%` 会触发 ffmpeg `Stray %` 且**整段文字不渲染**，是最容易踩的一条。
 - **字体缺失必须显式自检**：`drawtext` 的 `fontfile` 不存在时 ffmpeg **不报错**，而是静默回退 fontconfig 默认字体——中文渲染成豆腐块而任务仍报成功。故：Worker 镜像构建期 `test -f` 三份字体（硬失败），Worker 启动时再自检一次并**告警不退出**（字体只影响用到文字水印的模板）。

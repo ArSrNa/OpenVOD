@@ -139,10 +139,12 @@ function changedBox(base: Uint8Array, got: Uint8Array, threshold: number) {
 
 function setup(): Ctx {
   const dir = mkdtempSync(join(tmpdir(), "openvod-wm-ffmpeg-"));
+  // 源片必须带音轨（sine）：水印路径的「无声视频」回归（-map 丢失音频）正是无音源测不出来的
   run([
     FFMPEG!, "-hide_banner", "-loglevel", "error", "-y",
     "-f", "lavfi", "-i", "testsrc=size=1280x720:rate=10:duration=1",
-    "-pix_fmt", "yuv420p", join(dir, "src.mp4"),
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+    "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", join(dir, "src.mp4"),
   ]);
   const wmImage = join(dir, "wm.png");
   run([
@@ -150,6 +152,17 @@ function setup(): Ctx {
     "-f", "lavfi", "-i", "color=c=red@1.0:s=100x50:d=1", "-frames:v", "1", wmImage,
   ]);
   return { dir, wmImage, baseline: firstFrame(encode(dir, null)) };
+}
+
+/** ffprobe 输出文件：返回 (codec_type, codec_name) 对，用于断言音轨存在 */
+function streamsOf(file: string): Array<{ codec_type: string; codec_name: string }> {
+  const p = Bun.spawnSync([
+    FFMPEG!.replace(/ffmpeg$/, "ffprobe"), "-v", "error", "-print_format", "json",
+    "-show_streams", file,
+  ], { captureStderr: true });
+  if (p.exitCode !== 0) throw new Error(`ffprobe 失败：${new TextDecoder().decode(p.stderr)}`);
+  const parsed = JSON.parse(new TextDecoder().decode(p.stdout)) as { streams?: Array<{ codec_type: string; codec_name: string }> };
+  return parsed.streams ?? [];
 }
 
 // 缺 ffmpeg 时整组跳过（与 Worker 启动自检口径一致）
@@ -160,6 +173,17 @@ if (FFMPEG) {
 
     test("基准可用：同模板无水印产物能正常产出单帧", () => {
       expect(ctx.baseline.length).toBe(W * H * 3);
+    });
+
+    // 「无声视频」回归（2026-10-05）：-map 会使 ffmpeg 自动流选择失效，
+    // 水印路径漏映射音频时产物没有声音——所以源片必须带音轨，且直接 ffprobe 产物断言
+    test("音频保留：水印产物仍有音轨（与无水印基准一致），漏 -map 0:a? 即回归", () => {
+      const wmSegment = encode(ctx.dir, imageWatermark());
+      const baseSegment = encode(ctx.dir, null);
+      const wmAudio = streamsOf(wmSegment).filter((s) => s.codec_type === "audio");
+      const baseAudio = streamsOf(baseSegment).filter((s) => s.codec_type === "audio");
+      expect(wmAudio.length).toBeGreaterThan(0);
+      expect(wmAudio.map((s) => s.codec_name)).toEqual(baseAudio.map((s) => s.codec_name));
     });
 
     test("图片 + 正常：变化像素包围盒 == 期望矩形（W−w+off, H−h+off）", () => {

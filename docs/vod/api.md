@@ -235,7 +235,7 @@ DELETE /api/admin/categories/cother00000000000000000    # 默认分类
 - 拒绝条件一：`keep_original=true && watermark_id != null` → `400`；
 - 拒绝条件二：指向图片型水印但 `image_key` 为空（未上传图）→ `400`。
 
-submit 时水印内容快照进 `transcode_jobs.template_snapshot.watermark`，模板 / 图片后续变更不影响已入队任务。
+submit 时水印内容**现读现快照**进 `transcode_jobs.template_snapshot.watermark`——水印参数（锚点 / 偏移 / 透明度 / 混合 / 文字等）的修改对**下一次发起**生效；已入队任务不受水印参数后续变更影响（重启任务同样沿用入队时快照）。唯一例外是图片**字节**：快照只固化 `image_key` / 宽高等元数据，字节在 Worker 执行时按 key 现取——同扩展名换图时未执行的任务会烧**新图**；换扩展名会删除旧键，未执行的任务将失败（键版本化属演进项）。已产出内容永远不受影响（水印已烧进像素）。
 
 ---
 

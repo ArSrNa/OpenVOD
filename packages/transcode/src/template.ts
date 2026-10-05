@@ -234,7 +234,11 @@ function buildVariantArgv(opts: {
     ];
   }
 
-  // 水印路径：filter_complex（主输入分支 → 水印层 → 合成），额外输入紧随主输入之后
+  // 水印路径：filter_complex（主输入分支 → 水印层 → 合成），额外输入紧随主输入之后。
+  // 必须显式 `-map 0:a?` 带上音频：一旦出现 -map，ffmpeg 对该输出文件的**自动流选择整体失效**
+  // （不再自动挑最佳音轨），只映射视频滤镜输出会产出无声视频（2026-10-05 实测踩坑回归守卫）。
+  // `?` = 源无音轨时静默忽略；与 compileKeepOriginal 的 `-map 0:a?` 同形态。多音轨源会把
+  // 全部音轨带入（自动选择只挑最佳一条），VOD 场景单音轨为常态，两者在此等价。
   const plan = compileWatermarkFilter(opts.scaleFilter, opts.variant, {
     snapshot: opts.watermark.snapshot,
     imageUrl: opts.watermark.imageUrl,
@@ -246,6 +250,7 @@ function buildVariantArgv(opts: {
     ...plan.extraInputs,
     "-filter_complex", plan.filterComplex,
     "-map", "[wmwm_out]",
+    "-map", "0:a?",
     ...tail,
   ];
 }

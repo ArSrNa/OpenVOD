@@ -324,6 +324,13 @@ M3/M4 播放链路（login / 播放会话 / 清单改写 / 密钥 / 字幕）已
 - ✅ 已完成：浏览器直连地址**运行时下发**（`/api/session` 响应 `delivery_base`：`PLAYER_PUBLIC_DELIVERY_BASE_URL`
   → `NEXT_PUBLIC_DELIVERY_BASE_URL` → `DELIVERY_BASE_URL`）——镜像一次构建跨环境部署、改 env 即生效，不再依赖构建期内联。
 
+### 播放器 SDK（2026-10-13 用户定；权威设计见 [player-sdk-intent.md](./player-sdk-intent.md) / [player-sdk-spec.md](./player-sdk-spec.md)）
+
+播放链路（M3/M4）已跑通，但每个播放端接入方都要重写同一套「login → play → 401/403 恢复 → 会话复用」逻辑（`apps/player` 的 `lib/delivery.ts` 是第一次重写，第二次就会漂移）。新增**播放器 SDK**（`packages/player-sdk`）：TS/Web、零运行时依赖、播放器无关（只输出签名 URL / 元数据 / 事件）——初始化只填 delivery 地址 + 播放账号即可拿到签名主清单 URL；**自动续期 / 重签**（JWT 过期自动重登、会话 / token 过期自动重新 play）与**清晰度切换**（`templates[]` 复用会话换源）由 SDK 治理；四种鉴权模式（用户名口令 / tokenProvider / static JWT / attach 已有 URL）与多账号热切换；零后端改动，P0 纪律不放松（SDK 永不接触 CEK / 分片字节 / 签名密钥）。
+
+- **设计边界（用户 2026-10-13 拍板）**：v1 仅 TS/Web 核心包——不含播放器适配器 / UI 组件、诊断提示系统、进度持久化 / 服务端续播、npm 公开发布（均为演进项）；
+- **实现状态（2026-10-13）**：⏳ 设计定稿、待实现（验收里程碑 S1~S4 见 player-sdk-intent.md「成功标准」）。
+
 ### 非功能目标
 
 - 一次开发、多目标部署：EdgeOne Pages Cloud Functions（Go）、SCF Web 函数（容器）、自托管 Compose

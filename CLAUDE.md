@@ -67,3 +67,4 @@ go -C apps/delivery test ./internal/token -run TestTokenVerify -v   # 单个 Go 
 - **antd v5 × React 19**：`@ant-design/v5-patch-for-react-19` 必须在客户端组件里引入（`src/app/providers.tsx`），放 root layout 不生效。
 - **密钥纪律**：明文 CEK 只存在于转码期与 `/key` 响应瞬间；落库只有 `wrapped_cek` + `iv` + `kid` + `mk_ver`。管理端页面**不提供任何明文密钥的查看 / 导出入口**；用户页面不提供口令 / 哈希入口。
 - **测试**：TS 用 `bun:test`，被测函数多为依赖注入的纯编排（fake store / 注入 deps，不连真库）；Go 用标准 `testing`。写测试时沿用同目录既有风格。
+- **版本号唯一真源**：全仓库版本号只认根 `package.json` 的 `version`，发版只改它；`apps/*` / `packages/*` 的 `package.json` **不得声明 `version`**（admin 曾因此出现「UI 显示 0.1.0、CNB auto_tag 按 0.2.0 打 tag」的双版本）。管理端展示只经 `apps/admin/src/lib/version.ts` 的 `APP_VERSION`（服务端读取后以 prop 下传客户端组件）；新增展示点复用该常量，不得再读任何 `package.json`。守卫测试 `apps/admin/test/version-source.test.ts` 随 `bun test` 执行。

@@ -106,5 +106,6 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可轮换）
 ## 仓库约定
 
 - **生成物入库规则**：`packages/contracts/jsonschema/` 与 `apps/delivery/internal/contracts/` 必须提交；`packages/db/generated/`、`.env`、`.run/`、`packages/db/prisma/*.db` 已忽略。改契约不提交生成物 = CI 失败。
+- **版本号唯一真源**：全仓库版本号只认**根 `package.json` 的 `version`**，发版只改它（CNB `auto_tag` 读的也是它）。`apps/*` / `packages/*` 的 `package.json` **一律不声明 `version`**——历史包袱：admin 曾 `import pkg from "../../package.json"` 取本包版本，于是 UI 显示 0.1.0 而发版 tag 是 0.2.0，同一仓库两个版本号。管理端展示只经 `apps/admin/src/lib/version.ts` 的 `APP_VERSION`（**服务端**读取后以 prop 下传客户端组件，避免整份 JSON 进客户端 bundle）；新增展示点一律复用该常量，**不得再读任何 `package.json`**。静态守卫 `apps/admin/test/version-source.test.ts` 随 `bun test` 执行，违规即失败。
 - 提交规范 conventional commits；v1 不引入 changesets（ADR-0001）。
 - 文档索引：`docs/vod/README.md`（架构图 + ADR 索引 + 术语表）、`intent.md`（目标 / 非目标 / 验收里程碑）、`api.md`（**HTTP API 参考**：管理端 + 分发端全部端点与错误码）、`open-questions.md`（specification 前待关闭项）、`dev-workflow.md`（启动 / 数据库 / 建号 / 排错）、`trial-env.md`（**「启动一个体验环境」Runbook**：MySQL + RustFS 底座 + 三端起全的固定流程）。

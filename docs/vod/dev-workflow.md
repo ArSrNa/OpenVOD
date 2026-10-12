@@ -267,6 +267,7 @@ task contracts            # 契约生成物变更后需入库（契约门禁）
 | 端口被占 / `已是运行状态` | `bun scripts/dev.ts status` 查看，`bun scripts/dev.ts stop` 停止；或换 `ADMIN_PORT` / `DELIVERY_LISTEN` |
 | `bun scripts/dev.ts stop` 执行了，端口仍被占用（status 显示 `pid -`） | 占用者不是本启动器起的进程，典型是 **compose 容器**（`docker ps` 里 `openvod-admin-1` 映射 `0.0.0.0:9000->9000`）：`dev.ts` 只收 `.run/*.pid` 记录的进程组，容器要用 `docker compose stop admin` / `docker compose down`（连 worker 容器一起停）。注意 worker 必须单实例——容器 worker 在跑时别再用 dev 起 worker（两个消费者同抢 `transcode_jobs`），先 `docker compose stop worker` |
 | `bun run --cwd packages/db exec ...` 报 `Script not found "exec"` | 用 `cd packages/db && ./node_modules/.bin/prisma ...` |
+| 管理端显示的版本与发版 tag 不一致（如 UI 显示 0.1.0、tag 却是 0.2.0） | **版本号唯一真源是根 `package.json` 的 `version`**：子包 `package.json` 不得声明 `version`，展示只经 `apps/admin/src/lib/version.ts` 的 `APP_VERSION`（服务端读取后以 prop 下传客户端组件）。静态守卫 `apps/admin/test/version-source.test.ts` 随 `bun test` 执行，违规即失败；约定见 AGENTS.md §仓库约定 |
 
 ## 9. 目录与忽略规则
 

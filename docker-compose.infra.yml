@@ -1,0 +1,66 @@
+# OpenVOD 本地基础设施编排（MySQL + RustFS）——独立新文件，不影响根 docker-compose.yml（admin + worker）
+#
+# 定位：CNB 云原生开发环境 / 任意 Docker 宿主上的开发底座，官方公共镜像即拉即用，无需预构建。
+# 与根编排的隔离：
+#   - 项目名 openvod-infra（根编排为 openvod）：容器 / 网络 / 卷命名互不影响；
+#   - 端口默认避开本机常驻服务：delivery :9000（DELIVERY_LISTEN）、worker http :9001（ADR-0017）。
+#
+# 插值变量来自 --env-file .run/infra.env（scripts/compose-infra.sh 首次 up 自动生成，已 gitignore）。
+# 直接手跑 compose 必须带 --env-file，否则下面的 :? 校验会报缺变量。
+#
+# 用法（推荐封装脚本：自动生成凭据 + 等健康 + 建分发端受限账号 openvod_ro，ADR-0011）：
+#   scripts/compose-infra.sh {up|down|reset|ps|logs [服务]|restart [服务]|env|url}
+name: openvod-infra
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  mysql:
+    image: ${INFRA_MYSQL_IMAGE:-mysql:8.4}
+    environment:
+      MYSQL_ROOT_PASSWORD: ${INFRA_MYSQL_ROOT_PASSWORD:?缺少凭据：先跑 scripts/compose-infra.sh up（生成 .run/infra.env）}
+      MYSQL_DATABASE: openvod
+      MYSQL_USER: openvod
+      MYSQL_PASSWORD: ${INFRA_MYSQL_PASSWORD:?缺少凭据：先跑 scripts/compose-infra.sh up（生成 .run/infra.env）}
+    ports:
+      # 默认只绑宿主回环（CNB 开发容器内 127.0.0.1 即可达）；要对局域网开放改 INFRA_BIND=0.0.0.0
+      - "${INFRA_BIND:-127.0.0.1}:${INFRA_MYSQL_PORT:-3306}:3306"
+    healthcheck:
+      # ping 允许认证前调用：服务可达即 0，与口令无关（官方镜像惯用探法）
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    volumes:
+      - mysql-data:/var/lib/mysql
+    init: true
+    restart: unless-stopped
+    logging: *logging
+
+  rustfs:
+    image: ${INFRA_RUSTFS_IMAGE:-rustfs/rustfs:latest}
+    environment:
+      # S3 兼容对象存储（README「S3存储」）；AK/SK 之后填进管理台 /setup 向导
+      RUSTFS_ACCESS_KEY: ${INFRA_RUSTFS_ACCESS_KEY:?缺少凭据：先跑 scripts/compose-infra.sh up（生成 .run/infra.env）}
+      RUSTFS_SECRET_KEY: ${INFRA_RUSTFS_SECRET_KEY:?缺少凭据：先跑 scripts/compose-infra.sh up（生成 .run/infra.env）}
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
+    ports:
+      # 宿主 9002 → S3 API（容器内固定 9000）；宿主 9003 → Web 控制台（容器内固定 9001）
+      - "${INFRA_BIND:-127.0.0.1}:${INFRA_RUSTFS_API_PORT:-9002}:9000"
+      - "${INFRA_BIND:-127.0.0.1}:${INFRA_RUSTFS_CONSOLE_PORT:-9003}:9001"
+    volumes:
+      - rustfs-data:/data
+    init: true
+    restart: unless-stopped
+    logging: *logging
+
+volumes:
+  mysql-data:
+  rustfs-data:

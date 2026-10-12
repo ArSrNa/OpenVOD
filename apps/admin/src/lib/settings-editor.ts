@@ -67,6 +67,17 @@ function checkEffective(group: SettingsGroup, values: Map<string, string>, env: 
     for (const key of ["s3_endpoint", "s3_bucket", "s3_access_key_id", "s3_secret_access_key"]) {
       if (!get(key)) throw new SettingsError("bad_request", "存储端点、桶、Access Key ID 和 Secret Access Key 不能为空；清除覆盖前请先配置环境变量兜底");
     }
+    // 签名方式组合校验（ADR-0019）：cdn_url_auth 必须配齐加速域名 + 边缘密钥；
+    // custom 提示需先注册提供者（分发端启动 / 刷新时会再校验一次，blob.New 报错保留旧配置）
+    const signMode = get("storage_sign_mode") || "s3_presign";
+    if (signMode === "cdn_url_auth") {
+      if (!get("storage_cdn_base_url")) {
+        throw new SettingsError("bad_request", "cdn_url_auth 模式必须配置存储加速域名（签名 URL 的 host）");
+      }
+      if (!get("storage_cdn_auth_key")) {
+        throw new SettingsError("bad_request", "cdn_url_auth 模式必须配置 CDN 边缘鉴权密钥（与 CDN 控制台一致）");
+      }
+    }
   }
   if (group === "security") {
     for (const key of ["better_auth_secret", "url_sign_key_hex"]) {

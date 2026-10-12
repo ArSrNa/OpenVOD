@@ -93,7 +93,7 @@
 | `POST /api/admin/media/{id}/cover?filename=<name>` | **原始图片字节流**（jpg/png/webp/gif/avif） | `201 {key}` | `400` 空体 / 缺 filename / 非图片；`404` 媒资未入库；`500` |
 | `POST /api/admin/media/{id}/metadata` | —（无 body） | `200 {id, probeKey, summary}`（ffprobe 摘要；`probeKey = metadata/{id}/probe.json`）；**上传完毕后由 upload 接口异步自动触发**（2026-09-30，响应后后台执行），此端点用于**手动重跑**（幂等覆盖） | `404` 媒资 / original 缺失；`500` 缺 ffprobe、预签名失败 |
 | `POST /api/admin/media/{id}/preview-play` | `{template_id?: string}`（`""` = 显式旧布局；缺省 = 自动选择） | `200 {sid, manifest_url, expires_at, template_id, encrypted, browser_cors_ok}`（管理端以预览账号换分发端签名 URL，**不出密钥**） | `501` 未配置预览账号；`502` 分发端不可达；分发端错误码透传（404→404，其余→409） |
-| `POST /api/admin/media/{id}/transcode` | `{template_ids: string[]}`（1..10，去重保序） | `202 {jobs:[{job_id, template_id, template_name, status:"QUEUED"}]}` | `400` zod / 加密但非 HLS；`404` 媒资 / original / 模板缺失；`409` 同媒资同模板已有未终结任务 |
+| `POST /api/admin/media/{id}/transcode` | `{template_ids: string[]}`（1..10，去重保序） | `202 {jobs:[{job_id, template_id, template_name, watermark_id\|null, status:"QUEUED"}]}` | `400` zod / 加密但非 HLS / `keep_original` 模板却关联水印 / 图片水印未上传图；`404` 媒资 / original / 模板 / 水印缺失；`409` 同媒资同模板已有未终结任务 |
 | `DELETE /api/admin/media/{id}/products/{templateId}` | `templateId` = 模板 cuid 或字面量 `legacy` | `200 {deleted, bytes}` | `400` 形状非法；`404` 产物不存在；`409` 该模板有进行中任务 |
 
 #### 🆕 `PATCH /api/admin/media/{id}`（重命名 + 自定义元数据 + 自定义上传时间）
@@ -212,20 +212,51 @@ DELETE /api/admin/categories/cother00000000000000000    # 默认分类
 
 ---
 
-### 1.4 转码模板（ADR-0014）
+### 1.4 转码模板（ADR-0014；水印关联见 spec.md §10 / ADR-0018）
 
 | 端点 | 请求 | 成功响应 | 主要错误 |
 |---|---|---|---|
-| `GET /api/admin/templates` | — | `200 {total, items[]}`（`createdAt` 倒序）；模板 = `{id, name, description\|null, keep_original, encrypt, format:"HLS", params\|null, is_default, created_at, updated_at}` | `500` |
-| `POST /api/admin/templates` | `CreateTranscodeTemplateRequest` | `201 {item}` | `400` zod / 加密但非 HLS；`409` 模板名已存在 |
+| `GET /api/admin/templates` | — | `200 {total, items[]}`（`createdAt` 倒序）；模板 = `{id, name, description\|null, keep_original, encrypt, format:"HLS", params\|null, is_default, watermark_id\|null, created_at, updated_at}` | `500` |
+| `POST /api/admin/templates` | `CreateTranscodeTemplateRequest` | `201 {item}` | `400` zod / 加密但非 HLS / `keep_original` 与 `watermark_id` 并存 / 图片水印未上传图；`404` 水印不存在；`409` 模板名已存在 |
 | `GET /api/admin/templates/{id}` | — | `200 {item}` | `404` |
-| `PATCH /api/admin/templates/{id}` | `UpdateTranscodeTemplateRequest`（partial） | `200 {item}` | `400` zod / 加密-格式非法 / 从「保持原视频」切回转码须同时给 `params`；`404`；`409` 重名 |
+| `PATCH /api/admin/templates/{id}` | `UpdateTranscodeTemplateRequest`（partial，`watermark_id: null` = 解除关联） | `200 {item}` | `400` zod / 加密-格式非法 / 从「保持原视频」切回转码须同时给 `params` / 水印两层校验；`404`；`409` 重名 |
 | `DELETE /api/admin/templates/{id}` | — | `200 {id}` | `404` |
 
 `params`（`TranscodeTemplateParams`）：`codec: libx264|libx265`；`bitrate_kbps`(100..200000) 与 `crf`(0..51) **二选一**；
 `fps?`(1..240)、`preset?`(ultrafast…veryslow)、`audio_bitrate_kbps`(32..320，默认 128)、
-`resolutions`(1..10，`{mode:"fixed",width,height}` 或 `{mode:"adaptive",max_width?,max_height?}`)。
+`resolutions`(1..10，`{mode:"fixed",width,height}` / `{mode:"adaptive",max_width?,max_height?}` /
+`{mode:"source"}` 保持原分辨率——2026-10-05 增：恒取源尺寸、不缩放，是否执行由帧率 / 码率维度判定，spec.md §5.4)。
 `keep_original=true`（只加密流程）时 `params` 落 `NULL`。
+
+`watermark_id`（可选，spec.md §10.4）：关联一个水印模板，转码时由 Worker 烧录进每档画面；
+`keep_original=true` 时恒为 `null`（`-c copy` 不解码，无法叠加画面）。两层校验：
+
+- 模板保存（`templates.ts::assertWatermarkLink`）与任务发起（`transcode-submit.ts`）各校验一次；
+- 拒绝条件一：`keep_original=true && watermark_id != null` → `400`；
+- 拒绝条件二：指向图片型水印但 `image_key` 为空（未上传图）→ `400`。
+
+submit 时水印内容**现读现快照**进 `transcode_jobs.template_snapshot.watermark`——水印参数（锚点 / 偏移 / 透明度 / 混合 / 文字等）的修改对**下一次发起**生效；已入队任务不受水印参数后续变更影响（重启任务同样沿用入队时快照）。唯一例外是图片**字节**：快照只固化 `image_key` / 宽高等元数据，字节在 Worker 执行时按 key 现取——同扩展名换图时未执行的任务会烧**新图**；换扩展名会删除旧键，未执行的任务将失败（键版本化属演进项）。已产出内容永远不受影响（水印已烧进像素）。
+
+---
+
+### 1.4b 水印模板（spec.md §10 / ADR-0018）
+
+| 端点 | 请求 | 成功响应 | 主要错误 |
+|---|---|---|---|
+| `GET /api/admin/watermarks` | — | `200 {total, items[]}`（`createdAt` 倒序）；条目 = `{id, name, description\|null, type, params, image_ext\|null, image_key\|null, image_bytes\|null, image_width\|null, image_height\|null, image_status:"ready"\|"missing", referenced_by, created_at, updated_at}` | `500` |
+| `POST /api/admin/watermarks` | `CreateWatermarkRequest` | `201 {item}` | `400` zod（`params` 至少给宽或高 / 颜色 / 字号 / 偏移越界 / 含控制字符或单引号）；`409` 模板名已存在 |
+| `GET /api/admin/watermarks/{id}` | — | `200 {item}`（+ `referenced_by`） | `404` |
+| `PATCH /api/admin/watermarks/{id}` | `UpdateWatermarkRequest`（partial；`params.type` 不可改） | `200 {item}` | `400` zod / 改类型；`404`；`409` 重名 |
+| `PUT /api/admin/watermarks/{id}/image` | **原始图片字节流**（`application/octet-stream`，≤ 2 MiB） | `200 {item}`（`image_*` 列由 ffprobe 探测回填；同键覆盖式 PUT，扩展名变化时删旧对象） | `400` 空体 / 超限 / 非 png·jpg·webp（**按内容识别**）/ 探测不出宽高 / 文字型无图片资产；`404` |
+| `GET /api/admin/watermarks/{id}/image` | — | `302` → S3 预签名（`STORAGE_CDN_BASE_URL` 替换 origin） | `404` 文字型或图片未上传 |
+| `DELETE /api/admin/watermarks/{id}` | — | `200 {id, removed_objects}` | `404`；`409` 正被 N 个转码模板引用（先解除关联；DB 侧 `SetNull` 兜底） |
+
+`params`（`WatermarkParams`，按 `type` 判别联合，公共字段 `anchor`（九宫格 9 值）/ `offset_x`/`offset_y`（−4096..4096，默认 0）/ `opacity`（0..100，默认 100）/ `blend`（`normal` 默认 | `overlay`））：
+
+- **图片**：`size` = `{mode:"pixels",width?,height?}`（1..7680；两项精确缩放，单项按 `image_width`/`image_height` 等比）或 `{mode:"percent",width?,height?}`（1..100，占画面宽/高百分比）；
+- **文字**：`text`（1..64 字符，trim 后非空，不含控制字符与单引号 `'`，后者是 ffmpeg 约束）、`font`（`sans`/`sans_bold`/`serif`）、`color`（`#RRGGBB`）、`shadow`（`null` 或 `{color, offset_x −100..100, offset_y −100..100}`）、`size` = `{mode:"pixels",size}`（字号 4..512）或 `{mode:"percent",size}`（输出高度百分比 1..100）。
+
+> 图片未上传（`image_status="missing"`）的模板**不可被转码模板关联**。删除水印模板不影响已产出内容；更新水印需重新转码才生效。
 
 ---
 
@@ -281,7 +312,11 @@ DELETE /api/admin/categories/cother00000000000000000    # 默认分类
 分组字段：`playback`（`playback_base_url, jwt_ttl_sec, playback_session_ttl_sec, playback_manifest_ttl_sec,
 playback_subtitle_ttl_sec, cors_origins, delivery_preview_username, delivery_preview_password`）、
 `storage`（`s3_endpoint, s3_region, s3_bucket, s3_access_key_id, s3_secret_access_key, s3_force_path_style,
-storage_root_prefix, storage_cdn_base_url`）、`login`（`oidc_issuer, oidc_client_id, oidc_client_secret`；
+storage_root_prefix, storage_sign_mode, storage_cdn_base_url, storage_cdn_auth_key, storage_cdn_auth_ttl_sec,
+storage_custom_signer`——后四项为资产 URL 签名方式（ADR-0019）：`storage_sign_mode` ∈
+`s3_presign`（默认）| `cdn_url_auth` | `custom`，`storage_cdn_auth_key` 为 secret（MK 封装），
+`storage_cdn_auth_ttl_sec` 60–604800，`storage_custom_signer` 默认 `custom`；`cdn_url_auth` 保存时强制
+校验加速域名与边缘密钥齐备）、`login`（`oidc_issuer, oidc_client_id, oidc_client_secret`；
 登录方式与「重置登录密码」UI 同页维护，密码走 better-auth `/api/auth/change-password`）、
 `security`（`admin_base_url, admin_trusted_origins, admin_session_ttl_sec, url_sign_key_kid, url_sign_key_hex,
 better_auth_secret`）、`worker`（`worker_poll_interval_ms, worker_lease_ms, worker_max_attempts, media_id_length`）。
@@ -434,9 +469,12 @@ ffprobe "$MF" && ffmpeg -i "$MF" -c copy /tmp/out.mp4     # 真播放器视角�
 `subtitle.create` · `subtitle.update` · `subtitle.delete` ·
 `category.create` 🆕 · `category.update` 🆕 · `category.delete` 🆕 ·
 `template.create` · `template.update` · `template.delete` ·
+`watermark.create` 🆕 · `watermark.update` 🆕 · `watermark.image_upload` 🆕 · `watermark.delete` 🆕 ·
 `key.delete` · `key.rotate_mk` · `transcode.stop` · `transcode.restart` ·
 `user.create` · `user.update` · `user.delete` · `user.password_reset` · `user.revoke_sessions` ·
 `settings.update` · `console.login` · `console.login_failed`
+
+> `media.transcode_submit` 的 `detail` 含 `{job_ids, template_ids, watermark_ids}`（`watermark_ids` 为本次提交实际携带水印的任务所关联的水印模板 ID 列表，spec.md §10.7；未关联水印的模板不计入）。
 
 ### 3.3 已知差异与未实现项
 

@@ -9,6 +9,7 @@ import {
   SETTING_KEYS,
   SETTING_SECRET_KEYS,
   SETTING_TTL_LIMITS,
+  STORAGE_SIGN_MODES,
   DEFAULTS,
   MEDIA_ID_CONFIG,
   resolveMediaIdLength,
@@ -181,6 +182,22 @@ const PLAIN_META: Record<string, { env?: string; validate: Validator } | undefin
     return normalized;
   } },
   [SETTING_KEYS.storageCdnBaseUrl]: { env: "STORAGE_CDN_BASE_URL", validate: urlValidator("加速域名") },
+  [SETTING_KEYS.storageSignMode]: {
+    env: "STORAGE_SIGN_MODE",
+    validate: enumValidator("资产 URL 签名方式", [...STORAGE_SIGN_MODES]),
+  },
+  [SETTING_KEYS.storageCdnAuthTtlSec]: {
+    env: "STORAGE_CDN_AUTH_TTL_SEC",
+    validate: intValidator("CDN 鉴权有效期", SETTING_TTL_LIMITS[SETTING_KEYS.storageCdnAuthTtlSec].min, SETTING_TTL_LIMITS[SETTING_KEYS.storageCdnAuthTtlSec].max),
+  },
+  [SETTING_KEYS.storageCustomSigner]: {
+    env: "STORAGE_CUSTOM_SIGNER",
+    validate: (v) => {
+      const raw = v.trim();
+      if (raw && !/^[a-zA-Z0-9_-]{1,64}$/.test(raw)) throw new SettingsError("bad_request", "自定义提供者名只能包含 1–64 位字母、数字、下划线或短横线");
+      return raw;
+    },
+  },
   [SETTING_KEYS.playbackBaseUrl]: { env: "DELIVERY_PUBLIC_BASE_URL", validate: urlValidator("播放域名") },
   [SETTING_KEYS.urlSignKeyKid]: { env: "URL_SIGN_KEY_KID", validate: (v) => {
     const raw = v.trim();
@@ -277,6 +294,11 @@ const SECRET_META: Record<SettingSecretKey, SecretMeta> = {
       if (raw.length < 16) throw new SettingsError("bad_request", "worker 唤醒密钥至少 16 字符");
       return raw;
     },
+  },
+  storage_cdn_auth_key: {
+    env: "STORAGE_CDN_AUTH_KEY",
+    label: "CDN 边缘鉴权密钥",
+    validate: (v) => v.trim(),
   },
 };
 
@@ -409,6 +431,11 @@ export interface StorageSnapshot {
   forcePathStyle: boolean;
   cdnBaseUrl: string;
   rootPrefix: string;
+  /** GET 签名方式（ADR-0019，默认 s3_presign） */
+  signMode: string;
+  cdnAuthKey: string;
+  cdnAuthTtlSec: number;
+  customSigner: string;
   /** 存储四要素（端点 / 桶 / AK / SK）齐全才算配置完成 */
   configured: boolean;
 }
@@ -488,6 +515,10 @@ function buildSettingsSnapshot(rows: Array<{ key: string; value: string }>): Set
       forcePathStyle: get(SETTING_KEYS.s3ForcePathStyle) !== "false",
       cdnBaseUrl: get(SETTING_KEYS.storageCdnBaseUrl).replace(/\/+$/, ""),
       rootPrefix: get(SETTING_KEYS.storageRootPrefix),
+      signMode: get(SETTING_KEYS.storageSignMode) || "s3_presign",
+      cdnAuthKey: getSecret("storage_cdn_auth_key"),
+      cdnAuthTtlSec: toInt(get(SETTING_KEYS.storageCdnAuthTtlSec), 3600),
+      customSigner: get(SETTING_KEYS.storageCustomSigner) || "custom",
       configured: Boolean(s3Endpoint && s3Bucket && s3Ak && s3Sk),
     },
     playbackBaseUrl: get(SETTING_KEYS.playbackBaseUrl).replace(/\/+$/, ""),

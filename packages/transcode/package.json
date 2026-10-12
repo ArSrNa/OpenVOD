@@ -8,6 +8,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@openvod/contracts": "workspace:*"
+    "@openvod/contracts": "workspace:*",
+    "@openvod/shared": "workspace:*"
   }
 }

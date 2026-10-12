@@ -290,5 +290,7 @@ export function buildMasterPlaylist(entries: LadderEntry[], opts: { mediaId: str
 }
 
 // 模板 → argv 编译器（ADR-0014；compileTemplate / compileKeepOriginal / validateTemplateParams）。
+// 水印滤镜链编译器（spec.md §10.4 / ADR-0018）。
 // 必须在此 re-export：包的 exports 只暴露 "."，不 re-export 则消费者（Worker / 管理端）无法引用。
 export * from "./template";
+export * from "./watermark";

@@ -4,6 +4,8 @@
 // ADR-0015：新增 createStorageFromConfig —— 配置可来自 system_settings（首次启动向导写入），
 // env 只作兜底；createStorageFromEnv 保留为 env 兜底路径。
 import { createStorage, type StorageAdapter, type StorageConfig } from "./index";
+import { type SignMode } from "./signer";
+import { STORAGE_SIGN_MODES } from "@openvod/shared";
 
 /** 显式配置 → StorageAdapter（ADR-0015：admin / worker 从 system_settings 解析后传入） */
 export function createStorageFromConfig(cfg: Partial<StorageConfig>): StorageAdapter {
@@ -17,10 +19,22 @@ export function createStorageFromConfig(cfg: Partial<StorageConfig>): StorageAda
     // COS（myqcloud）只接受 virtual-hosted-style（<bucket>.cos.<region>.myqcloud.com），
     // 必须显式 force_path_style=false；MinIO 保持默认 true
     forcePathStyle: cfg.forcePathStyle ?? true,
-    // 加速域名（ADR-0005 统一加速域名方案）：GET 预签名 origin 替换（管理端预览 / presign 分片）
+    // 加速域名（ADR-0005 / ADR-0019）：s3_presign 下替换预签名 origin；cdn_url_auth 下为签名 host
     cdnBaseUrl: cfg.cdnBaseUrl || undefined,
     rootPrefix: cfg.rootPrefix ?? "",
+    // GET 签名方式（ADR-0019）：s3_presign（默认，现状）/ cdn_url_auth / custom
+    signMode: normalizeSignMode(cfg.signMode),
+    cdnAuthKey: cfg.cdnAuthKey || undefined,
+    cdnAuthTtlSec: cfg.cdnAuthTtlSec,
+    customSignerName: cfg.customSignerName || undefined,
   });
+}
+
+function normalizeSignMode(mode: Partial<StorageConfig>["signMode"]): SignMode {
+  const raw = (mode ?? "").trim();
+  if (!raw) return "s3_presign";
+  if ((STORAGE_SIGN_MODES as readonly string[]).includes(raw)) return raw as SignMode;
+  throw new Error(`storage_sign_mode 非法：${raw}（可选 ${STORAGE_SIGN_MODES.join(" | ")}，ADR-0019）`);
 }
 
 /** .env STORAGE_* / S3_* → StorageAdapter（env 兜底路径；DB 设置优先时勿用） */
@@ -34,5 +48,9 @@ export function createStorageFromEnv(env: NodeJS.ProcessEnv = process.env): Stor
     forcePathStyle: (env.S3_FORCE_PATH_STYLE ?? "true").trim().toLowerCase() !== "false",
     cdnBaseUrl: env.STORAGE_CDN_BASE_URL || "",
     rootPrefix: env.STORAGE_ROOT_PREFIX ?? "",
+    signMode: (env.STORAGE_SIGN_MODE || "") as SignMode,
+    cdnAuthKey: env.STORAGE_CDN_AUTH_KEY || "",
+    cdnAuthTtlSec: env.STORAGE_CDN_AUTH_TTL_SEC ? Number(env.STORAGE_CDN_AUTH_TTL_SEC) : undefined,
+    customSignerName: env.STORAGE_CUSTOM_SIGNER || "",
   });
 }

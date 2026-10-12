@@ -45,6 +45,7 @@ flowchart LR
 6. [dev-workflow.md](./dev-workflow.md) — 本地开发环境与工作流（启动、数据库、建号、排错）
 7. [deploy-delivery.md](./deploy-delivery.md) — 分发端部署（SCF 容器 / EdgeOne Cloud Functions 双目标）
 8. [deploy-apps.md](./deploy-apps.md) — 管理端与 Worker 镜像（构建上下文、Prisma 生成、硬约束）
+9. [trial-env.md](./trial-env.md) — 体验环境启动 Runbook（用户对 Agent 说「启动一个体验环境」时执行：MySQL + RustFS 底座 + 三端起全）
 
 ## 决策索引
 
@@ -67,6 +68,8 @@ flowchart LR
 | [ADR-0015](./decisions/0015-env-vs-admin-settings.md) | 环境变量与系统设置的边界（env 最小集 + 启动向导 + MK 封装入库） | 已接受（同日修订） |
 | [ADR-0016](./decisions/0016-media-categories-and-custom-metadata.md) | 媒资分类、描述与标签（自定义元数据投影 + 分发端公开白名单） | 已接受 |
 | [ADR-0017](./decisions/0017-worker-deployment-modes.md) | Worker 部署双模式（常驻轮询 / HTTP 门铃）与 serverless 数据库适配 | 已接受 |
+| [ADR-0018](./decisions/0018-watermark-templates.md) | 水印管理（模板落库 + watermark/ 分区 + ffmpeg 转码烧录） | 已接受 |
+| [ADR-0019](./decisions/0019-signing-mode-pluggable.md) | 资产 URL 签名方式可插拔（S3 预签名 / CDN URL 鉴权 + 自定义提供者） | 已接受（设计定稿，未实现） |
 
 状态语义：**已接受** = 用户已拍板，或沿用仓库既有决策（开发镜像 / 前期文档）；**提议（待复核）** = 本文档给出的推荐方案，specification 前需确认。
 

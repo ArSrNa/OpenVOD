@@ -12,11 +12,21 @@
 FROM oven/bun:1.4-debian
 
 ENV TZ=Asia/Shanghai
-# ffmpeg / ffprobe 是启动自检的必需项（缺失 worker 直接 exit 1）；shaka-packager / bento4 属 CENC 演进项，镜像不装
+# ffmpeg / ffprobe 是启动自检的必需项（缺失 worker 直接 exit 1）；shaka-packager / bento4 属 CENC 演进项，镜像不装。
+# fonts-noto-cjk 是文字水印的硬依赖（spec.md §10.6 / ADR-0018）：drawtext 的 fontfile 取
+# /usr/share/fonts/opentype/noto/NotoSans{,Bold}-CJK-Regular.ttc 与 NotoSerifCJK-Regular.ttc
+# （键 → fontfile 映射见 @openvod/transcode WATERMARK_FONT_FILES，枚举见 @openvod/shared）。
+# 换字体需同步改映射与 WATERMARK_FONT_DIR，缺字体会让文字水印任务失败。
 RUN apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      ffmpeg ca-certificates tzdata procps \
- && rm -rf /var/lib/apt/lists/*
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      ffmpeg ca-certificates tzdata procps fonts-noto-cjk \
+    && fc-cache -f \
+    && rm -rf /var/lib/apt/lists/*
+
+# 字体存在性自检：构建期就暴露「忘装字体」，而不是等到线上转码才失败
+RUN test -f /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc \
+    && test -f /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc \
+    && test -f /usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc
 
 WORKDIR /app
 COPY . .

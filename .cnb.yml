@@ -142,3 +142,32 @@ $:
           script:
             - cd apps/delivery
             - docker build -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:latest -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:${CNB_BRANCH} . --push
+
+  # 自动生成 Tag（Tag 列表页「自动生成 Tag」按钮触发；auto_tag 只能配置在 $ 兜底分支下）。
+  # tag 名取自根 package.json 的 version（仓库 tag 惯例不带 v 前缀，如 0.1.0 / 0.2.0），
+  # 版本唯一真源是 package.json，不走 git-auto-tag 插件的提交语义推导（该插件不支持读 package.json）。
+  # tag 推送成功后，上方 tag_push 流水线即可用 ${CNB_BRANCH}（即 tag 名）作为运行镜像标签。
+  auto_tag:
+    - name: 按 package.json 版本创建 Tag
+      docker:
+        image: node:22 # 仅需 node（读 JSON）+ git，比 dev 镜像轻量
+      stages:
+        - name: 读取并校验版本号
+          script: |
+            VERSION=$(node -p "require('./package.json').version")
+            echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' \
+              || { echo "package.json version 不是合法语义化版本：$VERSION"; exit 1; }
+            echo "##[set-output VERSION=$VERSION]"
+          exports:
+            VERSION: PKG_VERSION
+        - name: 校验远程 tag 不存在
+          script: |
+            REMOTE="https://$CNB_TOKEN_USER_NAME:$CNB_TOKEN@${CNB_REPO_URL_HTTPS#https://}"
+            if git ls-remote --tags "$REMOTE" "refs/tags/$PKG_VERSION" | grep -q "$PKG_VERSION"; then
+              echo "tag $PKG_VERSION 已存在，请先升级根 package.json 的 version"; exit 1
+            fi
+        - name: 创建并推送 tag
+          script: |
+            REMOTE="https://$CNB_TOKEN_USER_NAME:$CNB_TOKEN@${CNB_REPO_URL_HTTPS#https://}"
+            git tag -a "$PKG_VERSION" -m "Release $PKG_VERSION"
+            git push "$REMOTE" "refs/tags/$PKG_VERSION"

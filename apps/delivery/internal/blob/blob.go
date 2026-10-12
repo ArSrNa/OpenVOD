@@ -1,7 +1,8 @@
 // Package blob 对象存储访问（ADR-0005）：
-//   - s3（唯一驱动，2026-09-22 修订移除 local）：清单 GetObject 读出后改写；分片输出**预签名 GET URL 直出**
-//     （私有桶，字节不经过分发端，P0）；可经 STORAGE_CDN_BASE_URL 把预签名 origin 替换为加速域名
-//     （回源 COS + Host 透传才可验签）。
+//   - s3（唯一驱动，2026-09-22 修订移除 local）：清单 GetObject 读出后改写；分片输出**签名 GET URL 直出**
+//     （私有桶，字节不经过分发端，P0）；签名方式由 storage_sign_mode 配置（ADR-0019）：
+//     s3_presign（默认，可经 STORAGE_CDN_BASE_URL 把预签名 origin 替换为加速域名）/
+//     cdn_url_auth（EO Token 鉴权，CDN 私有回源）/ custom（编译期注册，custom_signer.go）。
 package blob
 
 import (
@@ -24,15 +25,25 @@ import (
 type Store interface {
 	/** Get 读整个对象（清单改写用；清单远小于 6MB，spec.md 约束） */
 	Get(ctx context.Context, key string) ([]byte, error)
-	/** PresignGet 预签名 GET（分片 / 海报直出，TTL 与播放会话对齐） */
+	/** PresignGet 签名 GET URL（分片 / 海报直出；ADR-0019：实现随 storage_sign_mode） */
 	PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error)
 	/** ListPrefixes 列举一级子前缀（产物探测：proceed/{id}/ → 各模板子树） */
 	ListPrefixes(ctx context.Context, prefix string) ([]string, error)
 }
 
-// New 构造 S3 兼容存储（COS / MinIO 等）
+// New 构造 S3 兼容存储（COS / MinIO 等）；GET 签名按 cfg.SignMode 装配（ADR-0019）：
+// s3_presign（默认）/ cdn_url_auth / custom（须先在 custom_signer.go 注册）。
 func New(cfg config.StorageConfig) (Store, error) {
-	return newS3(cfg)
+	store, err := newS3(cfg)
+	if err != nil {
+		return nil, err
+	}
+	signer, err := NewURLSigner(cfg, store)
+	if err != nil {
+		return nil, err
+	}
+	store.signer = signer
+	return store, nil
 }
 
 // fullKey 拼接 root 前缀（业务键永远不含 root，spec.md §1.1）
@@ -48,9 +59,12 @@ func fullKey(rootPrefix, key string) string {
 type s3Store struct {
 	prefix    string
 	bucket    string
-	cdnBase   string // 加速域名（STORAGE_CDN_BASE_URL）：GET 预签名 origin 替换；空 = 原样
+	cdnBase   string // 加速域名（STORAGE_CDN_BASE_URL）：s3_presign 模式下预签名 origin 替换；空 = 原样
 	client    *s3.Client
 	presigner *s3.PresignClient
+	// signer GET 签名提供者（ADR-0019）：New() 装配后非 nil；直接 newS3（不经 New）时为 nil，
+	// 此时 PresignGet 回退 s3_presign 行为（测试便利）
+	signer URLSigner
 }
 
 func newS3(cfg config.StorageConfig) (*s3Store, error) {
@@ -95,7 +109,17 @@ func (s *s3Store) Get(ctx context.Context, key string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(out.Body, 8<<20)) // 6MB 上限之外再留余量，防误读大对象
 }
 
+// PresignGet 签名 GET URL：委托按 sign mode 装配的 signer（ADR-0019）；
+// signer 未装配（绕过 New 的测试路径）时保持 s3_presign 行为
 func (s *s3Store) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	if s.signer != nil {
+		return s.signer.Sign(ctx, key, ttl)
+	}
+	return s.presignGetDirect(ctx, key, ttl)
+}
+
+// presignGetDirect s3_presign 后端：SigV4 预签名 GET + 可选加速域名 origin 替换（ADR-0005）
+func (s *s3Store) presignGetDirect(ctx context.Context, key string, ttl time.Duration) (string, error) {
 	req, err := s.presigner.PresignGetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(fullKey(s.prefix, key)),
@@ -104,6 +128,11 @@ func (s *s3Store) PresignGet(ctx context.Context, key string, ttl time.Duration)
 		return "", fmt.Errorf("S3 预签名失败（%s）: %w", key, err)
 	}
 	return withCdnOrigin(req.URL, s.cdnBase), nil
+}
+
+// Sign 实现 URLSigner：s3Store 自身即 s3_presign 后端（New 装配时传给 NewURLSigner）
+func (s *s3Store) Sign(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	return s.presignGetDirect(ctx, key, ttl)
 }
 
 func (s *s3Store) ListPrefixes(ctx context.Context, prefix string) ([]string, error) {

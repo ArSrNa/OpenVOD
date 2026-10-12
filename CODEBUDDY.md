@@ -5,7 +5,7 @@ This file provides guidance to CodeBuddy when working with code in this reposito
 
 OpenVOD：自建云点播系统（媒资 → 转码加密 → 元数据 / 字幕 → 鉴权分发播放）。Bun workspaces monorepo，双语言双端架构，部署目标为腾讯云 EdgeOne Pages / SCF（Docker），保留自托管 Compose 退路。
 
-本仓库是 **ADR 驱动**开发：`docs/vod/decisions/0001~0013` 是权威决策源，代码注释普遍以 `ADR-xxxx` 引用；改动设计前先读对应 ADR，决策变化时同步更新 ADR。排错先查 `docs/vod/dev-workflow.md §8`（`Module not found: '../generated/sqlite'`、`P2021`、`P3014` 等高频坑均有条目）。
+本仓库是 **ADR 驱动**开发：`docs/vod/decisions/0001~0019` 是权威决策源，代码注释普遍以 `ADR-xxxx` 引用；改动设计前先读对应 ADR，决策变化时同步更新 ADR。排错先查 `docs/vod/dev-workflow.md §8`（`Module not found: '../generated/sqlite'`、`P2021`、`P3014`、CDN 陈旧缓存等高频坑均有条目）。
 
 ## 常用命令
 
@@ -21,12 +21,13 @@ OpenVOD：自建云点播系统（媒资 → 转码加密 → 元数据 / 字幕
 | `task db:parity` | 校验两份 Prisma schema 的 enum/model 段逐字一致（CI 门禁） |
 | `task contracts` | zod → JSON Schema → Go struct（quicktype）。生成物**必须入库**，CI 用 `bun run check:contracts-go` diff 门禁 |
 | `task vectors` | 生成 TS/Go 加密互通测试向量；未生成时两端互通测试会 skip |
-| `bun scripts/dev.ts` | 开发启动器（TS，取代旧 `./start*.sh`）：交互式勾选服务（admin / delivery / worker）与运行方式（前台调试 / 后台常驻），端口跟随 `.env` 的 `ADMIN_PORT` / `DELIVERY_LISTEN` |
+| `bun scripts/dev.ts` | 开发启动器（TS，取代旧 `./start*.sh`）：交互式勾选服务（admin / delivery / worker）与运行方式（前台调试 / 后台常驻），端口跟随 env 文件的 `ADMIN_PORT` / `DELIVERY_LISTEN`（默认根 `.env`，`--env-file <路径>` 可指定替代文件，指定后不读根 `.env`） |
 | `bun scripts/dev.ts all --background` | 后台一键启动全部（等价旧 `./start.sh`），含 **worker（转码队列消费者，必须一起跑）**；子命令 `stop` / `status` / `logs <服务>`；pid 与日志在 `.run/`（worker 无端口，用 pid 判定存活，`setsid` 独立进程组整组收） |
 | `bun scripts/dev.ts admin` | 前台管理端调试。**会自动一并启动 Worker**（后台，日志 `.run/worker.log`），退出时一并收掉；已在跑则沿用不动它 |
 | `bun scripts/dev.ts delivery` | 前台分发端调试（自动增量 `go build` 到 `.run/delivery`，`task dev:delivery` 同源） |
 | `bun scripts/dev.ts worker` | 前台单跑转码 Worker（观察认领 / 转码日志用） |
 | `task dev:worker` | 转码 Worker（Bun `--watch`，需 ffmpeg/ffprobe，缺失直接退出） |
+| `sh scripts/compose-infra.sh up` | **本地体验底座**（MySQL + RustFS 容器，编排 `docker-compose.infra.yml`，项目名 `openvod-infra`，与根编排互不影响）：up 自动生成凭据 `.run/infra.env`、等 mysql 健康、建分发端受限账号 `openvod_ro`（ADR-0011）；另有 `down` / `reset`（删卷清数据）/ `ps` / `logs` / `init-env`（生成 `.env.trial`，**不动根 .env**）/ `env`（打印连接串）/ `url`。三端启动用 `bun scripts/dev.ts --env-file .env.trial ...`。**用户说「启动一个体验环境」时，按 `docs/vod/trial-env.md` 的 Runbook 执行** |
 | `task test` | `bun test` + `go -C apps/delivery test ./...` |
 | `bun test packages/crypto/test/interop.test.ts` | 运行单个 TS 测试文件；`bun test -t "用例名"` 按名称过滤 |
 | `go -C apps/delivery test ./internal/token -run TestTokenVerify -v` | 运行单个 Go 测试 |
@@ -70,6 +71,7 @@ OpenVOD：自建云点播系统（媒资 → 转码加密 → 元数据 / 字幕
 - 媒资分类为独立表 `media_categories`（**无限层级**邻接表，`media.category_id` 外键 `SetNull`，删除分类只把媒资迁入默认分类、不删媒资）；**系统默认分类「其他」**（`is_system`，未设置分类的媒资默认归入：上传即落库 / 留空 =「其他」/ 读取空值回退 / 不可删除）；「分类 / 描述 / 标签」构成 v1 **自定义元数据**：投影进 `media.custom_data`（稀疏，含分类 name/path 快照）+ 导出 `metadata/{id}/custom.json`，分发端 `custom` 按公开白名单下发（ADR-0016 / spec.md §8）。
 - Go 侧不用 Prisma：`database/sql + sqlx` 只读读模型 + 播放会话写入，靠集成测试对齐表结构。
 - 任务队列不引入 Redis：MySQL `FOR UPDATE SKIP LOCKED` / SQLite CAS 认领，带 `lease_until` 崩溃重派（ADR-0004/0008）。
+- 水印模板为独立表 `watermark_templates`（图片 / 文字两类，图片资产落 `watermark/{模板id}.{ext}` 第五分区）；`transcode_templates.watermark_id` 可空外键（`SetNull`，应用层引用检查在前）。水印**只经任务快照**进 Worker（`template_snapshot.watermark`），模板 / 图片变更不影响已入队任务；`keep_original`（`-c copy`）与水印互斥（模板保存 + 任务发起两层校验）。烧录由 `packages/transcode/src/watermark.ts` 的纯函数编译为 ffmpeg 滤镜链（ADR-0018 / spec.md §10）。
 
 ### 两套鉴权体系（勿混用）
 
@@ -98,11 +100,11 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可轮换）
 ### 当前实现状态（scaffold 骨架）
 
 - `apps/delivery` 播放链路（M3）已实现：`internal/{config,contracts,server,token,auth,blob,mk,playback,store}` 与装配包 `app`——login（bcrypt + ES256 JWT）、media 列表/详情、play（会话幂等 / 并发上限）、主 + 子清单改写、`/key`、分片 S3 预签名直出、字幕下发（`play` 附 typ=v 签名 URL；`.vtt` 按 `storage_key` 代理输出 `no-store`，spec.md §7.5）、`custom` 自定义元数据公开白名单（`internal/server/custom.go`：分类 / 描述 / 标签，spec.md §8.4）。未覆盖项见 `docs/vod/spec.md §6.6`。
-- `apps/worker/src/index.ts` 的转码执行链已实现（ADR-0008：认领 → ffprobe → key_info → 转码 → 上传 → 写 `hls_keys`）。
-- `apps/admin` 的 `/api/auth/*`（better-auth）、`/healthz`、登录页与建号脚本可用；`/api/admin/*` 业务端点按里程碑逐条落地——已实现：媒资（上传 / 列表 / 详情 / 重命名 + **自定义元数据字段更新**（描述 / 标签 / 分类）/ 删除 / 预览 / 封面 / 元数据 / 产物 / 转码发起）、`/api/admin/categories`（分类 CRUD，无限层级，spec.md §8）、`/api/admin/templates`、`/api/admin/keys`（含 MK 轮换）、`/api/admin/jobs`（列表 + SSE + 停止 / 重启）、`/api/admin/stats`、`/api/admin/users`（播放端用户 CRUD + 重置口令 + 吊销会话，spec.md §2.1.1）、`/api/admin/media/{id}/subtitles`（字幕轨道 CRUD + 覆盖文本，spec.md §7）；其余路径仍由 `/api/admin/[...path]` 会话守卫后返回 501。
+- `apps/worker/src/index.ts` 的转码执行链已实现（ADR-0008：认领 → ffprobe → key_info → 转码 → 上传 → 写 `hls_keys`）；**水印烧录已实现**（ADR-0018 / spec.md §10.4：读 `template_snapshot.watermark` → 图片型按 `image_key` 预签名取图 → `packages/transcode` 编译滤镜链，逐档挂在 scale 之后、编码切片之前；启动自检水印字体）。
+- `apps/admin` 的 `/api/auth/*`（better-auth）、`/healthz`、登录页与建号脚本可用；`/api/admin/*` 业务端点按里程碑逐条落地——已实现：媒资（上传 / 列表 / 详情 / 重命名 + **自定义元数据字段更新**（描述 / 标签 / 分类）/ 删除 / 预览 / 封面 / 元数据 / 产物 / 转码发起）、`/api/admin/categories`（分类 CRUD，无限层级，spec.md §8）、`/api/admin/templates`（含可选 `watermark_id` 关联 + 两层校验）、`/api/admin/watermarks`（水印模板 CRUD + 图片上传 / 预览 + `referenced_by` + 删除 409，spec.md §10）、`/api/admin/keys`（含 MK 轮换）、`/api/admin/jobs`（列表 + SSE + 停止 / 重启）、`/api/admin/stats`、`/api/admin/users`（播放端用户 CRUD + 重置口令 + 吊销会话，spec.md §2.1.1）、`/api/admin/media/{id}/subtitles`（字幕轨道 CRUD + 覆盖文本，spec.md §7）；其余路径仍由 `/api/admin/[...path]` 会话守卫后返回 501。
 
 ## 仓库约定
 
 - **生成物入库规则**：`packages/contracts/jsonschema/` 与 `apps/delivery/internal/contracts/` 必须提交；`packages/db/generated/`、`.env`、`.run/`、`packages/db/prisma/*.db` 已忽略。改契约不提交生成物 = CI 失败。
 - 提交规范 conventional commits；v1 不引入 changesets（ADR-0001）。
-- 文档索引：`docs/vod/README.md`（架构图 + ADR 索引 + 术语表）、`intent.md`（目标 / 非目标 / 验收里程碑）、`api.md`（**HTTP API 参考**：管理端 + 分发端全部端点与错误码）、`open-questions.md`（specification 前待关闭项）、`dev-workflow.md`（启动 / 数据库 / 建号 / 排错）。
+- 文档索引：`docs/vod/README.md`（架构图 + ADR 索引 + 术语表）、`intent.md`（目标 / 非目标 / 验收里程碑）、`api.md`（**HTTP API 参考**：管理端 + 分发端全部端点与错误码）、`open-questions.md`（specification 前待关闭项）、`dev-workflow.md`（启动 / 数据库 / 建号 / 排错）、`trial-env.md`（**「启动一个体验环境」Runbook**：MySQL + RustFS 底座 + 三端起全的固定流程）。

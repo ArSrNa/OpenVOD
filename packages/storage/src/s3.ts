@@ -13,6 +13,7 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { Readable } from "node:stream";
 import type { StorageAdapter, StorageObject, StatResult } from "./index";
 import { withRootPrefix } from "./prefix";
+import { createUrlSigner, type SignMode, type UrlSigner } from "./signer";
 
 export interface S3Config {
   endpoint: string; // .env: S3_ENDPOINT（COS: https://cos.<region>.myqcloud.com）
@@ -22,15 +23,27 @@ export interface S3Config {
   secretAccessKey: string;
   /** 全局 root 前缀（.env: STORAGE_ROOT_PREFIX，spec.md §1.1）；空 = 桶顶层 */
   rootPrefix?: string;
-  /** CDN 加速域名（.env: STORAGE_CDN_BASE_URL）——**只替换 GET 预签名 URL 的 origin**（管理端预览 302 /
-   *  presign 分片直出）；上传预签名（presignPut）恒走存储端点。前提：CDN 回源 COS 且 Host 透传/改写为桶端点，
-   *  SigV4 签名覆盖 Host，域名替换后源站才能验签通过（ADR-0005 统一加速域名方案） */
+  /** CDN 加速域名（.env: STORAGE_CDN_BASE_URL）——语义随 signMode（ADR-0019）：
+   *  s3_presign（默认）下**只替换 GET 预签名 URL 的 origin**（管理端预览 302 / presign 分片直出）；
+   *  cdn_url_auth 下为签名 URL 的 host。上传预签名（presignPut）恒走存储端点。
+   *  s3_presign 前提：CDN 回源 COS 且 Host 透传/改写为桶端点，SigV4 签名覆盖 Host，
+   *  域名替换后源站才能验签通过（ADR-0005 统一加速域名方案） */
   cdnBaseUrl?: string;
   forcePathStyle?: boolean; // MinIO: true
+  /** GET 签名方式（.env: STORAGE_SIGN_MODE，ADR-0019）：默认 s3_presign（现状） */
+  signMode?: SignMode;
+  /** CDN 边缘鉴权密钥（.env: STORAGE_CDN_AUTH_KEY；cdn_url_auth 必填，与 CDN 控制台一致） */
+  cdnAuthKey?: string;
+  /** cdn_url_auth 的对齐窗口秒数（.env: STORAGE_CDN_AUTH_TTL_SEC，默认 3600） */
+  cdnAuthTtlSec?: number;
+  /** custom 模式的提供者名（.env: STORAGE_CUSTOM_SIGNER，默认 "custom"） */
+  customSignerName?: string;
 }
 
 export class S3Adapter implements StorageAdapter {
   private client: S3Client;
+  /** GET 签名提供者（ADR-0019）：按 signMode 装配；presignGet 全量走此通道 */
+  private getSigner: UrlSigner;
 
   constructor(private cfg: S3Config) {
     this.client = new S3Client({
@@ -41,6 +54,14 @@ export class S3Adapter implements StorageAdapter {
         secretAccessKey: cfg.secretAccessKey,
       },
       forcePathStyle: cfg.forcePathStyle ?? true,
+    });
+    this.getSigner = createUrlSigner({
+      signMode: cfg.signMode ?? "s3_presign",
+      s3Presign: (key, ttlSec) => this.presignGetDirect(key, ttlSec),
+      cdnBaseUrl: cfg.cdnBaseUrl,
+      cdnAuthKey: cfg.cdnAuthKey,
+      cdnAuthTtlSec: cfg.cdnAuthTtlSec,
+      customSignerName: cfg.customSignerName,
     });
   }
 
@@ -138,7 +159,13 @@ export class S3Adapter implements StorageAdapter {
     );
   }
 
+  /** GET 签名 URL（ADR-0019）：委托按 signMode 装配的 UrlSigner（默认 s3_presign 行为不变） */
   async presignGet(key: string, ttlSec: number): Promise<string> {
+    return this.getSigner.sign(key, ttlSec);
+  }
+
+  /** s3_presign 后端：SigV4 预签名 GET + 可选加速域名 origin 替换（ADR-0005 现状行为） */
+  private async presignGetDirect(key: string, ttlSec: number): Promise<string> {
     const signed = await getSignedUrl(
       this.client,
       new GetObjectCommand({ Bucket: this.cfg.bucket, Key: this.fullKey(key) }),

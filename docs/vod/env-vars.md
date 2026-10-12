@@ -96,7 +96,11 @@ STORAGE_CDN_BASE_URL=""               # 加速域名（仅替换 GET 预签名 U
 | `S3_ACCESS_KEY_ID` | **是** | 空 | 访问密钥 ID |
 | `S3_SECRET_ACCESS_KEY` | **是** | 空 | 访问密钥 |
 | `S3_FORCE_PATH_STYLE` | 否 | `true` | 寻址风格。**腾讯云 COS 必须显式 `false`**（virtual-hosted-style）；MinIO 保持 `true` |
-| `STORAGE_CDN_BASE_URL` | 否 | 空 | 对象存储加速域名（ADR-0005），仅替换 GET 预签名 URL 的 origin |
+| `STORAGE_CDN_BASE_URL` | 否 | 空 | 对象存储加速域名（ADR-0005 / ADR-0019）：`s3_presign` 模式仅替换 GET 预签名 URL 的 origin；`cdn_url_auth` 模式为签名 URL 的 host |
+| `STORAGE_SIGN_MODE` | 否 | `s3_presign` | GET 签名方式：`s3_presign`（S3 SigV4 预签名）\| `cdn_url_auth`（EO Token 鉴权方式 A，CDN 私有回源）\| `custom`（编译期注册的自定义提供者）。✅ **已实现（ADR-0019 / spec §6.7）** |
+| `STORAGE_CDN_AUTH_KEY` | 否 | 空 | CDN 边缘鉴权密钥（`cdn_url_auth` 必填；与 CDN 控制台同款密钥双侧一致；system_settings 中 MK 封装，env 兜底） |
+| `STORAGE_CDN_AUTH_TTL_SEC` | 否 | `3600` | CDN 鉴权窗口（timestamp 按窗口对齐 = 窗口内 URL 稳定缓存友好；与 CDN 控制台「有效时长」一致） |
+| `STORAGE_CUSTOM_SIGNER` | 否 | `custom` | `custom` 模式的提供者注册名（TS `registerUrlSigner` / Go `RegisterURLSigner`；实现入口 `packages/storage/src/custom-signer.ts` 与 `apps/delivery/internal/blob/custom_signer.go`） |
 
 > delivery **不读** `DATABASE_URL` / `DB_PROVIDER` / `BETTER_AUTH_SECRET`——它走独立的 `DELIVERY_DATABASE_URL`。
 > 部署环境变量清单另见 `docs/vod/deploy-delivery.md`。
@@ -169,7 +173,11 @@ STORAGE_CDN_BASE_URL=""               # 加速域名（可选）
 | `S3_ACCESS_KEY_ID` | **是** | 空 | 访问密钥 ID |
 | `S3_SECRET_ACCESS_KEY` | **是** | 空 | 访问密钥 |
 | `S3_FORCE_PATH_STYLE` | 否 | `true` | 同 delivery；COS 需 `false` |
-| `STORAGE_CDN_BASE_URL` | 否 | 空 | 加速域名（GET 预签名 origin 替换） |
+| `STORAGE_CDN_BASE_URL` | 否 | 空 | 加速域名（签名 origin 替换 / cdn_url_auth 签名 host） |
+| `STORAGE_SIGN_MODE` | 否 | `s3_presign` | 同 delivery（Worker 取源片 / 水印图与播放分片同一签名形态，ADR-0019） |
+| `STORAGE_CDN_AUTH_KEY` | 否 | 空 | 同 delivery（system_settings 中 MK 封装，env 兜底） |
+| `STORAGE_CDN_AUTH_TTL_SEC` | 否 | `3600` | 同 delivery |
+| `STORAGE_CUSTOM_SIGNER` | 否 | `custom` | 同 delivery（Worker 侧经 packages/storage 注册表路由） |
 
 > **运行环境依赖（非环境变量）**：worker 启动自检 `ffmpeg` / `ffprobe`，缺失任一直接 `exit 1`。
 > **硬约束**：worker 单实例（同一媒资任务必须串行，加密任务尤其如此，ADR-0006 §4.2）；禁止上任何函数（P0）。
@@ -259,7 +267,11 @@ DELIVERY_PUBLIC_BASE_URL=""                      # /api/admin/settings 回退提
 | `S3_ACCESS_KEY_ID` | **是** | 空 | 访问密钥 ID |
 | `S3_SECRET_ACCESS_KEY` | **是** | 空 | 访问密钥 |
 | `S3_FORCE_PATH_STYLE` | 否 | `true` | 同 delivery；COS 需 `false` |
-| `STORAGE_CDN_BASE_URL` | 否 | 空 | 加速域名（原视频 / 封面预览 302、presign 分片 origin 替换） |
+| `STORAGE_CDN_BASE_URL` | 否 | 空 | 加速域名（原视频 / 封面预览 302、presign 分片 origin 替换；cdn_url_auth 下为签名 host） |
+| `STORAGE_SIGN_MODE` | 否 | `s3_presign` | 同 delivery（管理端 302 / probe 读取同一签名形态，ADR-0019） |
+| `STORAGE_CDN_AUTH_KEY` | 否 | 空 | 同 delivery（system_settings 中 MK 封装，env 兜底） |
+| `STORAGE_CDN_AUTH_TTL_SEC` | 否 | `3600` | 同 delivery |
+| `STORAGE_CUSTOM_SIGNER` | 否 | `custom` | 同 delivery（实现入口 `packages/storage/src/custom-signer.ts`） |
 | `MEDIA_ID_LENGTH` | 否 | `8` | 媒资数字 ID 位数（4–16，保留前导零，spec.md §1.3） |
 | `DELIVERY_BASE_URL` | 预览时必填 | `http://127.0.0.1:9000` | 「产物 → 播放」预览调用的分发端地址（服务端 → 分发端） |
 | `DELIVERY_PREVIEW_USERNAME` | 预览时必填 | 空 | 预览账号用户名（用 `bun apps/admin/scripts/bootstrap-playback.ts` 创建）。缺失时预览接口返回 501 |

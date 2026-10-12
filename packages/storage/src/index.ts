@@ -41,3 +41,19 @@ export function createStorage(cfg: StorageConfig): StorageAdapter {
 export { withRootPrefix, relativeTo } from "./prefix";
 export { S3Adapter, type S3Config } from "./s3";
 export { createStorageFromEnv, createStorageFromConfig } from "./from-env";
+export {
+  type SignMode,
+  type UrlSigner,
+  type UrlSignerFactoryDeps,
+  type EdgeOneTypeASignerOptions,
+  createUrlSigner,
+  createEdgeOneTypeASigner,
+  typeAWindowTimestamp,
+  registerUrlSigner,
+  getRegisteredUrlSignerFactory,
+  TYPEA_FIXED_RAND,
+  TYPEA_FIXED_UID,
+} from "./signer";
+export { STORAGE_SIGN_MODES } from "@openvod/shared";
+// 自定义签名提供者注册入口（ADR-0019）：导入即执行用户侧 registerUrlSigner
+import "./custom-signer";

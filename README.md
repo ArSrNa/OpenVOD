@@ -40,7 +40,53 @@ Readme里内容和展现方式有限，最新和最详细的文档，请查询�
 
 README内只做最简短的介绍。
 
+## 快速试用
+
+不想先去准备云上的 MySQL 和 S3？仓库已内置一套本地基础设施编排。在CNB云原生开发环境（或任意有Docker的机器上）一条命令把**数据库（MySQL）**和**对象存储（RustFS）**以容器拉起来。
+
+首先Fork此项目到你的组织内，点击云原生开发即可进入开发流程。
+
+你可以跟Agent说`启动一个体验环境`，AI会按 [docs/vod/trial-env.md](./docs/vod/trial-env.md) 的Runbook自动来帮你启动。
+
+或者使用下列命令快速启动一个试用：
+
+```bash
+bun i                            # 安装依赖
+sh scripts/compose-infra.sh up   # 起 MySQL + RustFS：自动生成凭据、等健康、建分发端受限账号
+sh scripts/compose-infra.sh init-env # 生成 .env.trial（连接串指向本地 MySQL，不动根 .env）
+```
+
+已准备好：
+
+| 组件 | 地址 | 说明 |
+|---|---|---|
+| MySQL 8.4 | `127.0.0.1:3306`，库 `openvod` | 业务账号 `openvod`，root 与业务口令见凭据文件 |
+| RustFS（S3 API） | `http://127.0.0.1:9002` | AK/SK 随机生成；之后填进管理台 `/setup` 向导 |
+| RustFS 控制台 | `http://127.0.0.1:9003` | 建桶 / 浏览对象；CNB 预览地址用 `sh scripts/compose-infra.sh url` |
+| 受限账号 `openvod_ro` | 同库 | 分发端专用，脚本自动创建 |
+
+试用的环境不包括持久化，建议开发使用下列命令开始：
+
+```bash
+task db:generate                                          # 生成 Prisma 客户端
+set -a && . ./.env.trial && set +a && task db:migrate     # 建表（Prisma 从环境读连接串）
+bun scripts/dev.ts --env-file .env.trial admin            # 管理台（自动带 Worker），/setup 向导的 S3 参数填 RustFS
+bun scripts/dev.ts --env-file .env.trial delivery         # 分发端
+```
+
+注意事项：
+
+- 凭据统一落在 `.run/infra.env`（权限 600，已被 gitignore）；`reset` 子命令会**删除数据卷清空数据**，`down` 保留。
+- `up` 幂等可重复执行，且**全程不改根 `.env`**：连接串由 `init-env` 写进独立的 `.env.trial`（以根 `.env` 为底，仅覆盖三个 DB 键）。后续所有 `dev.ts` 命令记得带 `--env-file .env.trial`；Prisma 类命令（`task db:migrate`）不认识该文件，先 `set -a && . ./.env.trial && set +a` 导出再跑。
+- 端口默认绑 `127.0.0.1`，且刻意避开了本机常驻服务（delivery `:9000`、worker http `:9001`），所以 RustFS 映射到 `9002/9003`；端口 / 镜像 / 绑定地址可用 `INFRA_*` 环境变量覆盖（见脚本头注释）。
+- `.env.trial` 里的 `127.0.0.1` 连接串只对**源码直跑**（`bun scripts/dev.ts`）成立；若改用「容器形态」的 admin/worker 镜像，容器内的 `127.0.0.1` 不是宿主机，需要调整地址。
+- 空库首次建表遇到 `P3014`（影子库无 `CREATE DATABASE` 权限）时，用 `env` 子命令打印的 root 连接串，或走 dev-workflow §4.3 的 baseline 流程。
+- 这套编排只是**开发底座**（数据为本地 named volume）：生产请使用 TDSQL-C / 云 MySQL 与 COS 等对象存储，账号分权约定见 ADR-0011 / ADR-0015。
+
 ## 准备
+
+> 只想先跑起来体验？见[快速试用](#快速试用)。
+
 ### 开发环境
 如果你在CNB上那恭喜你，可以省去配置Node和Go环境的步骤，Fork此仓库，直接点击云原生开发即可运行
 
@@ -105,7 +151,6 @@ AI会根据文档指引，询问你一些重要配置，例如数据库URL、初
 bun i
 # CNB 云原生开发：从密钥仓库一键生成 .env
 sh scripts/gen-env.sh
-
 # 没有密钥仓库？用问答式向导，一步步问你，回车就能配完
 task env:init
 

@@ -8,6 +8,7 @@ import { NextResponse } from "next/server";
 import { apiError } from "./api";
 import { assertMediaId, resolveOriginalKey } from "./media";
 import { getTemplate } from "./templates";
+import { getWatermark } from "./watermarks";
 import { jobActionState } from "./job-actions";
 import { submitTranscodeWithDeps, TranscodeSubmitError, type SubmitJobRow } from "./transcode-submit";
 
@@ -79,6 +80,8 @@ export async function submitTranscode(
         db.media.findUnique({ where: { id }, select: { id: true, sourceKey: true } }).catch(() => null),
       resolveOriginalKey,
       getTemplate,
+      // 水印快照来源（spec.md §10.4）：模板关联的水印模板内容随任务固化，Worker 只读快照
+      getWatermark,
       listActiveJobs: (id) =>
         db.transcodeJob.findMany({
           where: { mediaId: id, status: { in: ACTIVE_JOB_STATUSES } },

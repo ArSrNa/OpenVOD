@@ -78,6 +78,33 @@ func TestSettingsConfigRejectsMissingSigningKey(t *testing.T) {
 	}
 }
 
+// ADR-0019：签名方式设置键经 ApplyTo 合入 StorageConfig（env 兜底 → DB 覆盖）。
+func TestSettingsConfigAppliesSignMode(t *testing.T) {
+	base := environmentConfig()
+	rows := settingsRows{
+		settings.KeyStorageSignMode:     "cdn_url_auth",
+		settings.KeyStorageCDNBaseURL:   "https://cdn.example.com/",
+		settings.KeyStorageCDNAuthTTL:   "7200",
+		settings.KeyStorageCustomSigner: "my-prov",
+	}
+	cfg, err := settingsConfig(context.Background(), rows, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Storage.SignMode != "cdn_url_auth" || cfg.Storage.CDNBaseURL != "https://cdn.example.com" ||
+		cfg.Storage.CDNAuthTTLSec != 7200 || cfg.Storage.CustomSigner != "my-prov" {
+		t.Fatalf("sign mode settings were not applied: %+v", cfg.Storage)
+	}
+	// 清空 DB 覆盖 → 回退 env（base 无值 → 零值；SignMode 空 = s3_presign 默认）
+	second, err := settingsConfig(context.Background(), settingsRows{}, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Storage.SignMode != "" || second.Storage.CDNAuthTTLSec != 0 {
+		t.Fatalf("cleared overrides must return to environment baseline: %+v", second.Storage)
+	}
+}
+
 func bodyHandler(body string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, body) })
 }

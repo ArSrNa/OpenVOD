@@ -1,8 +1,9 @@
 "use client";
 
-import { ReloadOutlined, SaveOutlined } from "@ant-design/icons";
+import { CopyOutlined, RobotOutlined, ReloadOutlined, SaveOutlined } from "@ant-design/icons";
 import { Alert, Button, Card, Form, Input, InputNumber, Modal, Select, Space, Tag, Typography } from "antd";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { buildCustomSignerPrompt } from "@/lib/custom-signer-prompt";
 import {
   SETTINGS_GROUPS,
   type SettingField,
@@ -51,6 +52,10 @@ export function SettingsManager({ group = "playback" }: { group?: SettingsGroup 
   const [saved, setSaved] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation>(null);
   const loadController = useRef<AbortController | null>(null);
+  // 自定义签名提供者（ADR-0019）：提示词弹窗（仅 storage 组）
+  const [promptOpen, setPromptOpen] = useState(false);
+  const [promptProvider, setPromptProvider] = useState("custom");
+  const [promptNotes, setPromptNotes] = useState("");
 
   const applySnapshot = useCallback((next: SettingsEditorResponse) => {
     const nextValues = Object.fromEntries(next.fields.map((field) => [field.key, field.secret ? "" : field.value ?? ""]));
@@ -203,6 +208,30 @@ export function SettingsManager({ group = "playback" }: { group?: SettingsGroup 
         {loadError && <Alert type="error" showIcon message={loadError} action={<Button size="small" onClick={reload} disabled={disabled}>重试</Button>} style={{ marginBottom: 24 }} />}
         {saveError && <Alert type={conflict ? "warning" : "error"} showIcon message={saveError} action={conflict ? <Button size="small" onClick={reload} disabled={disabled}>重新加载</Button> : undefined} style={{ marginBottom: 24 }} />}
         {saved && <Alert type="success" showIcon message="设置已保存" description={EFFECT_DESCRIPTION} style={{ marginBottom: 24 }} />}
+        {group === "storage" && String(values["storage_sign_mode"] ?? "") === "custom" && (
+          <Alert
+            type="warning"
+            showIcon
+            message="已选择自定义签名提供者"
+            description="自定义提供者需要先在代码中实现并注册（TS 与 Go 两侧），再重新构建部署；未注册时分发端与管理端的签名请求会直接报错。可以把下方提示词交给你的 AI 编码助手生成实现代码。"
+            action={
+              <Button size="small" icon={<RobotOutlined />} onClick={() => {
+                setPromptProvider(String(values["storage_custom_signer"] ?? "") || "custom");
+                setPromptOpen(true);
+              }}>生成 Agent 提示词</Button>
+            }
+            style={{ marginBottom: 24 }}
+          />
+        )}
+        {group === "storage" && String(values["storage_sign_mode"] ?? "") === "cdn_url_auth" && (
+          <Alert
+            type="info"
+            showIcon
+            message="CDN URL 鉴权模式的前置条件"
+            description={<>切换前请在 CDN 控制台完成：① 私有回源（存储凭证配在 CDN 侧，不入库）；② Token 鉴权方式 A 开启，密钥与「CDN 边缘鉴权密钥」一致，参数名 sign，有效时长与「CDN 鉴权有效期」一致；③ 缓存键含 query、缓存 TTL ≤ 签名窗口（详见部署文档 ADR-0019 清单）。切换后建议 CDN 全量刷新一次。</>}
+            style={{ marginBottom: 24 }}
+          />
+        )}
         {snapshot && (
           <>
             <Alert
@@ -283,6 +312,52 @@ export function SettingsManager({ group = "playback" }: { group?: SettingsGroup 
         okButtonProps={{ danger: true }}
       >
         {confirmation?.kind === "clear-secret" ? "保存设置后将移除数据库中的密钥并回退环境变量。如果部署环境没有提供该密钥，对应功能可能不可用。" : "当前尚未保存的修改将被最新配置替换。"}
+      </Modal>
+      <Modal
+        open={promptOpen}
+        title="自定义签名提供者 · Agent 提示词"
+        onCancel={() => setPromptOpen(false)}
+        footer={
+          <Space>
+            <Button
+              icon={<CopyOutlined />}
+              onClick={() => {
+                const prompt = buildCustomSignerPrompt({
+                  providerName: promptProvider,
+                  algorithmNotes: promptNotes,
+                });
+                void navigator.clipboard?.writeText(prompt);
+              }}
+            >复制提示词</Button>
+            <Button type="primary" onClick={() => setPromptOpen(false)}>完成</Button>
+          </Space>
+        }
+        width={860}
+      >
+        <Space direction="vertical" style={{ width: "100%" }} size={12}>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            补充你的 CDN 鉴权算法说明（可留空），提示词会包含双语言实现契约与测试要求；
+            密钥等敏感信息不会进入提示词。粘贴给你的编码助手即可生成实现代码。
+          </Typography.Paragraph>
+          <Input
+            value={promptProvider}
+            onChange={(e) => setPromptProvider(e.target.value)}
+            placeholder="custom"
+            addonBefore="提供者名"
+          />
+          <Input.TextArea
+            value={promptNotes}
+            onChange={(e) => setPromptNotes(e.target.value)}
+            placeholder="例如：我的 CDN 是 XXX，URL 形态 https://cdn/{路径}?token={md5(...)}，过期 1 小时；算法细节…"
+            autoSize={{ minRows: 3, maxRows: 8 }}
+          />
+          <Input.TextArea
+            readOnly
+            value={buildCustomSignerPrompt({ providerName: promptProvider, algorithmNotes: promptNotes })}
+            autoSize={{ minRows: 10, maxRows: 22 }}
+            style={{ fontFamily: "monospace", fontSize: 12 }}
+          />
+        </Space>
       </Modal>
     </Card>
   );

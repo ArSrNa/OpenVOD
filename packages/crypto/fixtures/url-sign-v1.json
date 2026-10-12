@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "algorithm": "edgeone-typea",
+  "spec": "md5hash = MD5(Path-timestamp-rand-uid-key)；sign = timestamp-rand-uid-md5hash；timestamp 为十进制 Unix 秒",
+  "source": "腾讯云 EO Token 鉴权方式 A 官方文档示例（cloud.tencent.com/document/product/1552/109329，2025-08-05 版）+ 本仓固定 rand/uid 约定（ADR-0019）",
+  "fixed_rand": "openvod",
+  "fixed_uid": "0",
+  "vectors": [
+    {
+      "name": "eo-official-example",
+      "source": "EO 官方文档数值示例",
+      "path": "/foo.jpg",
+      "timestamp": 1721028437,
+      "rand": "Kv4cPTAAP5YTi",
+      "uid": "0",
+      "key": "DvYmqE81E1F9R791H6lmht",
+      "md5hash": "0fbdca749d7ab784750685347e42075c",
+      "sign": "1721028437-Kv4cPTAAP5YTi-0-0fbdca749d7ab784750685347e42075c",
+      "url": "https://www.example.com/foo.jpg?token=1721028437-Kv4cPTAAP5YTi-0-0fbdca749d7ab784750685347e42075c"
+    },
+    {
+      "name": "openvod-fixed-rand-uid",
+      "source": "本仓约定：rand/uid 固定（窗口内 URL 稳定，缓存友好）",
+      "path": "/proceed/med00001/tpl00001/seg-000.ts",
+      "timestamp": 1721030400,
+      "rand": "openvod",
+      "uid": "0",
+      "key": "0123456789abcdef0123456789abcdef",
+      "md5hash": "3698d579227600d422e3a252ca9b8438",
+      "sign": "1721030400-openvod-0-3698d579227600d422e3a252ca9b8438",
+      "url": "https://cdn.example.com/proceed/med00001/tpl00001/seg-000.ts?sign=1721030400-openvod-0-3698d579227600d422e3a252ca9b8438"
+    }
+  ],
+  "window_alignment": {
+    "formula": "timestamp = floor((now + ttl) / ttl) * ttl；恒有 now < timestamp <= now + ttl",
+    "vectors": [
+      { "name": "mid-window", "now": 1721028437, "ttl": 3600, "timestamp": 1721030400 },
+      { "name": "six-hour-window", "now": 1721028437, "ttl": 21600, "timestamp": 1721044800 },
+      { "name": "boundary-inclusive", "now": 3600, "ttl": 3600, "timestamp": 7200 },
+      { "name": "epoch", "now": 0, "ttl": 3600, "timestamp": 3600 }
+    ]
+  }
+}

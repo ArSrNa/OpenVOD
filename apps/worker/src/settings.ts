@@ -3,7 +3,7 @@
 // 快照带 30s 缓存：每轮 tick 读取参数即时生效，存储凭据变更按指纹重建适配器。
 import { parseMasterKeys, unwrap, type MasterKey } from "@openvod/crypto";
 import { getDb } from "@openvod/db";
-import { createStorageFromConfig, type StorageAdapter } from "@openvod/storage";
+import { createStorageFromConfig, type SignMode, type StorageAdapter } from "@openvod/storage";
 
 const db = getDb<any>();
 
@@ -101,6 +101,11 @@ export async function loadWorkerSettings(): Promise<WorkerSettings> {
     forcePathStyle: (pick(values, "s3_force_path_style", "S3_FORCE_PATH_STYLE") || "true") !== "false",
     cdnBaseUrl: pick(values, "storage_cdn_base_url", "STORAGE_CDN_BASE_URL"),
     rootPrefix: pick(values, "storage_root_prefix", "STORAGE_ROOT_PREFIX"),
+    // GET 签名方式（ADR-0019）：Worker 取源片 / 水印图与播放分片同一签名形态
+    signMode: (pick(values, "storage_sign_mode", "STORAGE_SIGN_MODE") || undefined) as SignMode | undefined,
+    cdnAuthKey: secret("storage_cdn_auth_key") || process.env.STORAGE_CDN_AUTH_KEY || "",
+    cdnAuthTtlSec: toInt(pick(values, "storage_cdn_auth_ttl_sec", "STORAGE_CDN_AUTH_TTL_SEC"), 3600),
+    customSignerName: pick(values, "storage_custom_signer", "STORAGE_CUSTOM_SIGNER") || undefined,
   });
   return {
     storage,

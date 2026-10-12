@@ -19,10 +19,22 @@ type StorageConfig struct {
 	Bucket          string
 	AccessKeyID     string
 	SecretAccessKey string
-	// 加速域名（STORAGE_CDN_BASE_URL，ADR-0005 统一加速域名方案）：只替换预签名 GET
-	// 的 origin（CDN 回源 COS 且 Host 透传桶端点才可验签）
+	// 加速域名（STORAGE_CDN_BASE_URL，ADR-0005 / ADR-0019）：语义随 SignMode——
+	// s3_presign 下只替换预签名 GET 的 origin（CDN 回源 COS 且 Host 透传桶端点才可验签）；
+	// cdn_url_auth 下为签名 URL 的 host（加速域名）
 	CDNBaseURL     string
 	ForcePathStyle bool
+
+	// ---- GET 签名方式（ADR-0019，spec.md §6.7） ----
+	// SignMode：s3_presign（默认，现状）| cdn_url_auth（EO Token 鉴权方式 A）| custom
+	SignMode string // STORAGE_SIGN_MODE
+	// CDNAuthKey CDN 边缘鉴权密钥（STORAGE_CDN_AUTH_KEY / system_settings，cdn_url_auth 必填；
+	// 与 CDN 控制台同款密钥，双侧一致）
+	CDNAuthKey string
+	// CDNAuthTTLSec 鉴权窗口秒（STORAGE_CDN_AUTH_TTL_SEC，默认 3600；与 CDN 控制台「有效时长」一致）
+	CDNAuthTTLSec int
+	// CustomSigner custom 模式的提供者名（STORAGE_CUSTOM_SIGNER，默认 "custom"）
+	CustomSigner string
 }
 
 type Config struct {
@@ -129,6 +141,11 @@ func Load() (*Config, error) {
 		// COS 只接受 virtual-hosted-style，必须显式 S3_FORCE_PATH_STYLE="false"；MinIO 默认 true
 		ForcePathStyle: strings.ToLower(getEnv("S3_FORCE_PATH_STYLE", "true")) != "false",
 		CDNBaseURL:     strings.TrimRight(strings.TrimSpace(os.Getenv("STORAGE_CDN_BASE_URL")), "/"),
+		// GET 签名方式（ADR-0019）：env 兜底，system_settings 优先（settings.ApplyTo 覆盖）
+		SignMode:      strings.TrimSpace(os.Getenv("STORAGE_SIGN_MODE")),
+		CDNAuthKey:    os.Getenv("STORAGE_CDN_AUTH_KEY"),
+		CDNAuthTTLSec: getEnvInt("STORAGE_CDN_AUTH_TTL_SEC", 3600),
+		CustomSigner:  strings.TrimSpace(os.Getenv("STORAGE_CUSTOM_SIGNER")),
 	}
 
 	return cfg, nil

@@ -5,6 +5,7 @@
         "eamodio.gitlens",
         "ms-azuretools.vscode-docker",
         "bradlc.vscode-tailwindcss",
-        "wakatime.vscode-wakatime"
+        "wakatime.vscode-wakatime",
+        "prisma.prisma"
     ]
 }

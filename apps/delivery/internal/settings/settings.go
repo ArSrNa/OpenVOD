@@ -27,7 +27,11 @@ const (
 	KeyS3ForcePathStyle    = "s3_force_path_style"
 	KeyStorageRootPrefix   = "storage_root_prefix"
 	KeyStorageCDNBaseURL   = "storage_cdn_base_url"
-	KeyURLSignKeyHex       = "url_sign_key_hex" // 密钥：MK 封装
+	KeyStorageSignMode     = "storage_sign_mode"        // ADR-0019：s3_presign | cdn_url_auth | custom
+	KeyStorageCDNAuthKey   = "storage_cdn_auth_key"     // 密钥：MK 封装（cdn_url_auth 必填）
+	KeyStorageCDNAuthTTL   = "storage_cdn_auth_ttl_sec" // ADR-0019：鉴权窗口（秒，默认 3600）
+	KeyStorageCustomSigner = "storage_custom_signer"    // ADR-0019：custom 模式提供者名
+	KeyURLSignKeyHex       = "url_sign_key_hex"         // 密钥：MK 封装
 	KeyURLSignKeyKid       = "url_sign_key_kid"
 	KeyJWTTTLSec           = "jwt_ttl_sec"
 	KeySessionTTLSec       = "playback_session_ttl_sec"
@@ -54,6 +58,7 @@ var deliveryKeys = map[string]bool{
 	KeyS3Endpoint: true, KeyS3Region: true, KeyS3Bucket: true,
 	KeyS3AccessKeyID: true, KeyS3SecretAccessKey: true, KeyS3ForcePathStyle: true,
 	KeyStorageRootPrefix: true, KeyStorageCDNBaseURL: true,
+	KeyStorageSignMode: true, KeyStorageCDNAuthKey: true, KeyStorageCDNAuthTTL: true, KeyStorageCustomSigner: true,
 	KeyURLSignKeyHex: true, KeyURLSignKeyKid: true,
 	KeyJWTTTLSec: true, KeySessionTTLSec: true, KeyManifestTTLSec: true, KeySubtitleTTLSec: true,
 	KeyCORSOrigins: true, KeyPlaybackBaseURL: true,
@@ -63,6 +68,7 @@ var deliveryKeys = map[string]bool{
 var secretKeys = map[string]bool{
 	KeyS3SecretAccessKey: true,
 	KeyURLSignKeyHex:     true,
+	KeyStorageCDNAuthKey: true,
 }
 
 // Snapshot 一次加载的系统设置全集（已解封密钥；未配置的键为空串，由调用方决定兜底）
@@ -168,6 +174,20 @@ func (s *Snapshot) ApplyTo(cfg *config.Config) error {
 	}
 	if v := s.Get(KeyStorageCDNBaseURL); v != "" {
 		cfg.Storage.CDNBaseURL = strings.TrimRight(v, "/")
+	}
+
+	// ---- GET 签名方式（ADR-0019）：模式 / CDN 密钥 / 窗口 / 自定义提供者名 ----
+	if v := s.Get(KeyStorageSignMode); v != "" {
+		cfg.Storage.SignMode = v
+	}
+	if v := s.Get(KeyStorageCDNAuthKey); v != "" {
+		cfg.Storage.CDNAuthKey = v
+	}
+	if v := s.Get(KeyStorageCDNAuthTTL); v != "" {
+		cfg.Storage.CDNAuthTTLSec = s.Int(KeyStorageCDNAuthTTL, cfg.Storage.CDNAuthTTLSec)
+	}
+	if v := s.Get(KeyStorageCustomSigner); v != "" {
+		cfg.Storage.CustomSigner = v
 	}
 
 	// ---- 播放签名密钥 / kid ----

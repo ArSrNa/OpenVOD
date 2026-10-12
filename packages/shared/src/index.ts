@@ -316,6 +316,14 @@ export const SETTING_KEYS = {
   s3ForcePathStyle: "s3_force_path_style",
   storageRootPrefix: "storage_root_prefix",
   storageCdnBaseUrl: "storage_cdn_base_url",
+  // ---- 资产 URL 签名方式（ADR-0019：签名发生在 S3 还是 CDN） ----
+  storageSignMode: "storage_sign_mode",
+  /** CDN URL 鉴权边缘密钥（cdn_url_auth 模式必填；secret，MK 封装，与 CDN 控制台同款密钥双侧一致） */
+  storageCdnAuthKey: "storage_cdn_auth_key",
+  /** 鉴权 URL 有效期；timestamp 按 ttl 窗口对齐，窗口内 URL 稳定（缓存友好） */
+  storageCdnAuthTtlSec: "storage_cdn_auth_ttl_sec",
+  /** custom 模式的提供者名（TS registerUrlSigner / Go RegisterURLSigner 的注册名；默认 "custom"） */
+  storageCustomSigner: "storage_custom_signer",
   // ---- 播放 / 分发 ----
   playbackBaseUrl: "playback_base_url",
   urlSignKeyKid: "url_sign_key_kid",
@@ -350,13 +358,21 @@ export const SETTING_SECRET_KEYS = [
   "oidc_client_secret",
   "delivery_preview_password",
   "worker_notify_secret",
+  "storage_cdn_auth_key",
 ] as const;
+
+/** 资产 GET URL 签名方式（ADR-0019）：签名发生在 S3 还是 CDN（桶恒私有，不变量） */
+export const STORAGE_SIGN_MODES = ["s3_presign", "cdn_url_auth", "custom"] as const;
+export type StorageSignMode = (typeof STORAGE_SIGN_MODES)[number];
 
 export type SettingSecretKey = (typeof SETTING_SECRET_KEYS)[number];
 
 /** 设置键出厂默认值（DB 无行且 env 无值时生效；与 env-vars.md 对齐）。Record 形态便于跨端字符串索引 */
 export const SETTING_DEFAULTS: Record<string, string> = {
   [SETTING_KEYS.s3ForcePathStyle]: "true",
+  [SETTING_KEYS.storageSignMode]: "s3_presign",
+  [SETTING_KEYS.storageCdnAuthTtlSec]: "3600",
+  [SETTING_KEYS.storageCustomSigner]: "custom",
   [SETTING_KEYS.urlSignKeyKid]: "urlsign-v1",
   [SETTING_KEYS.jwtTtlSec]: String(DEFAULTS.jwtTtlSec),
   [SETTING_KEYS.playbackSessionTtlSec]: String(DEFAULTS.playbackSessionTtlSec),
@@ -378,5 +394,7 @@ export const SETTING_TTL_LIMITS = {
   // 同时用于 S3 SigV4 预签名，其有效期上限为 7 天。
   [SETTING_KEYS.playbackManifestTtlSec]: { min: 60, max: 7 * 24 * 3600 },
   [SETTING_KEYS.playbackSubtitleTtlSec]: { min: 60, max: 30 * 24 * 3600 },
+  // CDN URL 鉴权窗口（ADR-0019）：与 SigV4 同受 7 天上限（防误配成"永久 CDN URL"）
+  [SETTING_KEYS.storageCdnAuthTtlSec]: { min: 60, max: 7 * 24 * 3600 },
   [SETTING_KEYS.adminSessionTtlSec]: { min: 600, max: 30 * 24 * 3600 },
 } as const;

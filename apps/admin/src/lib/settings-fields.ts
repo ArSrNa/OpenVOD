@@ -39,7 +39,19 @@ export const SETTINGS_GROUPS = {
       { key: "s3_secret_access_key", label: "Secret Access Key", type: "secret", help: "密钥经主密钥封装后保存；不会返回浏览器。" },
       { key: "s3_force_path_style", label: "Path-style 寻址", type: "boolean", help: "MinIO 通常启用；COS 按桶实际访问方式配置。" },
       { key: "storage_root_prefix", label: "资产根前缀", type: "text", placeholder: "openvod", help: "可为空（桶根）；不允许 .. 或反斜线。" },
-      { key: "storage_cdn_base_url", label: "存储加速域名", type: "text", placeholder: "https://cdn.example.com", help: "可选，替换预签名对象 URL 的来源；需要加速服务正确回源并保留签名查询参数。" },
+      {
+        key: "storage_sign_mode", label: "资产 URL 签名方式", type: "enum",
+        options: [
+          { value: "s3_presign", label: "S3 预签名（默认；CDN 透传回源）" },
+          { value: "cdn_url_auth", label: "CDN URL 鉴权（EO TypeA；CDN 私有回源）" },
+          { value: "custom", label: "自定义提供者（需自行实现并重新构建）" },
+        ],
+        help: "桶恒为私有，切换的只是签名位置。s3_presign：CDN 缓存键必须含完整 query 或带 query 不缓存；cdn_url_auth：URL 在签名窗口内稳定、跨会话可命中缓存，需在 CDN 控制台配置私有回源（切换前请读部署文档 ADR-0019 清单）。",
+      },
+      { key: "storage_cdn_base_url", label: "存储加速域名", type: "text", placeholder: "https://cdn.example.com", help: "s3_presign：替换预签名对象 URL 的来源（需回源并保留签名 query）；cdn_url_auth：签名 URL 的加速域名。" },
+      { key: "storage_cdn_auth_key", label: "CDN 边缘鉴权密钥", type: "secret", help: "cdn_url_auth 模式必填；与 CDN 控制台 Token 鉴权密钥同款、双侧一致。经主密钥封装保存，不回显。" },
+      { key: "storage_cdn_auth_ttl_sec", label: "CDN 鉴权有效期（秒）", type: "number", min: 60, max: 604800, help: "cdn_url_auth 的签名窗口；应与 CDN 控制台「有效时长」一致。窗口内 URL 稳定（缓存友好），实际有效期 ≥ 该值。" },
+      { key: "storage_custom_signer", label: "自定义提供者名", type: "text", placeholder: "custom", help: "sign_mode=custom 时生效；对应代码中 registerUrlSigner / RegisterURLSigner 的注册名（默认 custom）。" },
     ],
   },
   login: {

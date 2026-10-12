@@ -1,6 +1,6 @@
-# ADR-0019：资产 URL 签名方式可插拔（S3 预签名 / CDN URL 鉴权）
+# ADR-0019：资产 URL 签名方式可插拔（S3 预签名 / CDN URL 鉴权 / 自定义提供者）
 
-- 状态：已接受（2026-10-06 设计定稿；**实现未开始**——本文档与 spec.md §6.7 先行，供后续按契约落地）
+- 状态：已接受（2026-10-06 设计定稿；**2026-10-09 已实现**——落地记录见文末修订记录；`custom` 模式与 Agent 提示词生成机制为同日扩展）
 - 日期：2026-10-06
 - 关联：ADR-0005（2026-09-20 修订关闭 EO TypeA）、ADR-0006、ADR-0015（settings 机制）、ADR-0011；open-questions #3
 
@@ -66,4 +66,9 @@
 
 ## 修订记录
 
+- **2026-10-09（实现落地 + `custom` 扩展）**：
+  1. **实现落地**：storage（`packages/storage/src/signer.ts`）与 Go（`apps/delivery/internal/blob/signer.go`）双侧 `UrlSigner` / `URLSigner` 抽象与 `s3_presign` / `cdn_url_auth` 内置实现；TypeA 经 EO 官方文档核对（**timestamp 为十进制** Unix 秒）并产出共享 fixtures `packages/crypto/fixtures/url-sign-v1.json`（含官方示例向量，TS / Go 测试同源防漂移）；设置键登记于 `packages/shared`（本仓 settings 机制实际不经 contracts schema，实现清单第 3 项据此调整）；管理端设置 UI（storage 组四字段 + 保存组合校验）+ `api.md` §1.8 补录 + env 兜底 `STORAGE_SIGN_MODE` / `STORAGE_CDN_AUTH_KEY` / `STORAGE_CDN_AUTH_TTL_SEC` / `STORAGE_CUSTOM_SIGNER`；
+  2. **`storage_sign_mode` 增加 `custom` 取值（超出原文档 `s3_presign | cdn_url_auth` 的扩展）**：自定义提供者仍为**编译期注册**（TS `packages/storage/src/custom-signer.ts` 的 `registerUrlSigner`、Go `apps/delivery/internal/blob/custom_signer.go` 的 `RegisterURLSigner`，注册名 = `storage_custom_signer`），不违反「运行时动态插件明确不做」的决策；
+  3. **Agent 提示词生成（同日新增的用户需求）**：管理端「存储设置」在 sign mode 为 `custom` 时提供提示词生成器（`apps/admin/src/lib/custom-signer-prompt.ts`）——用户可补充自己的 CDN 鉴权算法说明，一键复制提示词交给自己的 AI 编码助手，在两个注册点生成双语言实现与互通测试。边界纪律：提示词只含设置键名与契约、**绝不携带密钥材料**；生成代码要求密钥经 env / settings 注入、禁止硬编码；产物仍需重新构建部署（等价于用户自编译注册，安全面不扩大）；
+  4. `cdn_url_auth` 语义补充：`sign()` 的窗口恒取 `storage_cdn_auth_ttl_sec`（调用方 ttl 忽略）——这是「窗口内 URL 稳定 = 缓存键稳定」的前提；需更长有效期就调大该设置并同步 CDN 控制台（spec.md §6.7）。
 - **2026-10-06（本文档）**：重开 2026-09-20 关闭的 EO TypeA（open-questions #3、ADR-0005 修订），升级为「admin 驱动的可插拔签名方式」；触发点为 2026-10-05 CDN 陈旧缓存与鉴权绕过实测（spec §6.5）。

@@ -312,7 +312,11 @@ submit 时水印内容**现读现快照**进 `transcode_jobs.template_snapshot.w
 分组字段：`playback`（`playback_base_url, jwt_ttl_sec, playback_session_ttl_sec, playback_manifest_ttl_sec,
 playback_subtitle_ttl_sec, cors_origins, delivery_preview_username, delivery_preview_password`）、
 `storage`（`s3_endpoint, s3_region, s3_bucket, s3_access_key_id, s3_secret_access_key, s3_force_path_style,
-storage_root_prefix, storage_cdn_base_url`）、`login`（`oidc_issuer, oidc_client_id, oidc_client_secret`；
+storage_root_prefix, storage_sign_mode, storage_cdn_base_url, storage_cdn_auth_key, storage_cdn_auth_ttl_sec,
+storage_custom_signer`——后四项为资产 URL 签名方式（ADR-0019）：`storage_sign_mode` ∈
+`s3_presign`（默认）| `cdn_url_auth` | `custom`，`storage_cdn_auth_key` 为 secret（MK 封装），
+`storage_cdn_auth_ttl_sec` 60–604800，`storage_custom_signer` 默认 `custom`；`cdn_url_auth` 保存时强制
+校验加速域名与边缘密钥齐备）、`login`（`oidc_issuer, oidc_client_id, oidc_client_secret`；
 登录方式与「重置登录密码」UI 同页维护，密码走 better-auth `/api/auth/change-password`）、
 `security`（`admin_base_url, admin_trusted_origins, admin_session_ttl_sec, url_sign_key_kid, url_sign_key_hex,
 better_auth_secret`）、`worker`（`worker_poll_interval_ms, worker_lease_ms, worker_max_attempts, media_id_length`）。

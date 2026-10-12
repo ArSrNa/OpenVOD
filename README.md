@@ -151,7 +151,6 @@ AI会根据文档指引，询问你一些重要配置，例如数据库URL、初
 bun i
 # CNB 云原生开发：从密钥仓库一键生成 .env
 sh scripts/gen-env.sh
-
 # 没有密钥仓库？用问答式向导，一步步问你，回车就能配完
 task env:init
 

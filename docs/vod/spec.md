@@ -381,7 +381,7 @@ http 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_s
 | `unauthorized` | 401 | JWT 缺失 / 过期 / 签名不符（`/v1/media*` 业务面） |
 | `bad_token` | 403 | 播放 token 缺失 / 非法 / 过期 / `typ` 或 `mid` 绑定不符 / 会话已吊销或过期 |
 | `not_found` | 404 | 媒资未入库；主 / 子清单对象缺失；密钥行不存在；字幕轨道或对象缺失；未知路由（JSON 信封，非 HTML） |
-| `not_playable` | 409 | 媒资非 READY；`template_id` 指定的产物不存在；多套产物且无默认模板（消息列出可选值） |
+| `not_playable` | 409 | 媒资非 READY；`template_id` 指定的产物不存在（消息列出可选值）；无任何可播放产物（多套产物+无默认模板已于 2026-10-13 改为自动选首项，不再 409，§6.3） |
 | `session_limit` | 409 | 并发播放会话上限命中（仅 `max_concurrent_sessions>0` 时检查） |
 | `internal` | 500 / 503 | 查询 / 存储 / 签发失败；`MASTER_KEYS` 缺该 `mk_ver`；`signing_keys` 无可用私钥时 `login` 返回 503 |
 
@@ -409,7 +409,7 @@ http 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_s
 `play` 的 `template_id`（可选）：
 
 - 显式指定 → 必须存在，否则 409 `not_playable`（消息列出可选值）；
-- 未指定 → 唯一产物直接使用；多套 → 取**默认模板**（`transcode_templates.is_default`）的那套；仍无法唯一确定 → 409 `not_playable` 列出可选值；
+- 未指定 → 唯一产物直接使用；多套 → 取**默认模板**（`transcode_templates.is_default`）的那套；**无默认模板则自动选 `templates[]` 的第一个**（**2026-10-13 修订**——原「多套且无默认 → 409 列出可选值」把选择成本推给每个客户端，播放端应呈现为清晰度切换而不是报错；自动选择与响应 `templates[]` 共用同一排序（§11.1），客户端看到的首项即默认播放项，可随时带 `template_id` 切换；模板表不可用时退化为列举顺序第一个，可用性优先）；
 - 无模板子树 → 旧布局（`proceed/{id}/{variant}/`），返回 `template_id=""`。
 
 ### 6.4 签名密钥材料形态与引导
@@ -418,7 +418,7 @@ http 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_s
   用标量而非 PKCS#8 DER：该列是 `VARCHAR(191)`，DER 的 hex（276 字符）会触发 P2000；
 - 生成 / 轮换：`bun apps/admin/scripts/bootstrap-playback.ts <username> <password≥8位> [显示名] [--rotate-jwt-key]`
   —— 幂等：生成 JWT 签名密钥（轮换时旧 key 置 `RETIRING`，双 kid 宽限）并创建 / 重置播放端用户（bcrypt cost 12）；
-- 分发端启动时把 ACTIVE 的 JWT 私钥全部解封加载（`signing_keys` 无 `mk_ver` 列 → 按 MK 版本逐个尝试解封，版本号大者优先）；无可用密钥不致命，login 返回 503。
+- 分发端启动时把 ACTIVE 的 JWT 私钥全部解封加载（`signing_keys` 无 `mk_ver` 列 → 按 MK 版本逐个尝试解封，版本号大者优先）；无可用密钥不致命，login 返回 503。受限账号需 `signing_keys` 只读授权（ADR-0011 约束 2）。
 
 ### 6.5 相关环境变量
 
@@ -954,11 +954,12 @@ rand / uid = 固定常量（openvod / 0，不做随机，保 URL 稳定）
 - **候选 = 存储实际存在的模板子树**：`proceed/{id}/` 下直接子目录中匹配模板 ID 形状者（排除 `subtitles` 保留段）——与 `resolveTemplate`（§6.3）同一列举逻辑，「有什么放什么」；**不**列出「有模板但无产物」的项；不匹配形状的脏目录同样不列；
 - **旧布局**（无模板子树、`template_id=""`）：`templates: []`（旧布局不参与切换，播放仍按 §6.3 自动工作）；
 - **排序**：默认模板优先，其余按 `name`（`null` 排最后）再按 `id` 字典序，保证稳定；多个模板同时标记默认时按标记原样输出；
+- **自动选择 = 首项**（2026-10-13）：未指定 `template_id` 且无默认模板时，分发端自动播放 `templates[0]`（与本节排序共用同一实现）——客户端列表里看到的第一项即默认播放项，切换只需回传该项 `id`（§6.3）；
 - **名称查询**：一次批量查询 `transcode_templates`；查询失败**不致命**——全部降级 `name: null`（播放链路不因模板表查询失败中断，同 §8.4 容错口径）；
 - **目录级候选**：不校验 `master.m3u8` 是否存在（产物不完整时该选项仍列出，播放失败由前端提示）；
 - 幂等复用会话（缺省）与 `force_new=true` 均照常返回，内容与当前 `template_id` 选择一致；请求 / 响应其余字段**零改动**（App 可忽略该字段，向后兼容）。
 
-**受限 DB 账号授权（ADR-0011 约束 2 修订）**：`transcode_templates` 列入只读清单——`play` 的默认模板自动选择（既有 `DefaultTemplateID`）与 `templates[]` 的 `name` 都依赖它；`scripts/compose-infra.sh` 的 `grant_delivery_account` 与部署文档同步。
+**受限 DB 账号授权（ADR-0011 约束 2 修订）**：`transcode_templates` 列入只读清单——`play` 的默认模板自动选择（既有 `DefaultTemplateID`）与 `templates[]` 的 `name` 都依赖它；另补 `signing_keys`（分发端启动加载 JWT 私钥 `loadJWTSigners` 必需，原清单遗漏会导致 `login` 恒 503）；`scripts/compose-infra.sh` 的 `grant_delivery_account` 与部署文档同步。
 
 **契约与生成物**：
 
@@ -966,7 +967,9 @@ rand / uid = 固定常量（openvod / 0，不做随机，保 URL 稳定）
 - Go：`internal/store` 新增批量查名（`SELECT id, name FROM transcode_templates WHERE id IN (…)`，占位符展开）；`internal/server` 在 `resolveTemplate` 的候选列举上构造响应；
 - `docs/vod/api.md` §2.2 play 行与响应示例补 `templates`；错误码表不变。
 
-**单测（Go）**：多套产物（含默认标记与排序）/ 模板行已删（`name=null`）/ 旧布局（空数组）/ 模板表查询失败（全 `null` 且不报错）/ 与 `template_id` 选择一致性。
+**单测（Go）**：多套产物（含默认标记与排序）/ 模板行已删（`name=null`）/ 旧布局（空数组）/ 模板表查询失败（全 `null` 且不报错）/ 与 `template_id` 选择一致性 / **自动选择取列表首项**（`selectAutoTemplate`：无默认取排序首项、默认优先、查表失败降级、空列表）。
+
+**多套产物自动选择（2026-10-13 修订，§6.3）**：`resolveTemplate` 的多候选分支不再返回 409——默认模板优先，无默认则 `selectAutoTemplate(items)`（= 排序后 `templates[0]`）；选择与响应 `templates[]` 共用同一次模板表查询（`templateResolution`），保证「列表首项 = 默认播放项」；旧布局分支显式返回空数组（不外泄 `null`）。
 
 ### 11.2 App 工程形态与配置（`apps/player`）
 
@@ -976,9 +979,10 @@ rand / uid = 固定常量（openvod / 0，不做随机，保 URL 稳定）
 
 | 变量 | 必填 | 默认 | 说明 |
 |---|---|---|---|
-| `PLAYER_PORT` | 否 | `3100` | dev server 端口（`dev.ts` 复用） |
-| `DELIVERY_BASE_URL` | 否 | `http://127.0.0.1:9000` | **服务端**调分发端 `login` 的地址 |
-| `NEXT_PUBLIC_DELIVERY_BASE_URL` | 否 | 空 → `http://127.0.0.1:9000` | **浏览器**直连分发端的地址（构建期内联；CNB 预览场景需填网关地址） |
+| `PLAYER_PORT` | 否 | `3100` | dev / start 端口（`dev.ts` 与 compose 复用） |
+| `DELIVERY_BASE_URL` | 否 | `http://127.0.0.1:9000` | **服务端**调分发端 `login` 的地址（容器内视角） |
+| `PLAYER_PUBLIC_DELIVERY_BASE_URL` | 否 | 空 | **浏览器**直连分发端地址（运行时经 `/api/session` 下发，§11.8）：容器部署时与容器内视角不同须分别配置 |
+| `NEXT_PUBLIC_DELIVERY_BASE_URL` | 否 | 空 | 兼容保留：构建期内联的浏览器直连地址（优先级低于 `PLAYER_PUBLIC_DELIVERY_BASE_URL`、高于服务端 `DELIVERY_BASE_URL`） |
 | `PLAYER_PREVIEW_USERNAME` | 是 | 空 | 预览播放账号（`bootstrap-playback.ts` 创建）；缺省回退 `DELIVERY_PREVIEW_USERNAME` |
 | `PLAYER_PREVIEW_PASSWORD` | 是 | 空 | 预览播放账号口令；缺省回退 `DELIVERY_PREVIEW_PASSWORD` |
 
@@ -1004,9 +1008,9 @@ rand / uid = 固定常量（openvod / 0，不做随机，保 URL 稳定）
 
 - 进入流程：`GET /v1/media/{id}`（标题 / probe / custom / 字幕轨道元信息）→ `POST /v1/media/{id}/play`（缺省自动选择）→ 播放器加载 `manifest_url`；
 - 布局：播放器（16:9、`maxHeight 70vh`，与管理端皮肤约定一致）→ 工具条 → 元数据区；
-- **清晰度控件（核心）**：列出 `templates[]`——label = `name`，`name=null` 时「模板 {id 前 8 位}」，`is_default` 加「默认」Tag；当前项 = 响应 `template_id`；
+- **清晰度控件（核心，2026-10-13 修订为下拉）**：**始终渲染下拉**（antd `Select`，像视频网站的清晰度菜单）——不限数量，1 套 / 上百套产物都可用（下拉自身滚动，不挤占布局）；选项 = `templates[]`（label = `name`，`name=null` 时「模板 {id 前 8 位}」，`is_default` 追加「（默认）」文本）；当前项 = 响应 `template_id`（未指定时由分发端自动选 `templates[]` 第一项，§6.3）；旧布局（`templates` 为空）显示禁用的「默认产物」占位，保证控件位置一致；
   - 切换 = `POST play {template_id}`（复用会话）→ 播放器换源 → **保留进度**：以切换瞬间 `currentTime` 与播放 / 暂停状态恢复（seek 完成后续播状态与原一致；恢复失败静默从头，不阻塞播放）；
-  - 切换中控件 loading 且不可重复触发；`templates` 为空或仅 1 项时控件退化为只读展示（当前模板名），无切换能力；
+  - 切换中控件 loading 且不可重复触发；选中当前项为空操作（不重新 play）；
   - 切换失败（409 `not_playable` / 网络）→ 提示错误，**不打断当前播放**；
 - **字幕**：`subtitles[]` 逐条挂 `<track kind="subtitles" srclang={lang} label={label} default={is_default}>`，`src` = 响应 `url`（`typ=v` token，绑会话，§7.5）；选轨 / 关闭走播放器字幕菜单（皮肤内置）；无字幕时菜单自然不出现；
 - **元数据区**：probe（宽×高 / 视频编码 / 音频编码 / 码率）、custom（分类 / 描述 / 标签）；次要文本展示链路调试信息（`sid` / `template_id` / `expires_at`，便于验收核对）；
@@ -1033,8 +1037,17 @@ rand / uid = 固定常量（openvod / 0，不做随机，保 URL 稳定）
 - **手工验收（体验环境，四端起全）**：
   1. 管理端：上传 1 个视频 → 用**两个**模板发起转码（如「原画加密」+「720p 加密」）→ 上传 1 条字幕（验证选轨可再加一条）；
   2. player 打开列表 → 出现该媒资 → 点入播放：加密媒资出画面（= 清单改写 + key 下发 + 浏览器本地解密全链路通）；
-  3. 清晰度：切到另一模板 → 播放在**原进度**续播，画面差异符合模板（分辨率 / 水印）；再切回；
+  3. 清晰度：多套产物媒资进入播放页**直接开播列表首项**（不再 409）；下拉列出全部产物，切到另一模板 → 播放在**原进度**续播，画面差异符合模板（分辨率 / 水印）；再切回；
   4. 字幕：菜单显示轨道并可选轨 / 关闭；改轨道展示名后重进页面即取到新名称（`no-store`）；
   5. 重转码某模板后重进播放页：新产物生效（本地形态分片为逐次预签名直出，无 CDN 陈旧缓存问题，§6.5）；
   6. 负向：未配置预览账号 → 页面明确给出配置说明；失效 token（清 sessionStorage 后伪造）→ 401 路径可恢复；
-- **非目标不验收**：见 intent.md「播放演示 App」非目标（登录页 / 历史 / 搜索 / 部署流水线等）。
+- **非目标不验收**：见 intent.md「播放演示 App」非目标（登录页 / 历史 / 搜索等；镜像与流水线自 2026-10-13 起转为交付项，见 §11.8）。
+
+### 11.8 镜像与流水线（2026-10-13 追加；原文非目标转为交付项）
+
+- **镜像**：`apps/player/Dockerfile`（`node:22-bookworm-slim` 两阶段：bun 装依赖 + `next build` → 运行时 `next start`），构建上下文是**仓库根**（workspace 源码直引，同 admin）；**不依赖 `packages/db` / Prisma**，构建期无需生成客户端、无需 env（与 admin 镜像的差异，见 deploy-apps.md）；
+- **浏览器直连地址运行时下发**：`GET /api/session` 响应增加 `delivery_base`，取值顺序 `PLAYER_PUBLIC_DELIVERY_BASE_URL` → `NEXT_PUBLIC_DELIVERY_BASE_URL` → `DELIVERY_BASE_URL` → `http://127.0.0.1:9000`；客户端将其随 token 存 `sessionStorage`，且**页面加载后首次请求必经 `/api/session`** 刷新该值——镜像一次构建可跨环境部署，改 env 即生效、无需重建（构建期 `NEXT_PUBLIC_*` 内联降级为兼容路径）；
+- **CNB 流水线**：`.cnb.yml` 新增 `web_trigger_player_docker` 手动按钮（推送 `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/player:latest`）；`tag_push`（打 tag 发版）纳入 player——四镜像（worker → admin → delivery → player）单流水线串行构建、双标签（`:latest` 与 `:<tag名>`）；
+- **compose**：根 `docker-compose.yml` 新增 `player` 服务（`PLAYER_PORT` 宿主/容器同端口、`env_file: .env` + 显式透传 `PLAYER_PUBLIC_DELIVERY_BASE_URL`、`/healthz` 探活、json-file 日志轮转）；`scripts/compose.sh up` 额外打印播放端预览地址（`{{port}}` 换 `PLAYER_PORT`）；
+- **本地等价**：`task image:player`（`docker build -f apps/player/Dockerfile -t openvod-player:latest .`）；`OPENVOD_PLAYER_IMAGE` 可覆盖 compose 镜像地址；
+- **前置不变**：容器形态下浏览器直连分发端仍需 `DELIVERY_CORS_ORIGINS` 与对象桶 CORS 放行播放端源站（§11.2）；容器内服务端 `DELIVERY_BASE_URL` 与浏览器视角地址不同时必须分别配置。

@@ -306,7 +306,23 @@ M3/M4 播放链路（login / 播放会话 / 清单改写 / 密钥 / 字幕）已
 
 **配套改动**：分发端 `play` 响应扩展 `templates[]`（契约 + Go 生成物同步；受限 DB 账号补 `transcode_templates` 只读授权，ADR-0011 修订）；`scripts/dev.ts` 增加 player 服务（`PLAYER_PORT`，默认 3100）；体验环境 Runbook / 环境变量 / 开发工作流文档同步。不引入新 ADR。
 
-**非目标**：登录页 / 注册 / 口令找回；播放历史、收藏、搜索、分页、续播；跨模板无缝切换（换源重载、保留进度即可）；Demo 的容器镜像与部署流水线（本地与体验环境运行，静态化部署留作演进）；移动端 App 壳 / 小程序。
+**非目标**：登录页 / 注册 / 口令找回；播放历史、收藏、搜索、分页、续播；跨模板无缝切换（换源重载、保留进度即可）；播放端静态化 / CDN 部署（本地 / 体验环境 / 容器运行；容器镜像与流水线自 2026-10-13 起转交付项，见下）；移动端 App 壳 / 小程序。
+
+**实现状态（2026-10-12）**
+
+- ✅ 已完成：`apps/player`（Next.js 16 + antd 5 + Video.js v10 `@videojs/react`）——免登录 `/api/session`（服务端预览账号换 JWT、进程内缓存到过期前 60s、凭据不下发浏览器、缺失 501 带配置说明）、媒资列表（封面 / 时长 / 分类 / 描述 / 标签，空态与 401 / 网络 / CORS 错误区分）、播放页（标题 / probe / custom 展示 + sid / template_id / expires_at 链路调试信息）、**清晰度切换**（`templates[]`，指定 `template_id` 复用会话换源、保留播放进度、失败不打断当前播放）、**字幕选轨**（签名 `typ=v` URL 以原生 `<track>` 挂载，皮肤内置菜单）、卡顿诊断（8s stall 提示）与「重新播放」；
+- ✅ 已完成：分发端 `play` 响应扩展 `templates[]`（spec.md §11.1：候选 = 存储实际存在的模板子树、默认优先 / name / id 稳定排序、模板表查询失败降级 `name=null` 不中断播放）+ Go 纯函数单测；契约 `PlaybackTemplateDTO` + JSON Schema / Go 生成物入库（`task contracts`）；
+- ✅ 已完成：`scripts/dev.ts` 新增 player 服务（前台 / 后台 / stop / status / logs，`PLAYER_PORT` 默认 3100）、根 `dev:player` 脚本、player 环境变量（根 `.env.example` + 独立 `apps/player/.env.example`）、受限账号补 `transcode_templates` / `signing_keys` 只读授权（ADR-0011 约束 2 修订）、env-vars / api / trial-env / dev-workflow 文档同步。
+- ⏳ 非目标（spec.md §11）：登录 / 注册页、播放历史 / 收藏 / 搜索 / 分页、跨模板无缝切换、播放端静态化 / CDN 部署。
+
+**镜像与流水线（2026-10-13 追加，spec.md §11.8；原非目标转交付项）**
+
+- ✅ 已完成：`apps/player/Dockerfile`（`node:22-bookworm-slim` 两阶段，构建上下文=仓库根，不依赖 Prisma）；
+  `.cnb.yml` 新增 `web_trigger_player_docker` 手动构建按钮 + `tag_push` 纳入 player（四镜像串行 + 双标签）；
+  `Taskfile.yml` 新增 `image:player`；根 `docker-compose.yml` 新增 player 服务（`PLAYER_PORT` 映射 + `/healthz` 探活），
+  `scripts/compose.sh` 打印播放端预览地址；
+- ✅ 已完成：浏览器直连地址**运行时下发**（`/api/session` 响应 `delivery_base`：`PLAYER_PUBLIC_DELIVERY_BASE_URL`
+  → `NEXT_PUBLIC_DELIVERY_BASE_URL` → `DELIVERY_BASE_URL`）——镜像一次构建跨环境部署、改 env 即生效，不再依赖构建期内联。
 
 ### 非功能目标
 
@@ -338,7 +354,7 @@ M3/M4 播放链路（login / 播放会话 / 清单改写 / 密钥 / 字幕）已
 | M2 | 转码 → HLS 输出 → 存储落位（ladder 与 ffmpeg 模板可配）——**已达成（2026-09-18）**：模板可配档位 / 编码参数与加密开关，可**多选模板一次性发起**；Worker 认领执行并落 `proceed/{id}/{模板id}/`（同一媒资多套模板产物并存）；加密档位同时落 `hls_keys`；管理端「转码任务」页可观测 |
 | M3 | 加密 → 签名 → 播放闭环 —— **核心链路已达成（2026-09-18）**：login（ES256 JWT）→ play（可吊销会话）→ 清单改写（子清单 / `EXT-X-KEY` / 分片全部注入签名 token）→ key 接口下发 16B CEK（no-store）→ 播放器本地解密；实战以 ffmpeg(HLS) 播放解密通过、无签名请求 403。Safari 原生回归属部署验证；CDN + EO TypeA 演进项已于 2026-09-20 关闭（s3 预签名直出定稿，ADR-0005 修订）。 |
 | M4 | 字幕与元数据链路可用；播放会话可吊销（吊销后新请求被拒）——**字幕链路已达成（2026-09-20）**：管理端多轨 VTT 增删改查（结构化校验 / 语言 BCP-47 归一化 / 默认轨互斥）+ 分发端 `play` 下发 `typ=v` 签名 URL 与 `.vtt` 输出（`no-store`、无签名 403）；元数据链路已由 M1「生成元数据」（ffprobe）覆盖；**分类 / 描述 / 标签与自定义元数据下发已达成（2026-09-24）**：无限层级分类（独立模块 `/categories`）+ 描述 / 标签写入 `media.custom_data` 稀疏投影与 `metadata/{id}/custom.json`，分发端 `custom` 按公开白名单输出（spec.md §8） |
-| M5 | 播放演示 App（`apps/player`）可独立运行：预览账号免登录 → 选媒资 → 播放（含加密媒资浏览器本地解密）→ 多模板清晰度切换（play 响应 `templates[]`）→ 字幕选轨——**⏳ 待实现（2026-10-12 定，spec.md §11）** |
+| M5 | 播放演示 App（`apps/player`）可独立运行：预览账号免登录 → 选媒资 → 播放（含加密媒资浏览器本地解密）→ 多模板清晰度切换（play 响应 `templates[]`）→ 字幕选轨——**✅ 已实现（2026-10-12）**：`apps/player`（Next 16 + antd + Video.js v10）落地全部验收点；分发端 `play` 响应扩展 `templates[]`（契约 + Go 生成物同步；受限账号补 `transcode_templates` / `signing_keys` 只读授权，ADR-0011 修订）；`scripts/dev.ts` 增加 player 服务（`PLAYER_PORT` 默认 3100）；env-vars / api / trial-env / dev-workflow 文档同步。**2026-10-13 增补**：Docker 镜像与流水线（`apps/player/Dockerfile` + CNB 按钮 + `tag_push` 四镜像 + compose player 服务 + 运行时下发浏览器直连地址，spec.md §11.8）。**同日修订**：多套产物不再 409——默认模板优先，无默认自动播 `templates[]` 首项（spec §6.3），播放端把「多产物」呈现为清晰度下拉切换而非报错，1 套 / 上百套均可用（spec §11.4）。手工验收步骤见 spec.md §11.7 |
 | CI | `assert-unsigned-403` 与 `assert-no-store` 门禁常绿 |
 
 ## 约束

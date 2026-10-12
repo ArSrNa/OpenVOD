@@ -7,18 +7,20 @@
  *   bun scripts/dev.ts                                交互式：勾选服务 + 运行方式
  *   bun scripts/dev.ts admin                          前台管理端（自动后台带起 Worker）
  *   bun scripts/dev.ts delivery                       前台分发端（自动增量编译）
+ *   bun scripts/dev.ts player                         前台播放演示 App（需 delivery 一起跑）
  *   bun scripts/dev.ts worker                         前台 Worker（观察认领 / 转码日志）
- *   bun scripts/dev.ts admin delivery worker          后台启动所选（多选即后台）
+ *   bun scripts/dev.ts admin delivery worker player   后台启动所选（多选即后台）
  *   bun scripts/dev.ts admin --background             后台单起管理端（--no-worker 可不带 Worker）
- *   bun scripts/dev.ts stop [admin|delivery|worker]   停止（缺省全部；worker → delivery → admin）
+ *   bun scripts/dev.ts stop [admin|delivery|worker|player]   停止（缺省全部）
  *   bun scripts/dev.ts status                         运行状态（探测健康检查 / pid）
- *   bun scripts/dev.ts logs <服务|all> [-n 行数] [--no-follow]   跟踪日志（默认 tail -f；all 三个一起跟）
+ *   bun scripts/dev.ts logs <服务|all> [-n 行数] [--no-follow]   跟踪日志（默认 tail -f；all 一起跟）
  *   bun scripts/dev.ts --env-file .env.trial ...      以替代 env 文件启动（体验底座，见 docs/vod/trial-env.md）
  *
- * 组件与端口（跟随根 .env 的 ADMIN_PORT / DELIVERY_LISTEN，缺省 8787 / :9000）：
+ * 组件与端口（跟随根 .env 的 ADMIN_PORT / DELIVERY_LISTEN / PLAYER_PORT，缺省 8787 / :9000 / 3100）：
  *   admin     管理端 UI + API（apps/admin，Next.js 全栈，ADR-0013）    GET /healthz
  *   delivery  分发端（apps/delivery，Go + Chi）                        GET /healthz
  *   worker    转码 Worker（apps/worker，Bun 常驻，ADR-0008）           无端口，pid 判存活
+ *   player    播放演示 App（apps/player，Next.js，spec.md §11）        GET /healthz
  *
  * 纪律：**worker 必须一起跑**——否则管理端发起的转码任务会一直停在「排队中」
  * （transcode_jobs 无消费者认领）。因此启动 admin 时会自动带上 Worker，`--no-worker` 关闭。
@@ -56,9 +58,10 @@ const rel = (p: string) => (p.startsWith(ROOT) ? p.slice(ROOT.length + 1) : p);
 const renderCmd = (cmd: string[]) => cmd.map((c) => (c.includes(" ") ? JSON.stringify(c) : c)).join(" ");
 const sleep = (ms: number) => Bun.sleep(ms);
 
-type ServiceName = "admin" | "delivery" | "worker";
+type ServiceName = "admin" | "delivery" | "worker" | "player";
 type Env = Record<string, string>;
-const ALL: ServiceName[] = ["admin", "delivery", "worker"];
+// 顺序即后台启动顺序：delivery 在 player 之前（player 播放依赖分发端，spec.md §11.6）
+const ALL: ServiceName[] = ["admin", "delivery", "worker", "player"];
 
 const pidFile = (s: ServiceName) => join(RUN_DIR, `${s}.pid`);
 const logFile = (s: ServiceName) => join(RUN_DIR, `${s}.log`);
@@ -67,6 +70,7 @@ const SERVICE_TITLE: Record<ServiceName, string> = {
   admin: "管理端 UI + API（Next.js 全栈）",
   delivery: "分发端（Go + Chi）",
   worker: "转码 Worker（队列消费，无 HTTP 端口）",
+  player: "播放演示 App（Next.js，免登录播放端 Demo）",
 };
 
 const isService = (v: string): v is ServiceName => (ALL as string[]).includes(v);
@@ -156,9 +160,13 @@ function loadEnv(): Env {
 
 const adminPort = (env: Env) => env.ADMIN_PORT || env.PORT || "8787";
 const deliveryPort = (env: Env) => (env.DELIVERY_LISTEN || ":9000").replace(/^:/, "");
-const serviceUrl = (name: "admin" | "delivery", env: Env) =>
-  `http://localhost:${name === "admin" ? adminPort(env) : deliveryPort(env)}/healthz`;
-const serviceBase = (name: "admin" | "delivery", env: Env) => serviceUrl(name, env).replace(/\/healthz$/, "");
+const playerPort = (env: Env) => env.PLAYER_PORT || "3100";
+const servicePort = (name: "admin" | "delivery" | "player", env: Env) =>
+  name === "admin" ? adminPort(env) : name === "player" ? playerPort(env) : deliveryPort(env);
+const serviceUrl = (name: "admin" | "delivery" | "player", env: Env) =>
+  `http://localhost:${servicePort(name, env)}/healthz`;
+const serviceBase = (name: "admin" | "delivery" | "player", env: Env) =>
+  serviceUrl(name, env).replace(/\/healthz$/, "");
 
 let deliveryDbFallbackDone = false;
 function applyDeliveryDbFallback(env: Env): void {
@@ -220,7 +228,7 @@ async function foreignOwnerHint(name: ServiceName, env: Env): Promise<void> {
   if (name === "worker") return;
   if (pidAlive(readPid(name))) return;
   if (!(await serviceAlive(name, env))) return;
-  const portVar = name === "admin" ? "ADMIN_PORT" : "DELIVERY_LISTEN";
+  const portVar = name === "admin" ? "ADMIN_PORT" : name === "player" ? "PLAYER_PORT" : "DELIVERY_LISTEN";
   println(yellow(`[${name}] ${serviceUrl(name, env)} 被本启动器之外的进程占用（.run/${name}.pid 不存在）`));
   println(dim(`        compose 部署：docker compose ps 查看 → docker compose stop ${name}（或 down）`));
   println(dim(`        或改 .env 的 ${portVar} 换端口后再起（compose 的端口映射跟随该变量）`));
@@ -361,6 +369,9 @@ async function startBackground(name: ServiceName, env: Env): Promise<boolean> {
   if (name === "admin") {
     ensureDeps(env);
     cmd = ["bun", "run", "--cwd", "apps/admin", "dev"];
+  } else if (name === "player") {
+    ensureDeps(env);
+    cmd = ["bun", "run", "--cwd", "apps/player", "dev"];
   } else if (name === "worker") {
     cmd = ["bun", "run", "--cwd", "apps/worker", "dev"];
   } else {
@@ -369,8 +380,8 @@ async function startBackground(name: ServiceName, env: Env): Promise<boolean> {
 
   println(`[${name}] 启动（后台）：${renderCmd(cmd)}`);
   spawnBackground(name, cmd, env);
-  // admin 首编译较慢，给足时间；delivery/worker 秒级
-  const timeout = name === "admin" ? 45_000 : 20_000;
+  // admin / player 首编译较慢，给足时间；delivery/worker 秒级
+  const timeout = name === "admin" || name === "player" ? 45_000 : 20_000;
   if (await waitReady(name, env, timeout)) {
     println(green(`[${name}] 就绪`) + (name === "worker" ? `（pid ${readPid(name)}）` : `：${serviceUrl(name, env)}`));
     return true;
@@ -453,7 +464,9 @@ async function interactiveSelection(env: Env): Promise<{ services: ServiceName[]
         hint:
           name === "worker"
             ? `${SERVICE_TITLE[name]}（无端口，pid 判存活）`
-            : `${SERVICE_TITLE[name]} ${serviceBase(name, env)}${name === "admin" ? "（自动带 Worker）" : ""}`,
+            : `${SERVICE_TITLE[name]} ${serviceBase(name, env)}${
+                name === "admin" ? "（自动带 Worker）" : name === "player" ? "（播放需 delivery + 预览账号）" : ""
+              }`,
       })),
       initialValues: [...ALL],
       required: false,
@@ -504,7 +517,7 @@ async function runBackgroundFlow(services: ServiceName[], env: Env, noWorker: bo
     if (name === "worker") println(`  ${green("●")} worker    后台常驻（无端口；bun scripts/dev.ts logs worker）`);
     else println(`  ${green("●")} ${name.padEnd(9)} ${serviceBase(name, env)}`);
   }
-  println(dim("停止：bun scripts/dev.ts stop    状态：bun scripts/dev.ts status    日志：bun scripts/dev.ts logs <admin|delivery|worker|all>"));
+  println(dim("停止：bun scripts/dev.ts stop    状态：bun scripts/dev.ts status    日志：bun scripts/dev.ts logs <admin|delivery|worker|player|all>"));
   return ok ? 0 : 1;
 }
 
@@ -557,6 +570,21 @@ async function runForegroundFlow(name: ServiceName, env: Env): Promise<number> {
     return runForeground("delivery", [join(RUN_DIR, "delivery")], env);
   }
 
+  if (name === "player") {
+    ensureDeps(env);
+    if (await probeHttp(serviceUrl("player", env))) {
+      println(`[player] 已在运行，无需重复启动（${serviceUrl("player", env)}）`);
+      if (pidAlive(readPid("player"))) {
+        println(`如需重启：bun scripts/dev.ts stop player && bun scripts/dev.ts player`);
+      } else {
+        await foreignOwnerHint("player", env);
+      }
+      return 0;
+    }
+    println(dim(`[player] ${serviceBase("player", env)}（Ctrl-C 退出；播放依赖分发端与预览账号，见 docs/vod/trial-env.md）`));
+    return runForeground("player", ["bun", "run", "--cwd", "apps/player", "dev"], env);
+  }
+
   ensureNodeModules(env);
   warnFfmpeg();
   return runForeground("worker", ["bun", "run", "--cwd", "apps/worker", "dev"], env);
@@ -590,8 +618,8 @@ async function cmdLogs(rest: string[], follow: boolean, lines: number): Promise<
   // 支持多服务与 all（all → 三个服务一起跟，等价后台 `all --background` 后最常用的命令）
   const names = ALL.filter((n) => rest.includes(n));
   if (!names.length) {
-    println(red("用法：bun scripts/dev.ts logs <admin|delivery|worker|all> [-n 行数] [--no-follow]"));
-    println(dim("   all = 同时跟踪三个服务的日志；-n 20 = 只看最后 20 行；--no-follow = 不跟随，打印后退出"));
+    println(red("用法：bun scripts/dev.ts logs <admin|delivery|worker|player|all> [-n 行数] [--no-follow]"));
+    println(dim("   all = 同时跟踪四个服务的日志；-n 20 = 只看最后 20 行；--no-follow = 不跟随，打印后退出"));
     return 1;
   }
   const files = names.map((n) => logFile(n));
@@ -621,15 +649,16 @@ function printHelp(): void {
       "  bun scripts/dev.ts                                交互式：勾选服务 + 运行方式",
       "  bun scripts/dev.ts admin                          前台管理端（自动后台带起 Worker）",
       "  bun scripts/dev.ts delivery                       前台分发端（自动增量编译）",
+      "  bun scripts/dev.ts player                         前台播放演示 App（播放需 delivery + 预览账号）",
       "  bun scripts/dev.ts worker                         前台 Worker（观察认领 / 转码日志）",
-      "  bun scripts/dev.ts admin delivery worker          后台启动所选（多选即后台）",
+      "  bun scripts/dev.ts admin delivery worker player   后台启动所选（多选即后台）",
       "  bun scripts/dev.ts all --background               后台启动全部（等价旧 ./start.sh）",
-      "  bun scripts/dev.ts stop [服务...]                 停止（缺省全部：worker → delivery → admin）",
+      "  bun scripts/dev.ts stop [服务...]                 停止（缺省全部）",
       "  bun scripts/dev.ts status                         运行状态",
       "  bun scripts/dev.ts logs <服务|all> [-n 行数] [--no-follow]   看日志（默认 tail -f）",
       "  bun scripts/dev.ts --env-file .env.trial all --background   以替代 env 文件后台起全部（体验底座）",
       "",
-      `${bold("服务")}    admin（:${adminPort(loadEnv())}）/ delivery（:${deliveryPort(loadEnv())}）/ worker（无端口）`,
+      `${bold("服务")}    admin（:${adminPort(loadEnv())}）/ delivery（:${deliveryPort(loadEnv())}）/ worker（无端口）/ player（:${playerPort(loadEnv())}）`,
       `${bold("选项")}    -d, --background 后台运行；--no-worker 启动 admin 时不自动带 Worker；`,
       `            --env-file <路径> 指定 env 文件（默认根 .env；指定后不再读根 .env，如体验底座的 .env.trial）`,
       "",

@@ -84,6 +84,20 @@
       script:
         - docker build -f apps/worker/Dockerfile -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/worker:latest . --push
 
+# 播放演示 App player 镜像（spec.md §11.8：Next.js 全栈单容器，免登录播放端 Demo）
+# 构建上下文同为仓库根（workspace 源码直引）；不依赖 Prisma，构建期无需生成客户端与 env——
+# 浏览器直连分发端地址由运行时 env 下发（/api/session 的 delivery_base），镜像可跨环境复用。
+.build-player-image: &build-player-image
+  name: 构建并推送 player 镜像
+  runner:
+    cpus: 32
+  services:
+    - docker
+  stages:
+    - name: docker build player
+      script:
+        - docker build -f apps/player/Dockerfile -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/player:latest . --push
+
 # .env 注入：内容来自密钥仓库（.env 被 .gitignore，故不在代码仓内落盘）
 # 密钥仓库中存放 env.dev.yml，内含 OPENVOD_ENV_B64 = base64 -w 0 < .env
 .environ: &environ
@@ -118,10 +132,12 @@ $:
     - <<: *build-admin-image
   web_trigger_worker_docker:
     - <<: *build-worker-image
+  web_trigger_player_docker:
+    - <<: *build-player-image
   # tag_push（打 tag 发版）：一次性构建全部运行镜像并推送制品库。
-  # 三个 stage 顺序执行（worker → admin → delivery），任一失败即中断，不留"半个版本"；
+  # 四个 stage 顺序执行（worker → admin → delivery → player），任一失败即中断，不留"半个版本"；
   # 每个镜像同时打 :latest 与 :${CNB_BRANCH}（tag 名）双标签。
-  # 注：与上方三个 web_trigger 锚点独立成流水线并行不同，发版要求三镜像同批产出，故单流水线串行。
+  # 注：与上方四个 web_trigger 锚点独立成流水线并行不同，发版要求四镜像同批产出，故单流水线串行。
   tag_push:
     - name: 发布全部运行镜像（worker / admin / delivery）
       runner:
@@ -142,6 +158,9 @@ $:
           script:
             - cd apps/delivery
             - docker build -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:latest -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:${CNB_BRANCH} . --push
+        - name: docker build player
+          script:
+            - docker build -f apps/player/Dockerfile -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/player:latest -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/player:${CNB_BRANCH} . --push
 
   # 自动生成 Tag（Tag 列表页「自动生成 Tag」按钮触发；auto_tag 只能配置在 $ 兜底分支下）。
   # tag 名取自根 package.json 的 version（仓库 tag 惯例不带 v 前缀，如 0.1.0 / 0.2.0），

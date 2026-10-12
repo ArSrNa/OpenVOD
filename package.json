@@ -1,5 +1,5 @@
 {
-  "version": "0.2.0",
+  "version": "1.0.0",
   "name": "openvod",
   "private": true,
   "license": "Apache-2.0",
@@ -20,6 +20,7 @@
     "dev:admin": "bun run --cwd apps/admin dev",
     "dev:worker": "bun run --cwd apps/worker dev",
     "dev:delivery": "go -C apps/delivery run .",
+    "dev:player": "bun run --cwd apps/player dev",
     "test": "bun test && go -C apps/delivery test ./..."
   },
   "devDependencies": {

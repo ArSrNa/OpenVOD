@@ -275,7 +275,7 @@ func (a *api) handlePlay(w http.ResponseWriter, r *http.Request) {
 	if explicitTpl {
 		requestedTpl = *req.TemplateID // 显式指定；空串 = 显式请求旧布局产物（无模板段）
 	}
-	tpl, err := a.resolveTemplate(ctx, mediaID, requestedTpl, explicitTpl)
+	resolution, err := a.resolveTemplate(ctx, mediaID, requestedTpl, explicitTpl)
 	if err != nil {
 		var npe *notPlayableError
 		if errors.As(err, &npe) {
@@ -285,6 +285,11 @@ func (a *api) handlePlay(w http.ResponseWriter, r *http.Request) {
 		a.o.Logger.Error("产物探测失败", "err", err, "media_id", mediaID)
 		writeError(w, http.StatusInternalServerError, contracts.Internal, "产物探测失败")
 		return
+	}
+	tpl := resolution.selected
+	templates := resolution.items
+	if templates == nil {
+		templates = []contracts.PlaybackTemplate{} // 旧布局：恒为空数组，不外泄 null（契约约定）
 	}
 
 	now := a.o.Now()
@@ -350,7 +355,70 @@ func (a *api) handlePlay(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:   expiresAt.UTC().Format(time.RFC3339),
 		TemplateID:  tpl,
 		Subtitles:   subtitles,
+		Templates:   templates,
 	})
+}
+
+/**
+ * playbackTemplates 构造 play 响应 templates[]（spec.md §11.1）：
+ * 候选 = resolveTemplate 举出的存储实际模板子树（「有什么放什么」），名称 / 默认标记批量查
+ * transcode_templates；查询失败**不致命**——全部降级 name=null（播放链路不因模板表查询失败中断，
+ * 同 §8.4 容错口径）。
+ */
+func (a *api) playbackTemplates(ctx context.Context, candidates []string) []contracts.PlaybackTemplate {
+	if len(candidates) == 0 {
+		return []contracts.PlaybackTemplate{} // 旧布局 / 无产物：恒为空数组
+	}
+	rows, err := a.o.DB.TemplateRefs(ctx, candidates)
+	if err != nil {
+		a.o.Logger.Warn("查询转码模板失败，templates[].name 降级为 null", "err", err)
+		return buildPlaybackTemplates(candidates, nil, false)
+	}
+	refs := make(map[string]store.TemplateRef, len(rows))
+	for _, r := range rows {
+		refs[r.ID] = r
+	}
+	return buildPlaybackTemplates(candidates, refs, true)
+}
+
+/**
+ * buildPlaybackTemplates 由候选列表 + 模板行（id -> TemplateRef）构造响应数组（纯函数，便于单测）：
+ *   - lookupOK=false（查表失败）或行缺失（模板已删的历史产物）→ name=null、is_default=false；
+ *   - 排序：默认模板优先；其余按 name（null 排最后）再按 id 字典序，保证稳定输出。
+ */
+func buildPlaybackTemplates(candidates []string, refs map[string]store.TemplateRef, lookupOK bool) []contracts.PlaybackTemplate {
+	out := make([]contracts.PlaybackTemplate, 0, len(candidates))
+	for _, id := range candidates {
+		ref, found := refs[id]
+		if !lookupOK || !found {
+			out = append(out, contracts.PlaybackTemplate{ID: id})
+			continue
+		}
+		name := ref.Name
+		out = append(out, contracts.PlaybackTemplate{ID: id, Name: &name, IsDefault: ref.IsDefault})
+	}
+	slices.SortStableFunc(out, func(x, y contracts.PlaybackTemplate) int {
+		if x.IsDefault != y.IsDefault { // 默认模板优先
+			if x.IsDefault {
+				return -1
+			}
+			return 1
+		}
+		xNil, yNil := x.Name == nil, y.Name == nil
+		if xNil != yNil { // name 为 null 排最后
+			if xNil {
+				return 1
+			}
+			return -1
+		}
+		if !xNil {
+			if c := strings.Compare(*x.Name, *y.Name); c != 0 {
+				return c
+			}
+		}
+		return strings.Compare(x.ID, y.ID)
+	})
+	return out
 }
 
 /**
@@ -397,49 +465,89 @@ func (a *api) signSubtitleURLs(
 }
 
 /**
+ * templateResolution 模板产物解析结果（spec.md §6.3 / §11.1）：
+ * 选择（selected）与响应 templates[]（items）共用同一次模板表查询，且保证
+ * 「未指定时自动播放的那套 = 客户端列表里的第一项」。
+ */
+type templateResolution struct {
+	selected   string                       // 选中模板 id（"" = 旧布局产物，无模板段）
+	candidates []string                     // 存储实际存在的模板子树（供响应 / 排障）
+	items      []contracts.PlaybackTemplate // 排序后的 templates[]（旧布局为空数组）
+}
+
+/**
  * resolveTemplate 选择播放哪套模板产物（`proceed/{id}/{templateId}/`）：
  *   - 显式指定 → 必须存在（否则 not_playable，消息里列出可选值）
  *   - 唯一产物 → 直接使用
- *   - 多套产物 → 取默认模板（transcode_templates.is_default）的那套；否则 not_playable 列出可选值
+ *   - 多套产物 → 默认模板（transcode_templates.is_default）优先；无默认模板 → **自动选
+ *     templates[] 的第一个**（2026-10-13 修订：原先 409 会把选择成本推给每个客户端，
+ *     播放端呈现为清晰度切换而不是报错；客户端可用同一响应 `templates[]` 随时切换）
  *   - 无模板子树 → 旧布局（M2 之前的 `proceed/{id}/{variant}/`），模板段为空
+ * 候选 = 存储实际存在的模板子树。模板表不可用时退化为列举顺序第一个（可用性优先，不阻断播放）。
  */
-func (a *api) resolveTemplate(ctx context.Context, mediaID, requested string, explicit bool) (string, error) {
+func (a *api) resolveTemplate(ctx context.Context, mediaID, requested string, explicit bool) (templateResolution, error) {
 	prefixes, err := a.o.Blob.ListPrefixes(ctx, proceedKey(mediaID, "", ""))
 	if err != nil {
-		return "", err
+		return templateResolution{}, err
 	}
+	candidates := filterTemplateCandidates(prefixes)
+	if explicit {
+		if requested == "" {
+			// 显式请求旧布局产物（直接挂在 proceed/{id}/ 下，无模板段）
+			if _, err := a.o.Blob.Get(ctx, proceedKey(mediaID, "", "master.m3u8")); err != nil {
+				return templateResolution{}, &notPlayableError{"该媒资没有旧布局产物"}
+			}
+			return templateResolution{items: a.playbackTemplates(ctx, candidates)}, nil
+		}
+		if !slices.Contains(candidates, requested) {
+			return templateResolution{}, &notPlayableError{fmt.Sprintf("指定的模板产物不存在（可选：%s）", strings.Join(candidates, ", "))}
+		}
+		return templateResolution{selected: requested, candidates: candidates, items: a.playbackTemplates(ctx, candidates)}, nil
+	}
+	if len(candidates) == 0 {
+		if _, err := a.o.Blob.Get(ctx, proceedKey(mediaID, "", "master.m3u8")); err != nil {
+			return templateResolution{}, &notPlayableError{"该媒资没有可播放的转码产物"}
+		}
+		return templateResolution{}, nil // 旧布局：产物直接挂在 proceed/{id}/ 下
+	}
+	items := a.playbackTemplates(ctx, candidates)
+	if len(candidates) == 1 {
+		return templateResolution{selected: candidates[0], candidates: candidates, items: items}, nil
+	}
+	if def, err := a.o.DB.DefaultTemplateID(ctx); err == nil && slices.Contains(candidates, def) {
+		return templateResolution{selected: def, candidates: candidates, items: items}, nil
+	}
+	if auto := selectAutoTemplate(items); auto != "" {
+		return templateResolution{selected: auto, candidates: candidates, items: items}, nil
+	}
+	// templates[] 为空只可能来自候选列举异常：退化为列举顺序第一个，播放优先
+	return templateResolution{selected: candidates[0], candidates: candidates}, nil
+}
+
+/**
+ * selectAutoTemplate 未指定模板且无默认模板时的自动选择（纯函数，便于单测）：
+ * 取排序后 templates[] 的第一个——排序已保证「默认模板优先 → name（null 最后）→ id」，
+ * 因此选中项与客户端看到的首项一致（spec.md §11.1）。
+ */
+func selectAutoTemplate(items []contracts.PlaybackTemplate) string {
+	if len(items) == 0 {
+		return ""
+	}
+	return items[0].ID
+}
+
+/**
+ * filterTemplateCandidates 从 `proceed/{id}/` 下的一级前缀中筛出模板子树候选（纯函数，便于单测）：
+ * 排除 `subtitles` 保留段，只认 cuid 形状（脏目录不参与选择与切换，spec.md §11.1）。
+ */
+func filterTemplateCandidates(prefixes []string) []string {
 	candidates := make([]string, 0, len(prefixes))
 	for _, p := range prefixes {
 		if p != reservedSubtitles && templateIDPattern.MatchString(p) {
 			candidates = append(candidates, p)
 		}
 	}
-	if explicit {
-		if requested == "" {
-			// 显式请求旧布局产物（直接挂在 proceed/{id}/ 下，无模板段）
-			if _, err := a.o.Blob.Get(ctx, proceedKey(mediaID, "", "master.m3u8")); err != nil {
-				return "", &notPlayableError{"该媒资没有旧布局产物"}
-			}
-			return "", nil
-		}
-		if !slices.Contains(candidates, requested) {
-			return "", &notPlayableError{fmt.Sprintf("指定的模板产物不存在（可选：%s）", strings.Join(candidates, ", "))}
-		}
-		return requested, nil
-	}
-	if len(candidates) == 0 {
-		if _, err := a.o.Blob.Get(ctx, proceedKey(mediaID, "", "master.m3u8")); err != nil {
-			return "", &notPlayableError{"该媒资没有可播放的转码产物"}
-		}
-		return "", nil // 旧布局：产物直接挂在 proceed/{id}/ 下
-	}
-	if len(candidates) == 1 {
-		return candidates[0], nil
-	}
-	if def, err := a.o.DB.DefaultTemplateID(ctx); err == nil && slices.Contains(candidates, def) {
-		return def, nil
-	}
-	return "", &notPlayableError{fmt.Sprintf("该媒资有多套产物，请在 play 请求中指定 template_id（可选：%s）", strings.Join(candidates, ", "))}
+	return candidates
 }
 
 // ---- 主清单改写 ----

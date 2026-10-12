@@ -44,6 +44,32 @@
         ],
         "title": "PlaybackSubtitle"
       }
+    },
+    "templates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_default": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "is_default"
+        ],
+        "title": "PlaybackTemplate"
+      }
     }
   },
   "required": [
@@ -51,7 +77,8 @@
     "manifest_url",
     "expires_at",
     "template_id",
-    "subtitles"
+    "subtitles",
+    "templates"
   ],
   "$id": "PlaybackResponse.json",
   "title": "PlaybackResponse"

@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # =============================================================================
-# compose.sh — OpenVOD 单机容器形态（admin + worker）启停封装
+# compose.sh — OpenVOD 单机容器形态（admin + worker + player）启停封装
 #
 # 与 scripts/dev.ts 的分工：
 #   dev.ts      源码直跑（开发调试：next dev / bun --watch / go run）
@@ -10,7 +10,7 @@
 #   scripts/compose.sh up            拉取镜像并启动（缺 .env 时提示先生成）
 #   scripts/compose.sh down          停止并移除容器（镜像与卷保留）
 #   scripts/compose.sh ps            状态
-#   scripts/compose.sh logs [服务]   跟日志（默认全部；如 admin / worker）
+#   scripts/compose.sh logs [服务]   跟日志（默认全部；如 admin / worker / player）
 #   scripts/compose.sh restart [服务]
 #   scripts/compose.sh url           打印 CNB 预览地址（由 CNB_VSCODE_PROXY_URI 推导）
 #
@@ -30,6 +30,7 @@ if [ -f "$ROOT/.env" ]; then
   set +a
 fi
 ADMIN_PORT=${ADMIN_PORT:-8787}
+PLAYER_PORT=${PLAYER_PORT:-3100}
 WORKER_TMP=${WORKER_TMP:-$ROOT/.run/worker-tmp}
 
 preview_url() {
@@ -48,12 +49,16 @@ case "$cmd" in
     fi
     mkdir -p "$WORKER_TMP"
     # 制品库尚未构建对应镜像时（如首次部署）不阻断：本地已有同名镜像可直接起
-    docker compose pull || echo "[compose] 警告：有镜像拉取失败（尚未构建？先在 CNB 点「构建admin/worker（Docker）」按钮）——尝试用本地同名镜像继续" >&2
+    docker compose pull || echo "[compose] 警告：有镜像拉取失败（尚未构建？先在 CNB 点「构建admin/worker/player（Docker）」按钮）——尝试用本地同名镜像继续" >&2
     docker compose up -d
     docker compose ps
     u=$(preview_url) || true
     if [ -n "${u:-}" ]; then
       echo "[compose] 管理端预览：$u（若打不开，在 WebIDE 的 PORTS 面板添加 $ADMIN_PORT）"
+    fi
+    p=$(printf '%s\n' "${CNB_VSCODE_PROXY_URI:-}" | sed "s/{{port}}/$PLAYER_PORT/g")
+    if [ -n "${p:-}" ]; then
+      echo "[compose] 播放演示预览：$p（免登录；预览账号用 apps/admin/scripts/bootstrap-playback.ts 创建）"
     fi
     echo "[compose] worker 无端口：转码进度看管理端「转码任务」页；日志 scripts/compose.sh logs worker"
     ;;

@@ -10,8 +10,9 @@
 #   1) 生成 .run/infra.env（随机口令 / AK-SK，chmod 600；.run/ 已 gitignore，不覆盖既有值）
 #   2) docker compose up -d（项目名 openvod-infra，与根编排 openvod 互不影响）
 #   3) 等 mysql 健康 → 幂等建分发端受限账号 openvod_ro
-#      （ADR-0011：users / media / media_subtitles / hls_keys / system_settings 只读 +
-#        playback_sessions 读写，其余拒绝；口令与 .run/infra.env 保持同步）
+#      （ADR-0011：users / media / media_subtitles / hls_keys / signing_keys /
+#        system_settings / transcode_templates 只读 + playback_sessions 读写，
+#        其余拒绝；口令与 .run/infra.env 保持同步）
 #
 # 端口等变量可被 shell 环境同名覆盖（INFRA_MYSQL_PORT / INFRA_RUSTFS_API_PORT /
 # INFRA_RUSTFS_CONSOLE_PORT / INFRA_BIND / INFRA_MYSQL_IMAGE / INFRA_RUSTFS_IMAGE），
@@ -150,7 +151,9 @@ GRANT SELECT ON openvod.users TO 'openvod_ro'@'%';
 GRANT SELECT ON openvod.media TO 'openvod_ro'@'%';
 GRANT SELECT ON openvod.media_subtitles TO 'openvod_ro'@'%';
 GRANT SELECT ON openvod.hls_keys TO 'openvod_ro'@'%';
+GRANT SELECT ON openvod.signing_keys TO 'openvod_ro'@'%';
 GRANT SELECT ON openvod.system_settings TO 'openvod_ro'@'%';
+GRANT SELECT ON openvod.transcode_templates TO 'openvod_ro'@'%';
 GRANT SELECT,INSERT,UPDATE,DELETE ON openvod.playback_sessions TO 'openvod_ro'@'%';
 FLUSH PRIVILEGES;
 SQL

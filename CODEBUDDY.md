@@ -21,12 +21,13 @@ OpenVOD：自建云点播系统（媒资 → 转码加密 → 元数据 / 字幕
 | `task db:parity` | 校验两份 Prisma schema 的 enum/model 段逐字一致（CI 门禁） |
 | `task contracts` | zod → JSON Schema → Go struct（quicktype）。生成物**必须入库**，CI 用 `bun run check:contracts-go` diff 门禁 |
 | `task vectors` | 生成 TS/Go 加密互通测试向量；未生成时两端互通测试会 skip |
-| `bun scripts/dev.ts` | 开发启动器（TS，取代旧 `./start*.sh`）：交互式勾选服务（admin / delivery / worker）与运行方式（前台调试 / 后台常驻），端口跟随 `.env` 的 `ADMIN_PORT` / `DELIVERY_LISTEN` |
+| `bun scripts/dev.ts` | 开发启动器（TS，取代旧 `./start*.sh`）：交互式勾选服务（admin / delivery / worker）与运行方式（前台调试 / 后台常驻），端口跟随 env 文件的 `ADMIN_PORT` / `DELIVERY_LISTEN`（默认根 `.env`，`--env-file <路径>` 可指定替代文件，指定后不读根 `.env`） |
 | `bun scripts/dev.ts all --background` | 后台一键启动全部（等价旧 `./start.sh`），含 **worker（转码队列消费者，必须一起跑）**；子命令 `stop` / `status` / `logs <服务>`；pid 与日志在 `.run/`（worker 无端口，用 pid 判定存活，`setsid` 独立进程组整组收） |
 | `bun scripts/dev.ts admin` | 前台管理端调试。**会自动一并启动 Worker**（后台，日志 `.run/worker.log`），退出时一并收掉；已在跑则沿用不动它 |
 | `bun scripts/dev.ts delivery` | 前台分发端调试（自动增量 `go build` 到 `.run/delivery`，`task dev:delivery` 同源） |
 | `bun scripts/dev.ts worker` | 前台单跑转码 Worker（观察认领 / 转码日志用） |
 | `task dev:worker` | 转码 Worker（Bun `--watch`，需 ffmpeg/ffprobe，缺失直接退出） |
+| `sh scripts/compose-infra.sh up` | **本地体验底座**（MySQL + RustFS 容器，编排 `docker-compose.infra.yml`，项目名 `openvod-infra`，与根编排互不影响）：up 自动生成凭据 `.run/infra.env`、等 mysql 健康、建分发端受限账号 `openvod_ro`（ADR-0011）；另有 `down` / `reset`（删卷清数据）/ `ps` / `logs` / `init-env`（生成 `.env.trial`，**不动根 .env**）/ `env`（打印连接串）/ `url`。三端启动用 `bun scripts/dev.ts --env-file .env.trial ...`。**用户说「启动一个体验环境」时，按 `docs/vod/trial-env.md` 的 Runbook 执行** |
 | `task test` | `bun test` + `go -C apps/delivery test ./...` |
 | `bun test packages/crypto/test/interop.test.ts` | 运行单个 TS 测试文件；`bun test -t "用例名"` 按名称过滤 |
 | `go -C apps/delivery test ./internal/token -run TestTokenVerify -v` | 运行单个 Go 测试 |
@@ -106,4 +107,4 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可轮换）
 
 - **生成物入库规则**：`packages/contracts/jsonschema/` 与 `apps/delivery/internal/contracts/` 必须提交；`packages/db/generated/`、`.env`、`.run/`、`packages/db/prisma/*.db` 已忽略。改契约不提交生成物 = CI 失败。
 - 提交规范 conventional commits；v1 不引入 changesets（ADR-0001）。
-- 文档索引：`docs/vod/README.md`（架构图 + ADR 索引 + 术语表）、`intent.md`（目标 / 非目标 / 验收里程碑）、`api.md`（**HTTP API 参考**：管理端 + 分发端全部端点与错误码）、`open-questions.md`（specification 前待关闭项）、`dev-workflow.md`（启动 / 数据库 / 建号 / 排错）。
+- 文档索引：`docs/vod/README.md`（架构图 + ADR 索引 + 术语表）、`intent.md`（目标 / 非目标 / 验收里程碑）、`api.md`（**HTTP API 参考**：管理端 + 分发端全部端点与错误码）、`open-questions.md`（specification 前待关闭项）、`dev-workflow.md`（启动 / 数据库 / 建号 / 排错）、`trial-env.md`（**「启动一个体验环境」Runbook**：MySQL + RustFS 底座 + 三端起全的固定流程）。

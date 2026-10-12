@@ -13,6 +13,7 @@
  *   bun scripts/dev.ts stop [admin|delivery|worker]   停止（缺省全部；worker → delivery → admin）
  *   bun scripts/dev.ts status                         运行状态（探测健康检查 / pid）
  *   bun scripts/dev.ts logs <服务|all> [-n 行数] [--no-follow]   跟踪日志（默认 tail -f；all 三个一起跟）
+ *   bun scripts/dev.ts --env-file .env.trial ...      以替代 env 文件启动（体验底座，见 docs/vod/trial-env.md）
  *
  * 组件与端口（跟随根 .env 的 ADMIN_PORT / DELIVERY_LISTEN，缺省 8787 / :9000）：
  *   admin     管理端 UI + API（apps/admin，Next.js 全栈，ADR-0013）    GET /healthz
@@ -107,6 +108,7 @@ function parseDotEnv(text: string): Record<string, string> {
 }
 
 function ensureEnvFile(): void {
+  if (envFileOverride) return; // 指定替代 env 文件（如 .env.trial）时完全不碰根 .env
   const file = join(ROOT, ".env");
   if (existsSync(file)) return;
   println("[env] .env 不存在，尝试 scripts/gen-env.sh 生成...");
@@ -126,13 +128,22 @@ function ensureEnvFile(): void {
   }
 }
 
+// --env-file <路径> / OPENVOD_ENV_FILE：用替代 env 文件启动（体验底座 .env.trial，见 docs/vod/trial-env.md）。
+// 指定后完全不读根 .env——否则根 .env 的同名键会按上面「文件覆盖 env」语义把试用配置盖回去。
+let envFileOverride: string | undefined;
+const envFilePath = (): string => (envFileOverride ? resolve(ROOT, envFileOverride) : join(ROOT, ".env"));
+
 let envCache: Env | null = null;
 function loadEnv(): Env {
   if (envCache) return envCache;
+  if (envFileOverride && !existsSync(envFilePath())) {
+    println(red(`[env] --env-file 指定的文件不存在：${rel(envFilePath())}（先执行：sh scripts/compose-infra.sh init-env）`));
+    process.exit(1);
+  }
   ensureEnvFile();
   const env: Env = {};
   for (const [k, v] of Object.entries(process.env)) if (v != null) env[k] = v;
-  const file = join(ROOT, ".env");
+  const file = envFilePath();
   if (existsSync(file)) {
     for (const [k, v] of Object.entries(parseDotEnv(readFileSync(file, "utf8")))) {
       env[k] = v;
@@ -616,9 +627,11 @@ function printHelp(): void {
       "  bun scripts/dev.ts stop [服务...]                 停止（缺省全部：worker → delivery → admin）",
       "  bun scripts/dev.ts status                         运行状态",
       "  bun scripts/dev.ts logs <服务|all> [-n 行数] [--no-follow]   看日志（默认 tail -f）",
+      "  bun scripts/dev.ts --env-file .env.trial all --background   以替代 env 文件后台起全部（体验底座）",
       "",
       `${bold("服务")}    admin（:${adminPort(loadEnv())}）/ delivery（:${deliveryPort(loadEnv())}）/ worker（无端口）`,
-      `${bold("选项")}    -d, --background 后台运行；--no-worker 启动 admin 时不自动带 Worker`,
+      `${bold("选项")}    -d, --background 后台运行；--no-worker 启动 admin 时不自动带 Worker；`,
+      `            --env-file <路径> 指定 env 文件（默认根 .env；指定后不再读根 .env，如体验底座的 .env.trial）`,
       "",
       dim("纪律：worker 是 transcode_jobs 的唯一消费者，只起 admin 会让转码任务停在「排队中」。"),
       dim("管辖范围：start / stop / status 只管本启动器用 .run/*.pid 起的进程组；"),
@@ -637,6 +650,7 @@ function parseArgs(argv: string[]): {
   services: ServiceName[];
   mode?: "foreground" | "background";
   noWorker: boolean;
+  envFile?: string;
   follow: boolean;
   lines: number;
   rest: string[];
@@ -644,6 +658,7 @@ function parseArgs(argv: string[]): {
   let command: Command = "run";
   let mode: "foreground" | "background" | undefined;
   let noWorker = false;
+  let envFile: string | undefined;
   let follow = true;
   let lines = 50;
   const services: ServiceName[] = [];
@@ -664,6 +679,11 @@ function parseArgs(argv: string[]): {
       mode = "foreground";
     } else if (arg === "--no-worker") {
       noWorker = true;
+    } else if (arg === "--env-file") {
+      const value = argv[++i];
+      if (value) envFile = value;
+    } else if (arg.startsWith("--env-file=")) {
+      envFile = arg.slice("--env-file=".length) || undefined;
     } else if (arg === "--no-follow") {
       follow = false;
     } else if (arg === "-n" || arg === "--lines") {
@@ -676,7 +696,7 @@ function parseArgs(argv: string[]): {
     }
   }
   // 去重（all + 具体服务混写）
-  return { command, services: [...new Set(services)], mode, noWorker, follow, lines, rest };
+  return { command, services: [...new Set(services)], mode, noWorker, envFile, follow, lines, rest };
 }
 
 async function main(): Promise<number> {
@@ -686,6 +706,8 @@ async function main(): Promise<number> {
     printHelp();
     return 0;
   }
+  // 替代 env 文件：flag 优先，其次 OPENVOD_ENV_FILE（help 分支不设置，printHelp 里的 loadEnv 走默认 .env）
+  envFileOverride = cli.envFile ?? (process.env.OPENVOD_ENV_FILE || undefined);
   if (cli.command === "logs") {
     loadEnv();
     return cmdLogs([...cli.services, ...cli.rest], cli.follow, cli.lines);

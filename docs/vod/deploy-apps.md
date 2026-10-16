@@ -156,14 +156,17 @@ CNB 云原生开发环境实测要点（2026-09-22）：
 
 1. 升级**根 `package.json` 的 version**（全仓库唯一版本号，子包一律不声明），并合入**默认分支**（当前 `main`，
    见下条的分支来源）；
-2. Tag 列表页「自动生成 Tag」→ `auto_tag` 读取根 `package.json` 的 version 校验语义化 → 确认同名 tag 不存在 →
-   `git tag -a <version>` 并推送（tag 名即版本号，不带 `v` 前缀）。
-   **配置挂载位置**：CNB 按**分支名**匹配 `auto_tag` 的流水线配置，写在 `$` 兜底里会被忽略——那时平台退化为
-   内置 `cnbcool/git-auto-tag` 插件，按提交语义（`feat` → minor、`fix`/`docs` → patch）推导版本，与根
-   `package.json` 漂移（2026-10-16 实测：`main` 上 version=1.1.0 时插件打出了 0.3.0）。因此本仓库的 auto_tag 任务
-   定义在 `.cnb.yml` 顶部的 `.auto-tag` 锚点、由文件末尾的 **`main:` 段**引用；
-   **运行 / 检出分支**由 CNB「Tag 自动生成配置」决定：默认分支下的 `.cnb/settings.yml` → `tag.auto_tag.branch`
-   （默认值 = 仓库默认分支 `main`；本仓库未配置该文件），Tag 列表页按钮**不能临时选分支**，检出内容为该分支最新 commit；
+2. Tag 列表页「自动生成 Tag」→ `auto_tag`（`.cnb.yml` 的 **`$` 兜底分支下**，任务定义在文件顶部 `.auto-tag` 锚点）
+   读取根 `package.json` 的 version 校验语义化 → 确认同名 tag 不存在 → `git tag -a <version>` 并推送
+   （tag 名即版本号，不带 `v` 前缀）。三处易踩的点：
+   - **挂载位置**：`$` 兜底分支下即可（本仓库自 0.2.0 起一直如此，2026-10-16 实测确认会被执行——流水线跑的就是
+     该任务）。CNB 文档中「auto_tag 配置写在 `$` 下会被忽略」的说法与本仓库实测不符，以实测为准，不要挪到分支名下；
+   - **运行 / 检出分支**由 CNB「Tag 自动生成配置」决定：默认分支下的 `.cnb/settings.yml` → `tag.auto_tag.branch`
+     （默认值 = 仓库默认分支 `main`；本仓库未配置该文件）；Tag 列表页按钮**不能临时选分支**，
+     检出 = 该分支最新 commit ⇒ **发版前先把待发布提交合入 `main`**；
+   - **Git LFS**：本仓库用 LFS 追踪 `videos/mv.mp4`（`.gitattributes`），CNB 检出会带 `git-lfs` 的 `pre-push` 钩子——
+     缺 `git-lfs` 的镜像（原用 `node:22`）会在推送 tag 时直接失败（`git-lfs was not found`，2026-10-16 实测）。
+     故该 job 改用开发镜像（内置 `git-lfs` 3.4.1），并保留 `--no-verify` 兜底重试一次（推 tag 不涉及 LFS 对象，安全）；
 3. tag 推送触发 `tag_push`：四个运行镜像（worker → admin → delivery → player）串行构建 + **独立 job**
    发布播放器 SDK——单测覆盖率（`testing:coverage`，红线见 `.cnb.yml`）→ `bun packages/player-sdk/scripts/publish.ts --registry both`
    发布到 npm 官方与 CNB 制品库；

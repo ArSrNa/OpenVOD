@@ -131,19 +131,23 @@
       script:
         - bun packages/player-sdk/scripts/publish.ts --registry both
 
-# 自动生成 Tag（Tag 列表页「自动生成 Tag」按钮触发）：tag 名 = **根 package.json 的 version**。
-# 不走 git-auto-tag 插件的提交语义推导——插件按 feat/fix 推导版本，会与「版本唯一真源 = 根 package.json」漂移
-# （2026-10-16 实测：main 上 version=1.1.0 时，插件按「0.2.0 + feat 提交」打出了 0.3.0）。
+# 自动生成 Tag（Tag 列表页「自动生成 Tag」按钮触发）：tag 名 = **根 package.json 的 version**，
+# 不走 git-auto-tag 插件的提交语义推导（插件按 feat/fix 推导版本，会与「版本唯一真源」漂移）。
 #
-# 挂载位置很关键：CNB 口径（docs.cnb.cool/zh/build/trigger-rule.md）要求 auto_tag 的**流水线配置写在分支名下**，
-# 写在 `$` 兜底里会被忽略（那样会退化为平台内置插件，即上面的漂移现象）——所以本任务定义在此锚点，
-# 由文件末尾的 `main:` 段引用。运行 / 检出分支由 CNB「Tag 自动生成配置」决定：
-# 默认分支下的 .cnb/settings.yml → tag.auto_tag.branch（默认值 = 仓库默认分支 main；本仓库未配置该文件），
-# 且 Tag 列表页按钮**不能临时选分支**。检出内容 = 该分支最新 commit，因此发版前要先合入 main。
+# 挂载位置：**`$` 兜底分支下**（本仓库自 0.2.0 起一直如此）。2026-10-16 实测确认该配置会被执行——
+# 流水线跑的正是本任务（三个 stage 与脚本逐字一致），因此 CNB 文档中「auto_tag 的流水线配置写在 `$` 下
+# 会被忽略」的说法与本仓库实测不符，**以实测为准**，不要挪到分支名下（避免与平台默认配置叠加出重复 job）。
+#
+# 运行 / 检出分支由 CNB「Tag 自动生成配置」决定：默认分支下的 .cnb/settings.yml → tag.auto_tag.branch
+# （默认值 = 仓库默认分支 main；本仓库未配置该文件）；Tag 列表页按钮**不能临时选分支**，
+# 检出内容 = 该分支最新 commit ⇒ **发版前先把待发布提交合入 main**。
 .auto-tag: &auto-tag
   name: 按根 package.json 版本创建 Tag
   docker:
-    image: node:22 # 仅需 node（读 JSON）+ git，比 dev 镜像轻量
+    # 用仓库开发镜像（内置 git-lfs）：本仓库启用 Git LFS（.gitattributes: `videos/*.mp4 filter=lfs`），
+    # CNB 检出会带上 git-lfs 的 pre-push 钩子；缺 git-lfs 的镜像（如 node:22）会在钩子处直接 push 失败
+    # —— 2026-10-16 实测：`This repository is configured for Git LFS but 'git-lfs' was not found`。
+    image: docker.cnb.cool/arsrna/media/openvod/dev:latest # 含 node + git + git-lfs
   stages:
     - name: 读取并校验版本号
       script: |
@@ -163,7 +167,13 @@
       script: |
         REMOTE="https://$CNB_TOKEN_USER_NAME:$CNB_TOKEN@${CNB_REPO_URL_HTTPS#https://}"
         git tag -a "$PKG_VERSION" -m "Release $PKG_VERSION"
-        git push "$REMOTE" "refs/tags/$PKG_VERSION"
+        # 兜底：检出若带 git-lfs 的 pre-push 钩子而镜像里没有 git-lfs，钩子会直接失败。
+        # 推 tag 不涉及任何 LFS 对象（只上传这个 tag 对象），故此时退回 --no-verify 再推一次；
+        # 正常路径（dev 镜像已含 git-lfs 3.4.1）走第一次 push，钩子不会被跳过。
+        git push "$REMOTE" "refs/tags/$PKG_VERSION" || {
+          echo "首次推送失败（多为 git-lfs 钩子缺失）：改用 --no-verify 重试"
+          git push --no-verify "$REMOTE" "refs/tags/$PKG_VERSION"
+        }
 
 # .env 注入：内容来自密钥仓库（.env 被 .gitignore，故不在代码仓内落盘）
 # 密钥仓库中存放 env.dev.yml，内含 OPENVOD_ENV_B64 = base64 -w 0 < .env
@@ -237,14 +247,8 @@ $:
     # 独立 job 便于 SDK 发布失败时单独重试（或用「发布播放器SDK」按钮补发），不影响镜像推送。
     - <<: *publish-sdk
 
-  # 自动生成 Tag：任务定义见文件顶部 `.auto-tag` 锚点，挂载在文件末尾的 `main:` 段
-  # （CNB 要求 auto_tag 的流水线配置写在分支名下，`$` 兜底会被忽略 → 退化为内置插件按提交语义打 tag）。
-
-# 默认分支名下的 auto_tag（CNB 按**分支名**匹配 auto_tag 的流水线配置，`$` 兜底会被忽略）。
-# 生效链路：Tag 列表页「自动生成 Tag」→ 读根 package.json 的 version → 打同名 tag → 触发 tag_push
-# （四镜像 + 播放器 SDK 发布；SDK 侧还会校验 tag 名与该 version 一致，不一致拒绝发布）。
-# 运行分支 = CNB「Tag 自动生成配置」的 tag.auto_tag.branch（默认 = 仓库默认分支 main）；
-# 若日后把发版源分支改成别的分支，把这段 `main:` 一并改成对应分支名。
-main:
+  # 自动生成 Tag（任务定义见文件顶部 `.auto-tag` 锚点）：
+  # Tag 列表页点按钮 → 读根 package.json 的 version → 打同名 tag → 触发 tag_push
+  # （四镜像 + 播放器 SDK 发布；SDK 侧还会校验 tag 名与该 version 一致，不一致拒绝发布）。
   auto_tag:
     - <<: *auto-tag

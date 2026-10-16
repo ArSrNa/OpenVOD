@@ -9,6 +9,7 @@ const nextConfig: NextConfig = {
     "@openvod/storage",
     "@openvod/transcode",
     "@openvod/contracts",
+    "openvod-jssdk",
   ],
   // 侧栏 logo 为远程图片，需显式放行域名（ADR-0013 单容器形态，运行时需能访问该域名）
   images: {

@@ -4,9 +4,16 @@
 // 管理端只做「以预览账号向分发端换一个签名主清单 URL」，**绝不自行解封 / 转发密钥**；
 // 浏览器按标准 HLS 播放（hls.js / Safari 原生），清单、密钥、分片全部由分发端 / 对象存储直达浏览器。
 //
+// 接入方式（2026-10-16）：改用**播放器 SDK（openvod-jssdk）**的服务端形态——login、
+// JWT 缓存 / 401 重登、play 请求组装（templateId → template_id 单点映射）、错误保真全部由 SDK 治理；
+// 本文件只保留管理端特有的三件事：预览账号配置读取、`encrypted` 提示（本地 hls_keys 行）、对象桶 CORS 诊断。
+// 签名 URL **原样透出**（SDK 不变量 N2）：播放域名由分发端按系统设置 `playback_base_url` 生成（spec §2.1.2），
+// 管理端不再兜底改写 URL。
+//
 // 配置（ADR-0015）：分发端地址 DELIVERY_BASE_URL（env）；
 // 预览账号 delivery_preview_username（明文设置）+ delivery_preview_password（MK 封装设置），
 // env 同名键兜底（预览账号用 apps/admin/scripts/bootstrap-playback.ts 创建，建议专用）。
+import { createPlayerSdk, DeliveryError, PlayerSdkError, type PlaybackHandle, type PlayerSdk } from "openvod-jssdk";
 import { getDb } from "@openvod/db";
 
 import { getSettingsSnapshot } from "./settings";
@@ -27,11 +34,18 @@ function baseUrl(): string {
   return (process.env.DELIVERY_BASE_URL?.trim() || "http://127.0.0.1:9000").replace(/\/+$/, "");
 }
 
-type TokenCache = { value: string; expiresAtSec: number; credentials: string };
-let cached: TokenCache | null = null;
+/**
+ * SDK 实例缓存：key = [分发端地址, 预览账号, 口令]——三者任一变化即换实例（旧实例 dispose，
+ * JWT 缓存与定时器随之失效），等价原先手写 token 缓存的「凭据变化即失效」语义（spec.md §2.1.2）。
+ */
+let cached: { key: string; sdk: PlayerSdk } | null = null;
 
-/** 取预览账号 JWT（进程内缓存到过期前 60s，避免每次点击都 login，ADR-0007 无 refresh） */
-async function previewToken(): Promise<string> {
+/**
+ * 取预览账号的 SDK 实例（password 模式：SDK 自己 login + 缓存 JWT + 到期前重登 + 401 重登一次）。
+ * `autoRefresh: false`——服务端一次性交付签名 URL、浏览器自行播放，不需要后台续签（避免为已关掉的
+ * 预览弹窗长期保活会话）；URL 过期后用户重新点「播放」即换新 token。
+ */
+async function previewSdk(): Promise<PlayerSdk> {
   const snap = await getSettingsSnapshot();
   const username = snap.admin.previewUsername || process.env.DELIVERY_PREVIEW_USERNAME?.trim() || "";
   const password = snap.admin.previewPassword || process.env.DELIVERY_PREVIEW_PASSWORD || "";
@@ -42,33 +56,19 @@ async function previewToken(): Promise<string> {
       501,
     );
   }
-  const nowSec = Math.floor(Date.now() / 1000);
-  const credentials = JSON.stringify([baseUrl(), username, password]);
-  if (cached && cached.credentials === credentials && cached.expiresAtSec - 60 > nowSec) return cached.value;
-
-  let res: Response;
-  try {
-    res = await fetch(`${baseUrl()}/v1/auth/login`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username, password }),
-      cache: "no-store",
-    });
-  } catch (e) {
-    throw new DeliveryPreviewError("internal", `无法连接分发端（${baseUrl()}）：${(e as Error).message}`, 502);
+  const key = JSON.stringify([baseUrl(), username, password]);
+  if (cached?.key !== key) {
+    cached?.sdk.dispose();
+    cached = {
+      key,
+      sdk: createPlayerSdk({
+        baseUrl: baseUrl(),
+        credential: { mode: "password", username, password },
+        autoRefresh: false,
+      }),
+    };
   }
-  const body = (await res.json().catch(() => null)) as
-    | { access_token?: string; expires_in?: number; error?: { message?: string } }
-    | null;
-  if (!res.ok || !body?.access_token) {
-    throw new DeliveryPreviewError(
-      "internal",
-      `播放预览账号登录失败（HTTP ${res.status}）：${body?.error?.message ?? "请检查账号与分发端日志"}`,
-      502,
-    );
-  }
-  cached = { value: body.access_token, expiresAtSec: nowSec + (body.expires_in ?? 3600), credentials };
-  return cached.value;
+  return cached.sdk;
 }
 
 export interface PreviewPlayResult {
@@ -84,7 +84,7 @@ export interface PreviewPlayResult {
 }
 
 /**
- * 浏览器 CORS 前置探测（只做诊断，不参与播放）：
+ * 浏览器 CORS 前置探测（只做诊断，不参与播放；SDK 明确不做诊断探测，见 player-sdk-spec §9）：
  * 以管理端源站为 Origin 试取一个分片，看对象桶是否回 `Access-Control-Allow-Origin`。
  * 未配置桶 CORS 时浏览器的表现就是「有总时长但一直转圈」——这里提前给出结论。
  * 本地形态（分片走分发端自带 CORS）直接返回 true。
@@ -115,6 +115,29 @@ async function probeSegmentCors(manifestUrl: string, origin: string): Promise<bo
 }
 
 /**
+ * SDK 错误 → 管理端错误（错误保真：分发端 code / 文案原样透出）：
+ * - 上游 401 必须换状态码——管理端浏览器的 fetchJson 把**任何** 401 都当成自己的会话失效并跳登录页，
+ *   预览账号被禁 / 口令过期不能把用户踢出控制台；
+ * - status 0 = 网络层失败 / 超时（SDK 文案已含分发端地址与 CORS 提示）→ 502（上游不可达）。
+ */
+function toPreviewError(error: unknown): DeliveryPreviewError {
+  if (error instanceof DeliveryError) {
+    if (error.status === 401) {
+      return new DeliveryPreviewError(
+        error.code,
+        `播放预览账号登录失败：${error.message}（检查预览账号与口令，见 dev-workflow §5.3）`,
+        502,
+      );
+    }
+    return new DeliveryPreviewError(error.code, error.message, error.status > 0 ? error.status : 502);
+  }
+  if (error instanceof PlayerSdkError) {
+    return new DeliveryPreviewError("internal", `播放预览 SDK 错误（${error.code}）：${error.message}`, 502);
+  }
+  return new DeliveryPreviewError("internal", (error as Error)?.message ?? "播放预览失败", 502);
+}
+
+/**
  * 以预览账号调分发端 play：多套模板产物时由 templateId 指定（空串 = 旧布局产物，null = 自动选择）。
  * probeOrigin 传浏览器请求的 Origin 时，会顺便探测对象桶 CORS（诊断用）。
  */
@@ -123,56 +146,28 @@ export async function previewPlay(
   templateId: string | null,
   probeOrigin?: string | null,
 ): Promise<PreviewPlayResult> {
-  const token = await previewToken();
-  let res: Response;
+  const sdk = await previewSdk();
+
+  let handle: PlaybackHandle;
   try {
-    res = await fetch(`${baseUrl()}/v1/media/${mediaId}/play`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      // 注意：空串是**显式请求旧布局产物**，不能当作未指定丢弃（null 才是未指定，由分发端自动选择）
-      body: JSON.stringify(templateId !== null ? { template_id: templateId } : {}),
-      cache: "no-store",
-    });
+    // 空串是**显式请求旧布局产物**，不能当作未指定丢弃（null 才是未指定，由分发端自动选择）；
+    // 同媒资 + 同模板且未进入 leeway 时 SDK 直接返回缓存 handle（零请求）
+    handle = await sdk.play(mediaId, { templateId });
   } catch (e) {
-    throw new DeliveryPreviewError("internal", `无法连接分发端（${baseUrl()}）：${(e as Error).message}`, 502);
-  }
-  const body = (await res.json().catch(() => null)) as
-    | ({ sid?: string; manifest_url?: string; expires_at?: string; template_id?: string } & {
-        error?: { code?: string; message?: string };
-      })
-    | null;
-  if (!res.ok || !body?.manifest_url) {
-    const status = res.status === 404 ? 404 : 409;
-    throw new DeliveryPreviewError(body?.error?.code ?? "internal", body?.error?.message ?? `分发端返回 HTTP ${res.status}`, status);
+    throw toPreviewError(e);
   }
 
   const keyRow = await db.hlsKey
     .findUnique({ where: { mediaId }, select: { kid: true } })
     .catch(() => null);
 
-  // 播放域名（系统设置）兜底改写：分发端自己会读同一设置生成播放 URL（spec §2.1.2，
-  // 清单 / 密钥 / 字幕基址）；此处仅防旧版分发端未升级时控制台预览仍指向错误域名。
-  // 读取失败时回退分发端原样 URL，不阻塞播放。
-  let manifestUrl = body.manifest_url;
-  const playbackBase = await getSettingsSnapshot()
-    .then((s) => s.playbackBaseUrl)
-    .catch(() => "");
-  if (playbackBase) {
-    try {
-      const u = new URL(manifestUrl);
-      manifestUrl = playbackBase + u.pathname + u.search;
-    } catch {
-      // 分发端返回异常 URL：保持原样
-    }
-  }
-
-  const corsOk = probeOrigin ? await probeSegmentCors(manifestUrl, probeOrigin) : null;
+  const corsOk = probeOrigin ? await probeSegmentCors(handle.manifest_url, probeOrigin) : null;
 
   return {
-    sid: body.sid ?? "",
-    manifest_url: manifestUrl,
-    expires_at: body.expires_at ?? "",
-    template_id: body.template_id ?? "",
+    sid: handle.sid,
+    manifest_url: handle.manifest_url,
+    expires_at: handle.expires_at,
+    template_id: handle.template_id,
     encrypted: Boolean(keyRow),
     browser_cors_ok: corsOk,
   };

@@ -13,9 +13,10 @@
 > - 下文表格保留作为「env 兜底清单」与旧部署迁移参考；三端对照速查表中的键凡与
 >   `packages/shared` 的 `SETTING_KEYS` 同义者均已被设置覆盖。
 
-本文件按 **delivery / worker / admin** 三个应用分别列出各自运行所需的环境变量。
-三者**共享同一份 `.env`**（`scripts/gen-env.sh` 从密钥仓库 / 进程环境生成，模板见根目录 `.env.example`），
-但**各应用实际读取的键不同**——本文件用于区分「谁真正需要哪个变量」，避免误以为某个键三端通用。
+本文件按 **delivery / worker / admin / player** 四个应用分别列出各自运行所需的环境变量。
+它们**共享同一份 `.env`**（`scripts/gen-env.sh` 从密钥仓库 / 进程环境生成，模板见根目录 `.env.example`；
+player 另有独立模板 `apps/player/.env.example`），
+但**各应用实际读取的键不同**——本文件用于区分「谁真正需要哪个变量」，避免误以为某个键各端通用。
 
 > 真源：`.env.example`（模板）+ 代码读取点（见每节「读取位置」）。
 > `.env` 不入库；CI 校验的必需键见 `scripts/gen-env.sh` 的 `REQUIRED_KEYS`。
@@ -188,7 +189,7 @@ STORAGE_CDN_BASE_URL=""               # 加速域名（可选）
 
 读取位置：`apps/admin/src/lib/auth.ts`（better-auth / OIDC / 会话）、`apps/admin/src/lib/storage.ts`（存储）、
 `apps/admin/src/lib/keys.ts` 与 `scripts/bootstrap-playback.ts`（`MASTER_KEYS`）、
-`apps/admin/src/lib/media.ts`（`MEDIA_ID_LENGTH`）、`apps/admin/src/lib/delivery-preview.ts`（分发端预览）、
+`apps/admin/src/lib/media.ts`（`MEDIA_ID_LENGTH`）、`apps/admin/src/lib/delivery-preview.ts`（分发端预览，经播放器 SDK 接入）、
 `apps/admin/src/lib/settings.ts`（`DELIVERY_PUBLIC_BASE_URL` 回退提示）；DB 经 `@openvod/db`。
 
 ### .env 格式（可直接复制）
@@ -284,21 +285,58 @@ DELIVERY_PUBLIC_BASE_URL=""                      # /api/admin/settings 回退提
 
 ---
 
-## 附：三端变量对照速查
+## 4. player（播放演示 App，Next.js，`apps/player`；spec.md §11）
 
-| 变量 | delivery | worker | admin |
-|---|:---:|:---:|:---:|
-| `DATABASE_URL` | — | ✅ | ✅ |
-| `DB_PROVIDER` | — | ✅ | ✅ |
-| `DELIVERY_DATABASE_URL` | ✅ | — | — |
-| `MASTER_KEYS` | ✅ | ✅（加密任务） | ✅ |
-| `URL_SIGN_KEY_HEX` / `URL_SIGN_KEY_KID` | ✅ | — | — |
-| `BETTER_AUTH_SECRET` / `ADMIN_*` / `OIDC_*` | — | — | ✅ |
-| `WORKER_MODE` / `WORKER_HTTP_PORT` / `WORKER_IDLE_EXIT_MINUTES` | — | ✅ | — |
-| `WORKER_POLL_INTERVAL_MS` / `WORKER_LEASE_MS` / `WORKER_MAX_ATTEMPTS` | — | ✅ | — |
-| `WORKER_NOTIFY_URL` / `WORKER_NOTIFY_SECRET` | — | ✅（SECRET 必填） | ✅（仅发通知） |
-| `DELIVERY_*`（JWT / TTL / CORS / LISTEN） | ✅ | — | — |
-| `DELIVERY_PUBLIC_BASE_URL` | ✅ | ✅（占位基址） | ✅（回退提示） |
-| `DELIVERY_BASE_URL` / `DELIVERY_PREVIEW_*` | — | — | ✅（预览） |
-| `STORAGE_*` / `S3_*` | ✅ | ✅ | ✅ |
-| `MEDIA_ID_LENGTH` | — | — | ✅ |
+读取位置：`apps/player/src/app/api/session/route.ts`（预览账号 → 分发端 login，**服务端专用**，凭据不下发浏览器）、
+`apps/player/src/lib/sdk.ts`（SDK 以 tokenProvider 接入：浏览器直连地址由 `/api/session` 运行时下发 `delivery_base`，
+`NEXT_PUBLIC_*` 仅作兜底默认）。
+
+### .env 格式（可直接复制）
+
+```dotenv
+# ==================== player（播放演示 App） ====================
+PLAYER_PORT="3100"
+DELIVERY_BASE_URL="http://127.0.0.1:9000"        # 服务端调分发端 login 的地址（容器内为容器网络视角）
+PLAYER_PUBLIC_DELIVERY_BASE_URL=""               # 浏览器直连分发端（运行时下发；空 = 回退 DELIVERY_BASE_URL）
+NEXT_PUBLIC_DELIVERY_BASE_URL=""                 # 兼容保留：构建期内联覆盖（一般留空）
+PLAYER_PREVIEW_USERNAME=""                       # 预览播放账号（bootstrap-playback.ts 创建）
+PLAYER_PREVIEW_PASSWORD=""                       # 预览播放账号口令；缺省回退 DELIVERY_PREVIEW_*
+```
+
+| 变量 | 必填 | 默认 | 说明 |
+|---|---|---|---|
+| `PLAYER_PORT` | 否 | `3100` | dev / start 端口（`scripts/dev.ts` 与 compose 复用） |
+| `DELIVERY_BASE_URL` | 否 | `http://127.0.0.1:9000` | **服务端**调分发端 `login` 的地址（换 JWT，凭据不出服务端；容器内为容器网络视角） |
+| `PLAYER_PUBLIC_DELIVERY_BASE_URL` | 否 | 空 | **浏览器**直连分发端地址（运行时经 `/api/session` 下发，不在构建期内联，spec.md §11.8） |
+| `NEXT_PUBLIC_DELIVERY_BASE_URL` | 否 | 空 | 兼容保留：构建期内联的浏览器直连地址（优先级低于 `PLAYER_PUBLIC_DELIVERY_BASE_URL`、高于 `DELIVERY_BASE_URL`） |
+| `PLAYER_PREVIEW_USERNAME` | 是 | 空 | 预览播放账号；缺省回退 `DELIVERY_PREVIEW_USERNAME`；缺失时 `/api/session` 501 |
+| `PLAYER_PREVIEW_PASSWORD` | 是 | 空 | 预览播放账号口令；缺省回退 `DELIVERY_PREVIEW_PASSWORD` |
+
+> 免登录 = 任何能访问 player 的人都可用预览账号播放全部 READY 媒资——player 定位本地 / 内网体验，
+> **不建议公网暴露**（spec.md §11.3）。浏览器直连分发端要求 `DELIVERY_CORS_ORIGINS` 放行 player 源站
+> （本地默认 `*` 已满足）；分片直连对象存储要求**对象桶 CORS 放行 player 源站**（与管理端预览同一前提）。
+> 独立模板 `apps/player/.env.example`；单独运行 `bun run --cwd apps/player dev`，仓库根运行 `bun scripts/dev.ts player`。
+> 容器形态（`docker-compose.yml` 的 player 服务 / `task image:player`，spec.md §11.8）同样读这些键：
+> 容器内服务端用 `DELIVERY_BASE_URL`，浏览器视角用 `PLAYER_PUBLIC_DELIVERY_BASE_URL`（两者视角不同时必须分别配置）。
+
+---
+
+## 附：各端变量对照速查
+
+| 变量 | delivery | worker | admin | player |
+|---|:---:|:---:|:---:|:---:|
+| `DATABASE_URL` | — | ✅ | ✅ | — |
+| `DB_PROVIDER` | — | ✅ | ✅ | — |
+| `DELIVERY_DATABASE_URL` | ✅ | — | — | — |
+| `MASTER_KEYS` | ✅ | ✅（加密任务） | ✅ | — |
+| `URL_SIGN_KEY_HEX` / `URL_SIGN_KEY_KID` | ✅ | — | — | — |
+| `BETTER_AUTH_SECRET` / `ADMIN_*` / `OIDC_*` | — | — | ✅ | — |
+| `WORKER_MODE` / `WORKER_HTTP_PORT` / `WORKER_IDLE_EXIT_MINUTES` | — | ✅ | — | — |
+| `WORKER_POLL_INTERVAL_MS` / `WORKER_LEASE_MS` / `WORKER_MAX_ATTEMPTS` | — | ✅ | — | — |
+| `WORKER_NOTIFY_URL` / `WORKER_NOTIFY_SECRET` | — | ✅（SECRET 必填） | ✅（仅发通知） | — |
+| `DELIVERY_*`（JWT / TTL / CORS / LISTEN） | ✅ | — | — | — |
+| `DELIVERY_PUBLIC_BASE_URL` | ✅ | ✅（占位基址） | ✅（回退提示） | — |
+| `DELIVERY_BASE_URL` / `DELIVERY_PREVIEW_*` | — | — | ✅（预览） | ✅（服务端 login + 账号回退） |
+| `PLAYER_PORT` / `PLAYER_PREVIEW_*` / `PLAYER_PUBLIC_DELIVERY_BASE_URL` / `NEXT_PUBLIC_DELIVERY_BASE_URL` | — | — | — | ✅ |
+| `STORAGE_*` / `S3_*` | ✅ | ✅ | ✅ | — |
+| `MEDIA_ID_LENGTH` | — | — | ✅ | — |

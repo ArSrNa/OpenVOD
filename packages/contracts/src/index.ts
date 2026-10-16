@@ -57,6 +57,23 @@ export const PlaybackSubtitleDTO = MediaSubtitleDTO.extend({
   url: z.string(),
 });
 
+/**
+ * 播放链路可用模板产物（play 返回；spec.md §11.1）：「清晰度」选项 = 存储实际存在的模板子树
+ * （`proceed/{id}/{templateId}/`，「有什么放什么」；旧布局 / 无产物为 `[]`）。
+ * `.meta` 内联 title 让 quicktype 生成 Go 类型名 `PlaybackTemplate` —— 否则会与
+ * `PlaybackTemplateDTO` 在同一个 Go 包里逻辑重复命名别扭（同 PlaybackSubtitle 处理）。
+ */
+export const PlaybackTemplateDTO = z
+  .object({
+    /** 模板 ID（cuid 形状）；即 play 请求 template_id 的可用取值 */
+    id: z.string(),
+    /** transcode_templates.name 当前名称（非任务快照）；模板行已删除（历史产物）为 null */
+    name: z.string().nullable(),
+    /** 管理端标记的默认模板（仅展示用；自动选择语义仍按 spec.md §6.3） */
+    is_default: z.boolean(),
+  })
+  .meta({ title: "PlaybackTemplate" });
+
 export const MediaListItem = z.object({
   id: z.string(),
   title: z.string(),
@@ -103,6 +120,8 @@ export const PlaybackResponse = z.object({
    * 内联出的 `Subtitle` 在同一个 Go 包里重名。
    */
   subtitles: z.array(PlaybackSubtitleDTO.meta({ title: "PlaybackSubtitle" })),
+  /** 该媒资实际存在的模板产物列表（spec.md §11.1，恒为数组；旧布局为 `[]`）。清晰度切换用 */
+  templates: z.array(PlaybackTemplateDTO),
 });
 
 export const PageQuery = z.object({

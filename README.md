@@ -2,6 +2,8 @@
 
 # OpenVOD
 
+![](images/index.png)
+
 手搓点播系统，集成媒体、分类、转码、分发、字幕管理。这是一个AI开发友好的项目。
 
 还加入了特色，超级色的功能，媒体加密，按用户实现不同分发策略
@@ -22,6 +24,34 @@
 
 ![](images/transcode.png)
 
+## 播放端（播放演示 App）
+
+管理端站在创作者 / 管理员视角，播放端 Demo（`apps/player`）演示**用户视角**的完整播放链路：免登录打开就能浏览媒资列表并播放，加密视频在浏览器本地解密（HLS + AES-128），支持多模板**清晰度切换**（换源续播、不丢进度）与**字幕选轨**，页面上还带码率 / 编码 / 分类标签等元数据。
+
+![](images/player-list.png)
+
+- 技术栈与管理端同一条播放器路线：Next.js 16 + antd + Video.js v10（`@videojs/react`）；只消费分发端 `/v1` API——不连数据库、不需要管理端登录；
+- 接入逻辑收敛在**播放器 SDK**（`packages/player-sdk`，零运行时依赖、播放器无关）：登录 / 会话复用 / token 自动续签 / 清晰度切换由 SDK 治理，页面只保留 UI 与换源；已发布为 npm 包 [`openvod-jssdk`](https://www.npmjs.com/package/openvod-jssdk)（同步发 CNB 制品库），第三方接入见 [packages/player-sdk/README.md](./packages/player-sdk/README.md)（设计权威：docs/vod/player-sdk-spec.md）；
+- **免登录**：服务端用「预览播放账号」自动向分发端换 JWT（凭据不下发浏览器），账号用 `bun apps/admin/scripts/bootstrap-playback.ts <用户名> <口令≥8位>` 创建；已配置 `DELIVERY_PREVIEW_*` 时会自动复用；
+- **CORS 前置**：浏览器直连分发端与对象存储——`DELIVERY_CORS_ORIGINS` 与对象桶 CORS 需放行播放端源站（本地默认 `*` 已满足；对象桶放行同管理端预览的前提），未放行时页面会给出提示；
+- 定位本地 / 内网体验，**不建议公网暴露**（任何能打开页面的人都能用预览账号播放全部 READY 媒资）。
+
+启动（源码直跑；读取根 `.env`，端口 `PLAYER_PORT` 默认 `3100`）：
+
+```bash
+bun scripts/dev.ts player     # 前台调试；浏览器打开 http://localhost:3100
+```
+
+也可以走容器镜像（与 admin / worker 同一份编排，镜像由流水线预构建）：
+
+```bash
+task image:player             # 本地构建（或 CNB 仓库页「构建player（Docker）」按钮；打 tag 发版会一并产出）
+sh scripts/compose.sh up      # 与 admin / worker 一起拉起，播放端 http://localhost:3100
+```
+
+打开列表能出封面就说明全链路通了；未配置预览账号 / 分发端未启动 / CORS 未放行时，页面都会给出对应提示。
+更多细节见 [docs/vod/spec.md §11](./docs/vod/spec.md)（功能规格）、[docs/vod/env-vars.md](./docs/vod/env-vars.md)（`PLAYER_*` 变量）、[docs/vod/deploy-apps.md](./docs/vod/deploy-apps.md)（镜像与 compose）。
+
 ## AI友好
 为什么AI友好，开发所需要的文档已经全部在里面，当然不需要你全部读懂，因为这些词语太晦涩难懂，AI和AI自己构造出了一套语言系统，自顾自地在那聊正嗨呢，我们不需要插手。开发需要做的，就是准备一些`词元（token）`，以及一个强大的Agent，让AI理解下列文档，把你的需求，出现的问题，告诉你的Agent即可：
 
@@ -29,6 +59,7 @@
 - 开发流程：[docs/vod/dev-workflow.md](./docs/vod/dev-workflow.md)（环境准备、启动、数据库、建号、排错）
 - 管理端 Control Plane：`apps/admin`（Next.js 全栈 UI + API + better-auth + Prisma，ADR-0013）、`apps/worker`（ffmpeg 常驻容器，ADR-0008）
 - 分发端 Data Plane：`apps/delivery`（Go 1.26 + Chi，EdgeOne Cloud Functions / SCF 容器）
+- 播放端 Demo：`apps/player`（Next.js + antd + Video.js，免登录播放演示，spec §11；Docker 镜像同走流水线）
 
 # Reference
 Readme里内容和展现方式有限，最新和最详细的文档，请查询我们的文档库：https://arsrna-it.feishu.cn/drive/folder/TY3lf4NNIlhgXKd6t2acnItMnAg?from=from_copylink
@@ -72,6 +103,7 @@ task db:generate                                          # 生成 Prisma 客户
 set -a && . ./.env.trial && set +a && task db:migrate     # 建表（Prisma 从环境读连接串）
 bun scripts/dev.ts --env-file .env.trial admin            # 管理台（自动带 Worker），/setup 向导的 S3 参数填 RustFS
 bun scripts/dev.ts --env-file .env.trial delivery         # 分发端
+bun scripts/dev.ts --env-file .env.trial player           # 播放端 Demo（免登录；预览账号用 bootstrap-playback.ts 创建）
 ```
 
 注意事项：
@@ -79,7 +111,7 @@ bun scripts/dev.ts --env-file .env.trial delivery         # 分发端
 - 凭据统一落在 `.run/infra.env`（权限 600，已被 gitignore）；`reset` 子命令会**删除数据卷清空数据**，`down` 保留。
 - `up` 幂等可重复执行，且**全程不改根 `.env`**：连接串由 `init-env` 写进独立的 `.env.trial`（以根 `.env` 为底，仅覆盖三个 DB 键）。后续所有 `dev.ts` 命令记得带 `--env-file .env.trial`；Prisma 类命令（`task db:migrate`）不认识该文件，先 `set -a && . ./.env.trial && set +a` 导出再跑。
 - 端口默认绑 `127.0.0.1`，且刻意避开了本机常驻服务（delivery `:9000`、worker http `:9001`），所以 RustFS 映射到 `9002/9003`；端口 / 镜像 / 绑定地址可用 `INFRA_*` 环境变量覆盖（见脚本头注释）。
-- `.env.trial` 里的 `127.0.0.1` 连接串只对**源码直跑**（`bun scripts/dev.ts`）成立；若改用「容器形态」的 admin/worker 镜像，容器内的 `127.0.0.1` 不是宿主机，需要调整地址。
+- `.env.trial` 里的 `127.0.0.1` 连接串只对**源码直跑**（`bun scripts/dev.ts`）成立；若改用「容器形态」的 admin/worker/player 镜像，容器内的 `127.0.0.1` 不是宿主机，需要调整地址（播放端另有浏览器视角的 `PLAYER_PUBLIC_DELIVERY_BASE_URL`）。
 - 空库首次建表遇到 `P3014`（影子库无 `CREATE DATABASE` 权限）时，用 `env` 子命令打印的 root 连接串，或走 dev-workflow §4.3 的 baseline 流程。
 - 这套编排只是**开发底座**（数据为本地 named volume）：生产请使用 TDSQL-C / 云 MySQL 与 COS 等对象存储，账号分权约定见 ADR-0011 / ADR-0015。
 
@@ -167,14 +199,15 @@ bun scripts/dev.ts
 ```
 
 `bun scripts/dev.ts` 是 TS 版启动器（`scripts/dev.ts`，取代旧 `./start*.sh`）：无参数时交互式勾选要启动的服务与运行方式，
-也可以直接带参数；端口跟随根 `.env` 的 `ADMIN_PORT` / `DELIVERY_LISTEN`。
+也可以直接带参数；端口跟随根 `.env` 的 `ADMIN_PORT` / `DELIVERY_LISTEN` / `PLAYER_PORT`。
 
 | 组件 | 端口 | 启动命令 |
 |---|---|---|
 | 管理端 admin（UI + API） | `:8787`（`ADMIN_PORT`） | `bun scripts/dev.ts admin`（**同时后台起 Worker**）或 `task dev:admin` |
 | 分发端 delivery | `:9000`（`DELIVERY_LISTEN`） | `bun scripts/dev.ts delivery` 或 `task dev:delivery` |
 | 转码 Worker | — | `bun scripts/dev.ts worker` 或 `task dev:worker`（需 ffmpeg / ffprobe）；起 admin 时自动一并带起 |
-| 全部（后台） | — | `bun scripts/dev.ts all --background`（admin + delivery + worker），另支持 `stop`、`status`、`logs <服务>` |
+| 播放演示 player | `:3100`（`PLAYER_PORT`） | `bun scripts/dev.ts player`（免登录；播放依赖分发端 + 预览账号） |
+| 全部（后台） | — | `bun scripts/dev.ts all --background`（admin + delivery + worker + player），另支持 `stop`、`status`、`logs <服务>` |
 
 ## 容器形态（docker compose）
 
@@ -184,10 +217,10 @@ bun scripts/dev.ts
 bun start   # 等价 sh scripts/compose.sh up：docker compose pull + up -d
 ```
 
-- 启动 admin + worker 两个容器（编排见根 `docker-compose.yml`），宿主与容器端口同取 `.env` 的
-  `ADMIN_PORT`；变量全部从根 `.env` 读取——compose 插值由脚本显式 source `.env`，容器内变量由
+- 启动 admin + worker + player 三个容器（编排见根 `docker-compose.yml`），宿主与容器端口同取 `.env` 的
+  `ADMIN_PORT` / `PLAYER_PORT`；变量全部从根 `.env` 读取——compose 插值由脚本显式 source `.env`，容器内变量由
   `env_file: .env` 注入。delivery 不在编排内（ADR-0003：部署到 EdgeOne / SCF）。
-- 镜像由流水线预构建（`task image:admin` / `task image:worker`，或 CNB 页面「构建admin/worker（Docker）」按钮）；
+- 镜像由流水线预构建（`task image:admin` / `task image:worker` / `task image:player`，或 CNB 页面「构建admin/worker/player（Docker）」按钮）；
   本地已有同名镜像时，拉取失败不阻断，直接用本地镜像启动。
 - 停止：`docker compose down`；其余操作：`sh scripts/compose.sh {down|ps|logs [服务]|restart [服务]|url}`。
 

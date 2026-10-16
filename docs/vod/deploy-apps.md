@@ -1,13 +1,15 @@
-# 管理端与 Worker 镜像
+# 管理端 / Worker / 播放端镜像
 
 管理侧是**一个应用、两个进程**（ADR-0011：「两应用 + N 进程」）：admin 与 worker 各自一个容器，
-同宿主并用一份编排（compose 示例属 ADR-0011 未交付项，见文末）。分发端是完全分开的另一个应用，
-其部署见 [deploy-delivery.md](./deploy-delivery.md)。
+同宿主并用一份编排（compose 示例属 ADR-0011 未交付项，见文末）。另有一个**播放端 Demo**（`player`，
+spec.md §11：独立第三镜像——免登录、只消费分发端 `/v1` API，与管理侧共享 workspace 依赖但不依赖数据库）。
+分发端是完全分开的另一个应用，其部署见 [deploy-delivery.md](./deploy-delivery.md)。
 
 | 镜像 | Dockerfile | 运行时 | 端口 |
 |---|---|---|---|
 | `admin` | `apps/admin/Dockerfile` | Node 22（`next start`） | `:8787` · `GET /healthz` |
 | `worker` | `apps/worker/Dockerfile` | Bun 常驻 | 见下（ADR-0017 双模式） |
+| `player` | `apps/player/Dockerfile` | Node 22（`next start`） | `:3100` · `GET /healthz` |
 
 worker 端口取决于 `WORKER_MODE`（ADR-0017）：`resident`（默认）无端口，轮询认领 `transcode_jobs`；
 `http`（serverless 门铃）监听 `WORKER_HTTP_PORT`（默认 `9001`）：`POST /wake` 触发认领
@@ -16,12 +18,13 @@ worker 端口取决于 `WORKER_MODE`（ADR-0017）：`resident`（默认）无�
 
 ## 构建上下文必须是仓库根
 
-两个 app 都经 `workspace:*` 依赖 `packages/{db,shared,crypto,storage,transcode,contracts}`，
-而且 admin 走 `transpilePackages` 直接消费这些包的 **TS 源码**。所以上下文是仓库根、用 `-f` 指 Dockerfile：
+三个 app 都经 `workspace:*` 依赖 workspace 包，且直接消费其 **TS 源码**（admin 走 `transpilePackages`；
+player 经 `@openvod/contracts`）。所以上下文是仓库根、用 `-f` 指 Dockerfile：
 
 ```bash
 task image:admin      # docker build -f apps/admin/Dockerfile -t openvod-admin:latest .
 task image:worker     # docker build -f apps/worker/Dockerfile -t openvod-worker:latest .
+task image:player     # docker build -f apps/player/Dockerfile -t openvod-player:latest .
 ```
 
 （对比：delivery 是纯 Go、自带 `go.mod`，上下文是 `apps/delivery`——见 deploy-delivery.md。）
@@ -48,10 +51,15 @@ task image:worker     # docker build -f apps/worker/Dockerfile -t openvod-worker
    libssl 选择查询引擎——构建阶段缺 openssl 会退化为 `debian-openssl-1.1.x`，与运行阶段（bookworm libssl3）
    不匹配，启动报 `generated for "debian-openssl-1.1.x", but the actual deployment required "debian-openssl-3.0.x"`，
    `/healthz` 变 `db:false`。两阶段都装 openssl 即对齐（worker 基于 Debian 全量环境，无此问题）。
+5. **player 镜像不需要 Prisma / openssl，也不接受构建期地址内联**（2026-10-13，spec.md §11.8）：
+   player 不 import `packages/db` → Dockerfile 省去两份客户端生成（对比第 1 条）；浏览器直连分发端地址
+   由**运行时** env 下发（`/api/session` 响应 `delivery_base`：`PLAYER_PUBLIC_DELIVERY_BASE_URL` →
+   `NEXT_PUBLIC_DELIVERY_BASE_URL` → `DELIVERY_BASE_URL` → 默认），镜像一次构建跨环境部署、改 env 即生效。
+   容器内服务端地址（容器网络视角）与浏览器视角地址不同时必须分别配置——`127.0.0.1` 在容器内指容器自身。
 
 ## 运行
 
-**推荐走 compose（两服务一份编排，见下节）**；下面是单容器调试的等价 `docker run`：
+**推荐走 compose（三服务一份编排，见下节）**；下面是单容器调试的等价 `docker run`：
 
 ```bash
 # admin：UI + API 同源（无 CORS）；端口由 ADMIN_PORT 控制，默认 8787
@@ -65,39 +73,48 @@ docker run -d --name openvod-worker --env-file .env \
 docker run -d --name openvod-worker -p 9001:9001 --env-file .env \
   -e WORKER_MODE=http -e WORKER_NOTIFY_SECRET=<至少16字符> \
   -v /data/openvod-tmp:/tmp openvod-worker:latest
+
+# player（播放演示 App，spec.md §11）：免登录；依赖分发端可达 + 预览账号（PLAYER_PREVIEW_* / 回退 DELIVERY_PREVIEW_*）
+# 容器内服务端地址用 .env 的 DELIVERY_BASE_URL；浏览器直连地址用 PLAYER_PUBLIC_DELIVERY_BASE_URL（容器内 127.0.0.1 不是宿主）
+docker run -d --name openvod-player -p 3100:3100 --env-file .env \
+  -e PLAYER_PUBLIC_DELIVERY_BASE_URL=http://<浏览器可达的分发端地址> openvod-player:latest
 ```
 
 接通验证：admin `curl -fsS localhost:8787/healthz` 返回 `{"ok":true,"db":true}`；
 resident worker 日志出现 `[worker] ffmpeg ok` / `[worker] ffprobe ok` / `[worker] 字体 ok` 与 `polling every ...`；
 （`字体 MISSING` 不阻断启动，但用到文字水印的模板会渲染成豆腐块，见上文第 4 条）
 http 模式为 `http 门铃模式 listening :9001`，且 `curl -fsS localhost:9001/healthz` 返回 200。
+player `curl -fsS localhost:3100/healthz` 返回 `{"ok":true,"app":"player"}`，浏览器打开列表能出封面即链路通；
+若未配置预览账号，页面会给出配置说明（`/api/session` 501）。
 
 ## Compose 运行（单机常驻，CNB / 任意 Docker 宿主）
 
 根目录 [docker-compose.yml](../../docker-compose.yml) 交付 ADR-0011 的「同宿主并用一份编排」形态：
-admin + worker 两个常驻服务，**镜像预先构建**、运行侧只 `pull + up`，不在宿主构建。
+admin + worker + player 三个常驻服务，**镜像预先构建**、运行侧只 `pull + up`，不在宿主构建。
 
 | 服务 | 镜像（默认） | 预构建入口 |
 |---|---|---|
 | admin | `docker.cnb.cool/arsrna/media/openvod/admin:latest` | CNB「构建admin（Docker）」按钮；或本地 `task image:admin` |
 | worker | `docker.cnb.cool/arsrna/media/openvod/worker:latest` | CNB「构建worker（Docker）」按钮；或本地 `task image:worker` |
+| player | `docker.cnb.cool/arsrna/media/openvod/player:latest` | CNB「构建player（Docker）」按钮；或本地 `task image:player` |
 
-（镜像地址可用 `OPENVOD_ADMIN_IMAGE` / `OPENVOD_WORKER_IMAGE` 覆盖。）
+（镜像地址可用 `OPENVOD_ADMIN_IMAGE` / `OPENVOD_WORKER_IMAGE` / `OPENVOD_PLAYER_IMAGE` 覆盖。）
 
 ```bash
 scripts/compose.sh up            # = 先加载 .env → docker compose pull（失败降级为警告）→ up -d
 scripts/compose.sh ps | logs [服务] | restart [服务] | down | url
 ```
 
-首次部署注意：**先构建镜像再 up**——CNB 上点「构建admin（Docker）」/「构建worker（Docker）」按钮；若制品库尚无该镜像，
-脚本会打印警告并回退到**本地同名镜像**（如已 `task image:admin` / `task image:worker` 构建过）。
+首次部署注意：**先构建镜像再 up**——CNB 上点「构建admin（Docker）」/「构建worker（Docker）」/「构建player（Docker）」按钮；若制品库尚无该镜像，
+脚本会打印警告并回退到**本地同名镜像**（如已 `task image:admin` / `task image:worker` / `task image:player` 构建过）。
 脚本会先 `set -a; . .env` 再调 compose：compose 的插值以 shell 环境变量优先于 `.env` 文件，不加载会出现
 「宿主 shell 残留旧 ADMIN_PORT → 映射端口与容器内端口不一致」。改了 `.env` 端口后请 `down && up` 重建容器。
 
 CNB 云原生开发环境实测要点（2026-09-22）：
 
 - **端口预览可用**：容器端口发布绑定在开发容器 `0.0.0.0`（WebIDE 端口映射的前提），管理端访问地址 =
-  `CNB_VSCODE_PROXY_URI` 把 `{{port}}` 换为 `ADMIN_PORT`（`scripts/compose.sh url` 直接打印）。
+  `CNB_VSCODE_PROXY_URI` 把 `{{port}}` 换为 `ADMIN_PORT`（`scripts/compose.sh url` 直接打印）；
+  player 同理把 `{{port}}` 换为 `PLAYER_PORT`（`compose.sh up` 会一并打印）。
 - **`CNB_VSCODE_PROXY_URI` 必须显式透传**（compose 已注入 admin 服务）：容器不继承宿主环境变量，
   而 `apps/admin/src/lib/auth.ts` 据它推导 better-auth 的 baseURL 与 trustedOrigins——不传会出现登录
   403 `Invalid origin`（见 dev-workflow §8 对应排查条目）。
@@ -118,6 +135,9 @@ CNB 云原生开发环境实测要点（2026-09-22）：
 - 两进程共享一库一桶；**迁移只能由 `packages/db` 执行**，且必须 expand-contract 向后兼容（ADR-0011 约束 1）。
 - admin 需要 `DATABASE_URL` / `DB_PROVIDER` / `BETTER_AUTH_SECRET` 等（env 域 `shared` + `admin`）；
   worker 需要 `DATABASE_URL` / `MASTER_KEYS` / `STORAGE_*`（env 域 `shared` + `worker`）。域划分见 spec.md 附录。
+- player 需要 `DELIVERY_BASE_URL`（容器内可达）+ 预览账号（`PLAYER_PREVIEW_*` / 回退 `DELIVERY_PREVIEW_*`）；
+  浏览器直连地址 `PLAYER_PUBLIC_DELIVERY_BASE_URL` 留空时回退 `DELIVERY_BASE_URL`——**容器内 `127.0.0.1`
+  不是宿主**，两者视角不同时必须分别配置（spec.md §11.8）。
 
 ## CNB 一键构建
 
@@ -125,9 +145,10 @@ CNB 云原生开发环境实测要点（2026-09-22）：
 |---|---|---|
 | 构建admin（Docker） | `web_trigger_admin_docker` | `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/admin:latest` |
 | 构建worker（Docker） | `web_trigger_worker_docker` | `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/worker:latest` |
-| 打 tag 发版（worker + admin + delivery 一次构建） | `tag_push` | 三个镜像均推 `:latest` 与 `:<tag名>` 双标签（delivery 构建见 deploy-delivery.md） |
+| 构建player（Docker） | `web_trigger_player_docker` | `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/player:latest` |
+| 打 tag 发版（worker + admin + delivery + player 一次构建） | `tag_push` | 四个镜像均推 `:latest` 与 `:<tag名>` 双标签（delivery 构建见 deploy-delivery.md） |
 
-`tag_push` 流水线（`$` 兜底分支）单流水线串行构建三个运行镜像，任一 stage 失败即中断、
+`tag_push` 流水线（`$` 兜底分支）单流水线串行构建四个运行镜像，任一 stage 失败即中断、
 不留「半个版本」；产物同时保留 `:latest` 与本次 tag 两个标签，制品库可直接按 tag 回滚。
 
 ## 待办与待验证
@@ -138,5 +159,12 @@ CNB 云原生开发环境实测要点（2026-09-22）：
   换 arm64 构建机时需要改为 `docker buildx build --platform linux/amd64`，否则引擎与运行时架构不匹配。
 - **admin 构建期无需 env**（实测 `next build` 通过，页面为 `ƒ Dynamic` / 两个静态页），
   但运行时必须有 DB 与 `BETTER_AUTH_SECRET`，否则 `/healthz` 报 `db:false`。
+- **player 镜像已实测**（2026-10-13）：`task image:player` 本地构建通过；`docker run --network host --env-file .env`
+  启动后 `/healthz` 200、`/api/session` 正常换 JWT（响应带 `delivery_base`）、浏览器列表与播放页链路通
+  （容器内即生产构建 `next start`）。浏览器直连地址运行时下发：改 env 重启即生效，无需重建镜像。
+- **`docker run --env-file` 不剥引号**（2026-10-13 实测；compose 的 `env_file` 会剥、shell 的 `. .env` 会剥）：
+  `.env` 里 `KEY="v"` 经 `docker run` 注入后值含引号——URL 会解析失败、`PLAYER_PORT` 让 `next start -p` 直接退出。
+  player 已做剥离防御（`apps/player/src/lib/env.ts` + 镜像 CMD/HEALTHCHECK 只保留数字）；
+  **admin / worker 未做**——单容器 `docker run` 调试时对 URL / 端口类键改用不带引号的 `-e KEY=value` 覆盖，或走 compose。
 - **worker 镜像内 ffmpeg 版本**来自 Debian bookworm（5.1）；转码链路用的是标准 HLS muxer 参数
   （`-hls_time` / `-hls_playlist_type vod` / `-hls_key_info_file`），版本兼容，但首次上线建议跑一次真实转码回归。

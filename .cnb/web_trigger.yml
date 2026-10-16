@@ -16,3 +16,9 @@ branch:
       - name: 构建worker（Docker）
         description: 构建 apps/worker 镜像并推送到 CNB 制品库（含 ffmpeg/ffprobe）
         event: web_trigger_worker_docker
+      - name: 构建player（Docker）
+        description: 构建 apps/player 镜像并推送到 CNB 制品库（播放演示 App，免登录）
+        event: web_trigger_player_docker
+      - name: 发布播放器SDK
+        description: 单测覆盖率上报 CNB + 发布 openvod-jssdk 到 npm 官方与 CNB 制品库（版本取根 package.json）
+        event: web_trigger_publish_sdk

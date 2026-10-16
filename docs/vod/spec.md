@@ -146,7 +146,7 @@ root 下按资产类别分四个分区，互不嵌套：
 - **校验**：仅允许本分组登记键，拒绝 `setup_completed`、MK 及未知字段；64 KiB 请求上限、单值 8192 字符上限；TTL 范围与 `manifest ≤ session`（包括回退值）；URL 不接受凭据/查询/片段；CORS 为 `*` 或标准来源列表；根前缀禁止路径逃逸。不能清空存储必需字段或登录/播放密钥而又没有 env 兜底。
 - **并发与审计**：revision 为该分组已存行（包括 updatedAt）的摘要；在 Serializable 事务中校验版本、修改所有键并写 `settings.update`。冲突 409，校验失败 400，审计失败整批回滚。审计中的密钥值恒为 `[redacted]`。不提供历史版本/自动回滚功能。
 - **鉴权**：管理员 Cookie 会话及初始化门禁；写请求检查当前管理端来源与 JSON Content-Type。管理端 HTTP 自注册关闭，`/setup` 和部署脚本的服务端建号仍可用。
-- **生效**：Admin 本进程保存后清缓存，其余实例约 30s；认证配置变化按需重建 Better Auth，预览账号变化使 JWT 缓存失效。Worker 30s 缓存，在下一次空闲轮询读取，运行中任务继续使用已认领的配置。分发端约 60s 刷新并整体切换不可变服务配置，旧请求用旧配置结束，不改写正在处理的请求。
+- **生效**：Admin 本进程保存后清缓存，其余实例约 30s；认证配置变化按需重建 Better Auth，预览账号 / 分发端地址变化重建预览用播放器 SDK 实例（JWT 缓存随之失效）。Worker 30s 缓存，在下一次空闲轮询读取，运行中任务继续使用已认领的配置。分发端约 60s 刷新并整体切换不可变服务配置，旧请求用旧配置结束，不改写正在处理的请求。
 - **失败处理**：编辑页读取失败明确报错，不把回退值误报为已保存设置；Admin 与分发端运行期刷新失败保留最后有效配置，冷启动才使用 env 兜底或失败。Admin 保存后使用缓存代次阻止旧在途查询写回；清除覆盖前校验回退值。设置清除成功后正常回退 env/默认。
 - **操作影响**：更换存储位置不迁移历史资产；更换 URL 签名密钥会使旧签名链接失效；更换管理端会话密钥可能要求重新登录。页面明确提示。
 
@@ -356,7 +356,7 @@ http 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_s
 | `POST /v1/auth/login` | 凭据 | bcrypt 校验 `users`（须 `status=ACTIVE`）→ ES256 JWT（`kid` / `exp=DELIVERY_JWT_TTL_SEC`；未配置签名密钥时 503） |
 | `GET /v1/media` | JWT | 上架列表（`status=READY`；`limit` ≤200，默认 50；排序 `COALESCE(published_at, uploaded_at, created_at) DESC, id DESC` —— 发布时间 → 自定义上传时间（2026-09-30 增）→ 入库时间；`poster_url` 为预签名直出） |
 | `GET /v1/media/{id}` | JWT | 详情：probe 摘要（契约 `Probe` 子集）+ 就绪字幕轨道 + `playable` |
-| `POST /v1/media/{id}/play` | JWT | 建 / 复用播放会话：`template_id` 可选（见 §6.3）；同用户同媒资未过期末吊销会话**默认复用**（幂等），`force_new=true` 强制新建；并发上限命中 → 409 `session_limit`；媒资非 READY → 409 `not_playable`；返回 `{sid, manifest_url, expires_at, template_id}`（M4 起附签名 `subtitles[]` 与每条轨道的 `url`，§7.5） |
+| `POST /v1/media/{id}/play` | JWT | 建 / 复用播放会话：`template_id` 可选（见 §6.3）；同用户同媒资未过期末吊销会话**默认复用**（幂等），`force_new=true` 强制新建；并发上限命中 → 409 `session_limit`；媒资非 READY → 409 `not_playable`；返回 `{sid, manifest_url, expires_at, template_id}`（M4 起附签名 `subtitles[]` 与每条轨道的 `url`，§7.5；2026-10-12 起附可用模板产物列表 `templates[]`，§11.1） |
 | `GET /v1/media/{id}/manifest/master.m3u8` | token(m) | 改写主清单：变体行替换为分发端 URL（typ=m + `tpl`）；`no-store` |
 | `GET /v1/media/{id}/manifest/*`（实际路径 `{variant}/index.m3u8`） | token(m) | 改写子清单（通配路由，可含子目录）：`EXT-X-KEY` URI → key 接口（typ=k）；分片行 → **S3 预签名直出 URL**（`typ=s` 不再签发）；`no-store` |
 | `GET /v1/media/{id}/key` | token(k) | **16B CEK**（`application/octet-stream`，`no-store`）：验签 + 会话有效 → 按 `hls_keys.mk_ver` 取 MK 解封 |
@@ -381,7 +381,7 @@ http 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_s
 | `unauthorized` | 401 | JWT 缺失 / 过期 / 签名不符（`/v1/media*` 业务面） |
 | `bad_token` | 403 | 播放 token 缺失 / 非法 / 过期 / `typ` 或 `mid` 绑定不符 / 会话已吊销或过期 |
 | `not_found` | 404 | 媒资未入库；主 / 子清单对象缺失；密钥行不存在；字幕轨道或对象缺失；未知路由（JSON 信封，非 HTML） |
-| `not_playable` | 409 | 媒资非 READY；`template_id` 指定的产物不存在；多套产物且无默认模板（消息列出可选值） |
+| `not_playable` | 409 | 媒资非 READY；`template_id` 指定的产物不存在（消息列出可选值）；无任何可播放产物（多套产物+无默认模板已于 2026-10-13 改为自动选首项，不再 409，§6.3） |
 | `session_limit` | 409 | 并发播放会话上限命中（仅 `max_concurrent_sessions>0` 时检查） |
 | `internal` | 500 / 503 | 查询 / 存储 / 签发失败；`MASTER_KEYS` 缺该 `mk_ver`；`signing_keys` 无可用私钥时 `login` 返回 503 |
 
@@ -409,7 +409,7 @@ http 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_s
 `play` 的 `template_id`（可选）：
 
 - 显式指定 → 必须存在，否则 409 `not_playable`（消息列出可选值）；
-- 未指定 → 唯一产物直接使用；多套 → 取**默认模板**（`transcode_templates.is_default`）的那套；仍无法唯一确定 → 409 `not_playable` 列出可选值；
+- 未指定 → 唯一产物直接使用；多套 → 取**默认模板**（`transcode_templates.is_default`）的那套；**无默认模板则自动选 `templates[]` 的第一个**（**2026-10-13 修订**——原「多套且无默认 → 409 列出可选值」把选择成本推给每个客户端，播放端应呈现为清晰度切换而不是报错；自动选择与响应 `templates[]` 共用同一排序（§11.1），客户端看到的首项即默认播放项，可随时带 `template_id` 切换；模板表不可用时退化为列举顺序第一个，可用性优先）；
 - 无模板子树 → 旧布局（`proceed/{id}/{variant}/`），返回 `template_id=""`。
 
 ### 6.4 签名密钥材料形态与引导
@@ -418,7 +418,7 @@ http 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_s
   用标量而非 PKCS#8 DER：该列是 `VARCHAR(191)`，DER 的 hex（276 字符）会触发 P2000；
 - 生成 / 轮换：`bun apps/admin/scripts/bootstrap-playback.ts <username> <password≥8位> [显示名] [--rotate-jwt-key]`
   —— 幂等：生成 JWT 签名密钥（轮换时旧 key 置 `RETIRING`，双 kid 宽限）并创建 / 重置播放端用户（bcrypt cost 12）；
-- 分发端启动时把 ACTIVE 的 JWT 私钥全部解封加载（`signing_keys` 无 `mk_ver` 列 → 按 MK 版本逐个尝试解封，版本号大者优先）；无可用密钥不致命，login 返回 503。
+- 分发端启动时把 ACTIVE 的 JWT 私钥全部解封加载（`signing_keys` 无 `mk_ver` 列 → 按 MK 版本逐个尝试解封，版本号大者优先）；无可用密钥不致命，login 返回 503。受限账号需 `signing_keys` 只读授权（ADR-0011 约束 2）。
 
 ### 6.5 相关环境变量
 
@@ -932,3 +932,122 @@ rand / uid = 固定常量（openvod / 0，不做随机，保 URL 稳定）
 - **编排单测**（`apps/admin/test/transcode-submit.test.ts`）：水印快照固化（含图片元数据）、无水印时快照 `watermark` 为 `null`、`keep_original` 携带水印 → 400、图片水印未上传 → 400、水印已被删 → 404；
 - **Worker 端到端**（`apps/worker/test/executor.test.ts`）：图片水印按 `image_key` 取图并烧录（产物字节与无水印不同）、文字水印无需第二输入、两类脏快照（`keep_original` 带水印 / 图片水印缺 `image_key`）直接判任务失败；
 - **手工验收**：① 新建图片水印 → 上传图（宽高自动回填）→ 转码模板关联它 → 发起转码 → 产物右下角出现水印且画面其余部分无变化；② 改文字水印为「叠加」→ 重新转码 → 效果与「正常」明显不同；③ 保持原视频模板的水印下拉不出现；④ 解除关联后可删除水印模板，仍被引用时删除返回 409。
+
+## 11. 播放演示 App（播放端 Demo，2026-10-12）
+
+> 决策（用户 2026-10-12 定）：新增独立 app **`apps/player`** 作为播放端 Web 参考实现（**免登录页**——配置预览播放账号自动换 JWT）；「清晰度」= 该媒资**实际存在的模板产物**列表，由分发端 `play` 响应新增 `templates[]` 承载（§11.1）。
+> 本功能对既有接口只做**向后兼容扩展**（新增响应字段 / 新增只读授权，不改既有字段语义、不改 DB schema、不引入新 ADR——分发端 API 面演进走 ADR-0010 通道，以本节为准）。
+> 一句话：播放端用户视角的最小闭环——打开即用 → 选媒资 → 播放（加密浏览器本地解密）→ 切清晰度（模板产物）→ 切字幕。
+
+### 11.1 分发端扩展：`play` 响应 `templates[]`
+
+`POST /v1/media/{id}/play` 响应新增 `templates`（**恒为数组**，无模板产物子树时为 `[]`）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | string | 模板 ID（cuid 形状，§1.3）；即 `play` 请求 `template_id` 的可用取值 |
+| `name` | string \| null | `transcode_templates.name`（**当前**名称，非任务快照）；模板行已被删除（历史产物）为 `null` |
+| `is_default` | bool | 该模板被管理端标记为默认（`transcode_templates.is_default`）；仅展示用，自动选择语义仍按 §6.3 |
+
+规则：
+
+- **候选 = 存储实际存在的模板子树**：`proceed/{id}/` 下直接子目录中匹配模板 ID 形状者（排除 `subtitles` 保留段）——与 `resolveTemplate`（§6.3）同一列举逻辑，「有什么放什么」；**不**列出「有模板但无产物」的项；不匹配形状的脏目录同样不列；
+- **旧布局**（无模板子树、`template_id=""`）：`templates: []`（旧布局不参与切换，播放仍按 §6.3 自动工作）；
+- **排序**：默认模板优先，其余按 `name`（`null` 排最后）再按 `id` 字典序，保证稳定；多个模板同时标记默认时按标记原样输出；
+- **自动选择 = 首项**（2026-10-13）：未指定 `template_id` 且无默认模板时，分发端自动播放 `templates[0]`（与本节排序共用同一实现）——客户端列表里看到的第一项即默认播放项，切换只需回传该项 `id`（§6.3）；
+- **名称查询**：一次批量查询 `transcode_templates`；查询失败**不致命**——全部降级 `name: null`（播放链路不因模板表查询失败中断，同 §8.4 容错口径）；
+- **目录级候选**：不校验 `master.m3u8` 是否存在（产物不完整时该选项仍列出，播放失败由前端提示）；
+- 幂等复用会话（缺省）与 `force_new=true` 均照常返回，内容与当前 `template_id` 选择一致；请求 / 响应其余字段**零改动**（App 可忽略该字段，向后兼容）。
+
+**受限 DB 账号授权（ADR-0011 约束 2 修订）**：`transcode_templates` 列入只读清单——`play` 的默认模板自动选择（既有 `DefaultTemplateID`）与 `templates[]` 的 `name` 都依赖它；另补 `signing_keys`（分发端启动加载 JWT 私钥 `loadJWTSigners` 必需，原清单遗漏会导致 `login` 恒 503）；`scripts/compose-infra.sh` 的 `grant_delivery_account` 与部署文档同步。
+
+**契约与生成物**：
+
+- `packages/contracts`：`PlaybackTemplateDTO`（zod `.meta({ title: "PlaybackTemplate" })` 防 quicktype 生成 Go 类型重名，同 §7.8 规则）+ `PlaybackResponse.templates: PlaybackTemplateDTO[]`；`task contracts` 重生成 JSON Schema 与 Go struct，**生成物入库**（CI `check:contracts-go` 门禁）；
+- Go：`internal/store` 新增批量查名（`SELECT id, name FROM transcode_templates WHERE id IN (…)`，占位符展开）；`internal/server` 在 `resolveTemplate` 的候选列举上构造响应；
+- `docs/vod/api.md` §2.2 play 行与响应示例补 `templates`；错误码表不变。
+
+**单测（Go）**：多套产物（含默认标记与排序）/ 模板行已删（`name=null`）/ 旧布局（空数组）/ 模板表查询失败（全 `null` 且不报错）/ 与 `template_id` 选择一致性 / **自动选择取列表首项**（`selectAutoTemplate`：无默认取排序首项、默认优先、查表失败降级、空列表）。
+
+**多套产物自动选择（2026-10-13 修订，§6.3）**：`resolveTemplate` 的多候选分支不再返回 409——默认模板优先，无默认则 `selectAutoTemplate(items)`（= 排序后 `templates[0]`）；选择与响应 `templates[]` 共用同一次模板表查询（`templateResolution`），保证「列表首项 = 默认播放项」；旧布局分支显式返回空数组（不外泄 `null`）。
+
+### 11.2 App 工程形态与配置（`apps/player`）
+
+- **新增 workspace app**（`@openvod/player`）：**Next.js 16 全栈 + antd 5 + Video.js v10 `@videojs/react`（`@videojs/react` / `@videojs/hlsjs-video`）**——与管理端「产物解密播放」同一条播放器路线（§6.6）；不依赖 `packages/db` / Prisma / 管理端会话，只调分发端 HTTP API；
+- **端口** `PLAYER_PORT`（默认 `3100`）；`GET /healthz` 就绪探测（进程存活即 200，供 `scripts/dev.ts` 轮询，语义同 admin）；
+- 环境变量（`env-vars.md` 登记，新增 player 段）：
+
+| 变量 | 必填 | 默认 | 说明 |
+|---|---|---|---|
+| `PLAYER_PORT` | 否 | `3100` | dev / start 端口（`dev.ts` 与 compose 复用） |
+| `DELIVERY_BASE_URL` | 否 | `http://127.0.0.1:9000` | **服务端**调分发端 `login` 的地址（容器内视角） |
+| `PLAYER_PUBLIC_DELIVERY_BASE_URL` | 否 | 空 | **浏览器**直连分发端地址（运行时经 `/api/session` 下发，§11.8）：容器部署时与容器内视角不同须分别配置 |
+| `NEXT_PUBLIC_DELIVERY_BASE_URL` | 否 | 空 | 兼容保留：构建期内联的浏览器直连地址（优先级低于 `PLAYER_PUBLIC_DELIVERY_BASE_URL`、高于服务端 `DELIVERY_BASE_URL`） |
+| `PLAYER_PREVIEW_USERNAME` | 是 | 空 | 预览播放账号（`bootstrap-playback.ts` 创建）；缺省回退 `DELIVERY_PREVIEW_USERNAME` |
+| `PLAYER_PREVIEW_PASSWORD` | 是 | 空 | 预览播放账号口令；缺省回退 `DELIVERY_PREVIEW_PASSWORD` |
+
+- **CORS 前置**：浏览器直连分发端（业务 API + 清单 + 密钥 + 字幕）→ `DELIVERY_CORS_ORIGINS` 需覆盖 player 源站（本地 / 体验环境默认 `*` 已满足；收敛后须显式加）；分片直连对象存储 → **对象桶 CORS 需放行 player 源站**（与管理端预览同一前提，§6.6 部署前置；未配置时表现为「有总时长一直转圈」，页面给出同款提示）。
+
+### 11.3 会话与鉴权（免登录）
+
+- **无登录页 / 无注册**：客户端启动调 `GET /api/session`（Next route handler，**服务端专用**）→ 服务端读预览账号调分发端 `POST /v1/auth/login` → 返回 `{access_token, expires_at}`；**凭据不下发浏览器**；
+- 服务端进程内缓存 JWT（过期前 60s 复用；管理端预览已改用播放器 SDK，其 token 缓存同样进程内）；响应 `no-store`；账号缺失 → 501 + 文案（「请在 env 配置 `PLAYER_PREVIEW_*`（或 `DELIVERY_PREVIEW_*`），账号用 `bootstrap-playback.ts` 创建」），页面原样展示（同管理端预览账号缺失的 501 口径，§2.1）；
+- **安全边界**：免登录 = 任何能访问 player 的人都可用预览账号播放全部 READY 媒资——player 定位**本地 / 内网体验**（开发与 trial 环境），**不建议公网暴露**；确需外部演示时用独立受限账号（并发上限 / 封禁仍由管理端控制，ADR-0007）；
+- 浏览器侧：token 存 `sessionStorage`（刷新保留、关标签页失效即可）；业务请求带 `Authorization: Bearer`；
+- **401 处理**：清 token 重新走一次 `/api/session`（服务端缓存命中不重复 login）；仍失败 → 页面错误态；
+- **播放会话**：单页单会话；`play` 不带 `force_new`（幂等复用，§6.1）；切换模板不新建会话；`expires_at` 过期后由再次 `play` 自然重建。
+
+### 11.4 页面与交互
+
+**媒资列表（`/`）**：
+
+- 数据 `GET /v1/media`（缺省 50 条，§6.1）；卡片网格：封面（`poster_url`，加载失败占位）、标题、时长、分类 path / 标签 / 描述（custom 公开白名单，§8.4）；点击进入播放页；
+- 空态：无 READY 媒资 → 提示先去管理端上传 / 转码；加载失败区分 401（重新会话）/ 网络 / CORS。
+
+**播放页（`/play/{id}`）**：
+
+- 进入流程：`GET /v1/media/{id}`（标题 / probe / custom / 字幕轨道元信息）→ `POST /v1/media/{id}/play`（缺省自动选择）→ 播放器加载 `manifest_url`；
+- 布局：播放器（16:9、`maxHeight 70vh`，与管理端皮肤约定一致）→ 工具条 → 元数据区；
+- **清晰度控件（核心，2026-10-13 修订为下拉）**：**始终渲染下拉**（antd `Select`，像视频网站的清晰度菜单）——不限数量，1 套 / 上百套产物都可用（下拉自身滚动，不挤占布局）；选项 = `templates[]`（label = `name`，`name=null` 时「模板 {id 前 8 位}」，`is_default` 追加「（默认）」文本）；当前项 = 响应 `template_id`（未指定时由分发端自动选 `templates[]` 第一项，§6.3）；旧布局（`templates` 为空）显示禁用的「默认产物」占位，保证控件位置一致；
+  - 切换 = `POST play {template_id}`（复用会话）→ 播放器换源 → **保留进度**：以切换瞬间 `currentTime` 与播放 / 暂停状态恢复（seek 完成后续播状态与原一致；恢复失败静默从头，不阻塞播放）；
+  - 切换中控件 loading 且不可重复触发；选中当前项为空操作（不重新 play）；
+  - 切换失败（409 `not_playable` / 网络）→ 提示错误，**不打断当前播放**；
+- **字幕**：`subtitles[]` 逐条挂 `<track kind="subtitles" srclang={lang} label={label} default={is_default}>`，`src` = 响应 `url`（`typ=v` token，绑会话，§7.5）；选轨 / 关闭走播放器字幕菜单（皮肤内置）；无字幕时菜单自然不出现；
+- **元数据区**：probe（宽×高 / 视频编码 / 音频编码 / 码率）、custom（分类 / 描述 / 标签）；次要文本展示链路调试信息（`sid` / `template_id` / `expires_at`，便于验收核对）；
+- **错误与诊断**：清单 / 分片加载失败 → CORS / token 过期 / 产物不完整提示（复用管理端文案思路，§6.6）；409 `not_playable` / `session_limit` → 直接展示分发端消息；提供「重新播放」（重新 play + 重载，覆盖 token 过期场景）。
+
+### 11.5 播放器集成（Video.js v10 React）
+
+- 组件路线与管理端一致：`VideoPlayer` → `VideoSkin` → `HlsJsVideo`（`@videojs/hlsjs-video`，hls.js / MSE；Safari 由 Video.js 回退原生 HLS）；`@videojs/react/video/skin.css` 随组件导入；皮肤不带尺寸，必须外部给定（16:9 + maxHeight）；
+- **字幕挂载**：`<track>` 作为 `HlsJsVideo` 的 children（官方支持）；跨域轨道需媒体元素 `crossOrigin="anonymous"` + 分发端 CORS 响应头（§6.1 已具备）；字幕菜单由皮肤内置（`CaptionsButton`），不新增自定义菜单（如需语言菜单可用 `useCaptionsOptions`，备选）；
+- **换源**：受控 `src` 变更或 `key` 重建均可接受，行为约束见 §11.4（进度保留、字幕继续可用）；不引入第三方清晰度插件——跨模板切换是换源，**不是**同清单内 rendition 选择（同清单内多档 ABR 由 hls.js 自动切换，不进菜单）；
+- 卡顿诊断（可选）：8s stall 提示（同管理端 `HlsPreviewPlayer` 思路），CORS 未放行时的「转圈」根因提示。
+
+### 11.6 启动器与体验环境集成
+
+- `scripts/dev.ts`：`ServiceName` 增加 `player`（前台 / 后台 / `stop` / `status` / `logs` 全量支持，端口 `PLAYER_PORT`、`/healthz` 探测）；后台启动顺序 delivery 在 player 之前；交互式菜单加一项；
+- `trial-env.md` Runbook：§4 起四端（admin + delivery + worker + player，`--env-file .env.trial`）；§5 交付信息表加「播放演示 App」行（地址 + 「预览账号用 `bootstrap-playback.ts` 创建」提示）；`init-env` 说明补充 player 键；故障速查补两条（「未配置预览账号」「浏览器直连 CORS」）；
+- `dev-workflow.md`：常用命令表加 `bun scripts/dev.ts player`；
+- 根 `package.json`：`dev:player` 脚本（对齐 `dev:admin`）。
+
+### 11.7 验收与测试
+
+- **Go 单测**：§11.1 列表（多模板 / 已删模板 `null` / 旧布局空 / 查表失败降级 / 与选择一致）；
+- **契约门禁**：`task contracts` 后 `git diff` 干净（JSON Schema + Go struct 已提交）；`go -C apps/delivery test ./...` 全绿；
+- **手工验收（体验环境，四端起全）**：
+  1. 管理端：上传 1 个视频 → 用**两个**模板发起转码（如「原画加密」+「720p 加密」）→ 上传 1 条字幕（验证选轨可再加一条）；
+  2. player 打开列表 → 出现该媒资 → 点入播放：加密媒资出画面（= 清单改写 + key 下发 + 浏览器本地解密全链路通）；
+  3. 清晰度：多套产物媒资进入播放页**直接开播列表首项**（不再 409）；下拉列出全部产物，切到另一模板 → 播放在**原进度**续播，画面差异符合模板（分辨率 / 水印）；再切回；
+  4. 字幕：菜单显示轨道并可选轨 / 关闭；改轨道展示名后重进页面即取到新名称（`no-store`）；
+  5. 重转码某模板后重进播放页：新产物生效（本地形态分片为逐次预签名直出，无 CDN 陈旧缓存问题，§6.5）；
+  6. 负向：未配置预览账号 → 页面明确给出配置说明；失效 token（清 sessionStorage 后伪造）→ 401 路径可恢复；
+- **非目标不验收**：见 intent.md「播放演示 App」非目标（登录页 / 历史 / 搜索等；镜像与流水线自 2026-10-13 起转为交付项，见 §11.8）。
+
+### 11.8 镜像与流水线（2026-10-13 追加；原文非目标转为交付项）
+
+- **镜像**：`apps/player/Dockerfile`（`node:22-bookworm-slim` 两阶段：bun 装依赖 + `next build` → 运行时 `next start`），构建上下文是**仓库根**（workspace 源码直引，同 admin）；**不依赖 `packages/db` / Prisma**，构建期无需生成客户端、无需 env（与 admin 镜像的差异，见 deploy-apps.md）；
+- **浏览器直连地址运行时下发**：`GET /api/session` 响应增加 `delivery_base`，取值顺序 `PLAYER_PUBLIC_DELIVERY_BASE_URL` → `NEXT_PUBLIC_DELIVERY_BASE_URL` → `DELIVERY_BASE_URL` → `http://127.0.0.1:9000`；客户端将其随 token 存 `sessionStorage`，且**页面加载后首次请求必经 `/api/session`** 刷新该值——镜像一次构建可跨环境部署，改 env 即生效、无需重建（构建期 `NEXT_PUBLIC_*` 内联降级为兼容路径）；
+- **CNB 流水线**：`.cnb.yml` 新增 `web_trigger_player_docker` 手动按钮（推送 `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/player:latest`）；`tag_push`（打 tag 发版）纳入 player——四镜像（worker → admin → delivery → player）单流水线串行构建、双标签（`:latest` 与 `:<tag名>`）；
+- **compose**：根 `docker-compose.yml` 新增 `player` 服务（`PLAYER_PORT` 宿主/容器同端口、`env_file: .env` + 显式透传 `PLAYER_PUBLIC_DELIVERY_BASE_URL`、`/healthz` 探活、json-file 日志轮转）；`scripts/compose.sh up` 额外打印播放端预览地址（`{{port}}` 换 `PLAYER_PORT`）；
+- **本地等价**：`task image:player`（`docker build -f apps/player/Dockerfile -t openvod-player:latest .`）；`OPENVOD_PLAYER_IMAGE` 可覆盖 compose 镜像地址；
+- **前置不变**：容器形态下浏览器直连分发端仍需 `DELIVERY_CORS_ORIGINS` 与对象桶 CORS 放行播放端源站（§11.2）；容器内服务端 `DELIVERY_BASE_URL` 与浏览器视角地址不同时必须分别配置。

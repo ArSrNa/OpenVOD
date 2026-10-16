@@ -1,0 +1,14 @@
+# 单测与覆盖率配置（`bun run test:coverage` → coverage/lcov.info → CNB `testing:coverage` 上报）
+[test]
+# 覆盖率报告：text 本地阅读，lcov 供 CNB 覆盖率任务消费
+coverageReporter = ["text", "lcov"]
+# 只统计 SDK 源码：排除测试自身与 workspace 私有包（类型/错误码断言会加载 @openvod/shared）
+coverageSkipTestFiles = true
+coveragePathIgnorePatterns = [
+  "**/node_modules/**",
+  "**/test/**",
+  # workspace 私有包（测试断言会加载 @openvod/shared / contracts，不属 SDK 覆盖率分母）
+  "**/shared/**",
+  "../shared/**",
+  "**/contracts/**",
+]

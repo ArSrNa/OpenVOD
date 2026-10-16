@@ -1,0 +1,21 @@
+/* 播放演示 App 基础样式（antd 自带组件样式与重置，这里只做页面级基础约定） */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", sans-serif;
+  background: #f5f6f8;
+  color: rgba(0, 0, 0, 0.88);
+}
+
+a {
+  color: inherit;
+}

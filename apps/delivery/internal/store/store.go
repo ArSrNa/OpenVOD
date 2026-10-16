@@ -214,6 +214,12 @@ func (s *Store) JWTSigningKeys(ctx context.Context, now time.Time) ([]SigningKey
 
 // ---- transcode_templates（默认模板：多套产物时的自动选择依据） ----
 
+type TemplateRef struct {
+	ID        string `db:"id"`
+	Name      string `db:"name"`
+	IsDefault bool   `db:"is_default"`
+}
+
 func (s *Store) DefaultTemplateID(ctx context.Context) (string, error) {
 	var id string
 	err := s.db.GetContext(ctx, &id, `SELECT id FROM transcode_templates WHERE is_default = 1 ORDER BY updated_at DESC LIMIT 1`)
@@ -224,6 +230,26 @@ func (s *Store) DefaultTemplateID(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return id, nil
+}
+
+/**
+ * TemplateRefs 批量查模板行（spec.md §11.1：play 响应 templates[] 补当前名称与默认标记）。
+ * 一次 IN 查询；查不到的行由调用方降级为 name=null（历史产物，模板行已删）。
+ */
+func (s *Store) TemplateRefs(ctx context.Context, ids []string) ([]TemplateRef, error) {
+	if len(ids) == 0 {
+		return []TemplateRef{}, nil
+	}
+	query, args, err := sqlx.In(
+		`SELECT id, name, is_default FROM transcode_templates WHERE id IN (?)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	rows := []TemplateRef{}
+	if err := s.db.SelectContext(ctx, &rows, s.db.Rebind(query), args...); err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 // ---- system_settings（只读；播放域名运行时覆盖，spec.md §2.1.2；ADR-0015 设置加载） ----

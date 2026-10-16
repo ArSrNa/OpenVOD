@@ -1,6 +1,5 @@
 {
   "name": "@openvod/admin",
-  "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0",
   "scripts": {
@@ -17,6 +16,7 @@
     "@openvod/contracts": "workspace:*",
     "@openvod/crypto": "workspace:*",
     "@openvod/db": "workspace:*",
+    "openvod-jssdk": "workspace:*",
     "@openvod/shared": "workspace:*",
     "@openvod/storage": "workspace:*",
     "@openvod/transcode": "workspace:*",

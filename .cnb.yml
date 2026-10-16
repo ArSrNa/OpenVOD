@@ -133,101 +133,66 @@
 
 # 自动生成 Tag（Tag 列表页「自动生成 Tag」按钮触发）：tag 名 = **根 package.json 的 version**（不带 v 前缀）。
 #
-# ── 根因：以前这段配置从未被执行（2026-10-16 修正） ──
-# `auto_tag` 是平台的「页面操作事件」：点按钮时平台**先注入一条内置的 auto_tag 流水线**
-# （镜像 cnbcool/git-auto-tag，按提交语义推导版本），再与 .cnb.yml 的配置合并；同分支下后出现者覆盖，
-# 而**写在 `$` 下的 auto_tag 会被直接忽略**——官方 build/trigger-rule.md「配置覆盖规则」原文：
-# 「两边的 auto_tag 配置都会保留，但 `$` 下的配置会被忽略」。
-# 本仓库此前正是把「读 package.json 打 tag」的 job 挂在 `$` 下，所以它一次都没跑过：
-# 2026-10-16 构建 cnb-nuh-1k52f23cb 的日志里只有内置插件在跑，semantic-release 把
-# package.json=1.1.0 的库按 feat/fix 推导成了 **0.3.0**，自写的三个 stage 一个都没出现。
-# 此前几次 auto_tag「成功」也都是内置插件打的语义化 tag。
-# 教训：当时把「以实测为准」读成了「`$` 下也能生效」，实际是「我们的 job 没生效，生效的是内置插件」。
+# ── 挂载位置：必须写在**分支名下**（这里的 `main:`），不能写 `$` 兜底 ──
+# `auto_tag` 是平台的「页面操作事件」：点按钮时平台先注入一条内置流水线
+# （镜像 cnbcool/git-auto-tag，按 feat/fix 提交语义推导版本），再与 .cnb.yml 合并。
+# 官方 build/trigger-rule.md「配置覆盖规则」原文：
+#   「如果 .cnb.yml 中 auto_tag 配置在 `$` 下而不是默认分支名下，
+#     两边的 auto_tag 配置都会保留，但 `$` 下的配置会被忽略。」
+# 本仓库两次在这条上翻车，都是把「生效的是内置插件」误读成「我们的 job 生效了」：
+#   - cnb-s7p-1k51v01kf（sha 6e982a2，当时挂 `main:`）→ 日志里跑的是本任务的三个 stage
+#     （docker pull node:22），内置插件的 docker run 没有出现 ⇒ 同分支覆盖成立；
+#   - cnb-tp7-1k52fq5kb（sha f8f600a，挂 `$`）与 cnb-nuh-1k52f23cb（sha 09de7a5）→ 日志里
+#     只有 `docker run cnbcool/git-auto-tag` 与末尾那句内置 job 特有的 `echo $NEW_TAG`，
+#     本任务的 stage 一个都没出现 ⇒ `$` 下确实被忽略，semantic-release 把 version=1.1.0
+#     按提交语义推导成了 0.3.0。
+# 以后辨析「跑的是谁」看末尾有没有 `echo $NEW_TAG`：有 = 内置 job，没有 = 本任务。
 #
-# ── 解法：让内置插件打 tag，但把 tag 名钉死成 package.json 的版本号 ──
-# 插件把 settings.tagFormat 交给 semantic-release，最终过 lodash 模板
-# （semantic-release 20 的 lib/utils.js makeTag = `template(tagFormat)({ version })`；
-#  更新的 master 版是加了 {evaluate:false, escape:false}，两者对下面的写法结果一致）。
-# `${...}` 是**求值表达式**，模板作用域里只有 `version` 一个变量。实测（semantic-release 20.1.3 +
-# lodash 4.18.1，两种 template 调用方式都试过）：
-#   - `v${version}`        → `v0.3.0`  平台默认，语义化推导值，不是我们要的
-#   - `${version}`         → `0.3.0`   同上
-#   - `${PKG_VERSION}`     → **ReferenceError: PKG_VERSION is not defined**
-#   - `\${PKG_VERSION}`    → 同上（lodash 不支持 `\` 转义，别试）
-#   - `${'1.1.0'}`         → `1.1.0`   ✅ 单引号内容是**字符串字面量**，求值结果就是它自己
-# 为什么自定义变量一律不可用：插件内部用 `exec` 起 git 命令，stage 的 `exports` 只进主进程环境，
-# 到不了模板求值的作用域；`${version}` 是唯一被显式喂进 `template(...)({ version })` 的变量。
-# 所以只能走 `${'<version>'}`，把 package.json 的版本号当字面量嵌进去（版本号已过语义化校验，
-# 只含 `[0-9A-Za-z.-]`，不含单引号，嵌入安全）。
+# 因为这里盖掉了内置那条，整条链路（读版本 → 打 tag → 推 tag）都由本任务自己完成，
+# 不依赖插件的提交语义推导，也不依赖 `settings.tagFormat` 的模板求值技巧。
 #
-# ── 为什么配置里写成 '${''$PKG_VERSION''}' 这种怪样子 ──
-# YAML 的单引号只是 YAML 语法、不进属性值，解析后属性值实为 `${'$PKG_VERSION'}`。
-# 而 settings 属性值会做「$变更 变量替换」，其中的 `$PKG_VERSION` 会被换成版本号，最终得到
-# `${'1.1.0'}`。字面量那个 `$` **不需要转义**：它后面紧跟单引号，不构成合法变量名
-# （变量名只允许字母/数字/下划线、不能以数字开头），替换器不会碰它（已实测）。
-#
-# ── 仍未实测：平台会不会采纳 `$` 下的这条配置 ──
-# 既然文档说 `$` 下的 auto_tag 会被忽略，本 job 是否能盖掉内置那条**没有验证**。
-# 验证入口：.cnb/web_trigger.yml 的「验证autoTag」按钮（`web_trigger_verify_autotag`）跑同一份 job，
-# 可在不动 Tag 列表页的前提下看结果。若 Tag 列表页打出的仍是 0.x 语义化版本（或本 job 压根没出现），
-# 把本锚点整段挪到 `main:` 分支名下即可（同分支覆盖成立），并为其补 `imports`
-# 提供 `CNB_TOKEN_USER_NAME` / `CNB_TOKEN`（挪走后 stage 末尾的 git ls-remote 复核需要用）。
-#
-# 运行 / 检出分支由 CNB「Tag 自动生成配置」决定：默认分支下的 .cnb/settings.yml → tag.auto_tag.branch
-# （默认值 = 仓库默认分支 main；本仓库未配置该文件）；Tag 列表页按钮**不能临时选分支**，
-# 检出内容 = 该分支最新 commit ⇒ **发版前先把待发布提交合入 main**。
-#
-# 本 job 不需要任何密钥：推 tag 由内置插件用它自己的凭证完成（它也不读本 job 的 env）。
-# 之前「Git LFS 导致 push 失败」（`git-lfs was not found`）来自自写的 push 阶段，改用插件推送后消失；
-# 仍用开发镜像（含 git-lfs 3.4.1）是因为末尾要 `git ls-remote` 复核、且检出带 LFS 钩子。
+# 运行 / 检出分支由 CNB「Tag 自动生成配置」决定：默认分支下的 .cnb/settings.yml →
+# tag.auto_tag.branch（默认值 = 仓库默认分支 main；本仓库未配置该文件）；Tag 列表页按钮
+# **不能临时选分支**，检出内容 = 该分支最新 commit ⇒ **发版前先把待发布提交合入 main**。
+# 若把发版源分支改到别的分支，下面 `main:` 段的键名要同步改。
 .auto-tag: &auto-tag
   name: 按根 package.json 版本创建 Tag
   docker:
-    image: docker.cnb.cool/arsrna/media/openvod/dev:latest # 含 node + git + git-lfs
+    # 用仓库开发镜像（内置 git-lfs）：本仓库用 LFS 追踪 videos/mv.mp4（.gitattributes），
+    # CNB 检出会带 git-lfs 的 pre-push 钩子；缺 git-lfs 的镜像（如 node:22）在钩子处直接 push 失败
+    # —— 2026-10-16 实测：`This repository is configured for Git LFS but 'git-lfs' was not found`。
+    image: docker.cnb.cool/arsrna/media/openvod/dev:latest # 含 node / git / git-lfs / bun
   stages:
-    - name: 读取根 package.json 的版本号
+    - name: 读取并校验根 package.json 的版本号
       script: |
-        # 只认真正 key 为 "version" 的那一行（避开依赖里的 "version" 字段）
-        VERSION=$(grep -A1 -m1 -E '^[[:space:]]*"version"[[:space:]]*:' package.json \
-          | grep -oE '[0-9][0-9A-Za-z.+-]*' | head -1)
+        VERSION=$(bun -e 'process.stdout.write(require("./package.json").version)')
         echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' \
           || { echo "根 package.json 的 version 不是合法语义化版本：'$VERSION'"; exit 1; }
         echo "根 package.json 的 version = $VERSION"
         echo "##[set-output version=$VERSION]"
       exports:
         version: PKG_VERSION
-    - name: 按 package.json 版本创建 Tag
-      image: cnbcool/git-auto-tag:latest
-      settings:
-        # 展开为 ${'1.1.0'}，交给插件内 semantic-release 的 lodash 模板求值 ⇒ tag 名 = 版本号
-        #（求值规则、为什么不能用自定义变量、字面量的 $ 为什么不用转义，见文件顶部说明）
-        tagFormat: '${''$PKG_VERSION''}'
-        branch: $CNB_BRANCH
-        repoUrlHttps: $CNB_REPO_URL_HTTPS
-        # 提交里没有可发布变更时不报错（本仓库靠 package.json 显式升版，不依赖提交语义）
-        blockWhenFail: false
-      exports:
-        tag: NEW_TAG
-    - name: 校验 tag 与 package.json 版本一致
-      # NEW_TAG 必须与 package.json 的 version 逐字相同；配置一旦没盖住内置那条（仍按提交语义推导）
-      # 或插件求值行为有变，在此显式失败，不允许默默打错 tag。
+    - name: 校验远程尚无同名 Tag
+      # 已存在就失败（提示先升版本），避免用同一个版本号反复点按钮把发版链路打乱。
       script: |
-        EXPECTED=$(grep -A1 -m1 -E '^[[:space:]]*"version"[[:space:]]*:' package.json \
-          | grep -oE '[0-9][0-9A-Za-z.+-]*' | head -1)
-        test "$NEW_TAG" = "$EXPECTED" || {
-          echo "内置插件产出的 tag（'$NEW_TAG'）与根 package.json 的 version（'$EXPECTED'）不一致"
-          echo "说明配置没盖住平台内置的 auto_tag（仍按提交语义推导）或插件行为有变，见 .cnb.yml 顶部说明"
-          exit 1
-        }
-        echo "插件产出的 tag = $NEW_TAG"
-    - name: 确认 tag 已推送
-      # 用未鉴权的 ls-remote 复核（公开仓库可读）：能查到即说明插件已推送、tag_push 会被触发。
-      # 刻意不复用本 job 的 CNB_TOKEN——auto_tag 事件下它未必带 repo 读权限。
+        if git ls-remote --tags "$CNB_REPO_URL_HTTPS" "refs/tags/$PKG_VERSION" | grep -q "refs/tags/$PKG_VERSION"; then
+          echo "远程已存在 tag $PKG_VERSION：请先升级根 package.json 的 version 再发版"; exit 1
+        fi
+        echo "远程尚无 tag $PKG_VERSION"
+    - name: 创建并推送 Tag
+      # 用 origin 推送：检出时 runner 已写好凭据（credential.helper → .git/.git-credentials），
+      # 与内置 git-auto-tag 插件推 0.3.0 走的是同一条路，不必再手工拼带令牌的 URL。
+      # --no-verify：跳过检出带的 pre-push 钩子（内容是 `git lfs pre-push`）。推 tag 只上传 tag
+      # 对象、不涉及任何 LFS 对象，跳过是安全的；留着反而会因镜像缺 git-lfs 而直接失败。
       script: |
-        git ls-remote --tags "$CNB_REPO_URL_HTTPS" "refs/tags/$NEW_TAG" | grep -q "$NEW_TAG" \
-          || { echo "远程不存在 tag $NEW_TAG，请检查上方插件输出"; exit 1; }
-        echo "tag $NEW_TAG 已推送到远程，将触发 tag_push 发版"
-
+        git tag -a "$PKG_VERSION" -m "Release $PKG_VERSION"
+        git push --no-verify origin "refs/tags/$PKG_VERSION"
+    - name: 确认 Tag 已推送
+      # 不复用上面的令牌地址：这里要的正是「远端确实查得到」，而 tag 推送本身已在上一步鉴权完成。
+      script: |
+        git ls-remote --tags "$CNB_REPO_URL_HTTPS" "refs/tags/$PKG_VERSION" | grep -q "refs/tags/$PKG_VERSION" \
+          || { echo "远程不存在 tag $PKG_VERSION，请检查上方推送输出"; exit 1; }
+        echo "tag $PKG_VERSION 已推送到远程，将触发 tag_push 发版"
 
 # .env 注入：内容来自密钥仓库（.env 被 .gitignore，故不在代码仓内落盘）
 # 密钥仓库中存放 env.dev.yml，内含 OPENVOD_ENV_B64 = base64 -w 0 < .env
@@ -301,12 +266,9 @@ $:
     # 独立 job 便于 SDK 发布失败时单独重试（或用「发布播放器SDK」按钮补发），不影响镜像推送。
     - <<: *publish-sdk
 
-  # 自动生成 Tag（任务定义见文件顶部 `.auto-tag` 锚点）：
-  # Tag 列表页点按钮 → 读根 package.json 的 version → 打同名 tag → 触发 tag_push
-  # （四镜像 + 播放器 SDK 发布；SDK 侧还会校验 tag 名与该 version 一致，不一致拒绝发布）。
+# 默认分支名下的 auto_tag（CNB 按**分支名**匹配 auto_tag 的流水线配置，`$` 兜底会被忽略）。
+# 生效链路：Tag 列表页「自动生成 Tag」→ 本任务读根 package.json 的 version → 打同名 tag →
+# 触发 tag_push（四镜像 + 播放器 SDK 发布；SDK 侧还会校验 tag 名与该 version 一致，不一致拒绝发布）。
+main:
   auto_tag:
-    - <<: *auto-tag
-  # ⚠️ 临时验证入口（验证通过后删除）：手动跑一遍 auto_tag 的等价 job，
-  # 确认 git-auto-tag 的 tagFormat 字面量能产出 package.json 的版本号。
-  web_trigger_verify_autotag:
     - <<: *auto-tag

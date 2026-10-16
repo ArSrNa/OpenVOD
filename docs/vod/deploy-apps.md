@@ -163,7 +163,10 @@ CNB 云原生开发环境实测要点（2026-09-22）：
    `package.json` 漂移（2026-10-16 实测：`main` 上 version=1.1.0 时插件打出了 0.3.0）。因此本仓库的 auto_tag 任务
    定义在 `.cnb.yml` 顶部的 `.auto-tag` 锚点、由文件末尾的 **`main:` 段**引用；
    **运行 / 检出分支**由 CNB「Tag 自动生成配置」决定：默认分支下的 `.cnb/settings.yml` → `tag.auto_tag.branch`
-   （默认值 = 仓库默认分支 `main`；本仓库未配置该文件），Tag 列表页按钮**不能临时选分支**，检出内容为该分支最新 commit；
+   （默认值 = 仓库默认分支 `main`；本仓库未配置该文件），Tag 列表页按钮**不能临时选分支**，检出内容为该分支最新 commit。
+   **Git LFS 注意**：本仓库用 LFS 追踪 `videos/mv.mp4`（`.gitattributes`），CNB 检出会带 `git-lfs` 的 `pre-push` 钩子——
+   缺 `git-lfs` 的镜像会在推送 tag 时直接失败（`git-lfs was not found`）。故该 job 使用开发镜像（内置 `git-lfs` 3.4.1），
+   并保留 `--no-verify` 兜底重试一次（推 tag 不涉及 LFS 对象，安全）；
 3. tag 推送触发 `tag_push`：四个运行镜像（worker → admin → delivery → player）串行构建 + **独立 job**
    发布播放器 SDK——单测覆盖率（`testing:coverage`，红线见 `.cnb.yml`）→ `bun packages/player-sdk/scripts/publish.ts --registry both`
    发布到 npm 官方与 CNB 制品库；

@@ -39,7 +39,7 @@
 ### 硬约束（违反即缺陷）
 
 1. **Schema 归属权唯一**：迁移仅由管理端 `packages/db` 执行；两应用独立发版，迁移必须向后兼容（expand-contract：先加列、双写过渡、后删列），纳入 CI 检查。
-2. **数据库账号分权**：分发端暴露公网，其 DB 凭据为全系统最高危凭据——开独立受限账号：`users / media / media_subtitles / hls_keys / system_settings` 只读 + `playback_sessions` 读写 + 其余拒绝（`system_settings` 仅 `playback_base_url` 播放域名一键被消费，spec.md §2.1.2）；管理端另持全权账号。绝不共用 root。
+2. **数据库账号分权**：分发端暴露公网，其 DB 凭据为全系统最高危凭据——开独立受限账号：`users / media / media_subtitles / hls_keys / signing_keys / system_settings / transcode_templates` 只读 + `playback_sessions` 读写 + 其余拒绝（`system_settings` 仅 `playback_base_url` 播放域名一键被消费，spec.md §2.1.2；`transcode_templates` 为 **2026-10-12 修订新增**——`play` 的默认模板自动选择与响应 `templates[]` 模板名依赖它，spec.md §11.1；`signing_keys` 同为 2026-10-12 修订补入——分发端启动需读取 ACTIVE 的 JWT 私钥（`loadJWTSigners`，ADR-0007），原清单遗漏会导致 `login` 恒 503）；管理端另持全权账号。绝不共用 root。
 3. **SQLite 边界**：SQLite 为嵌入文件库，两应用分开部署时仅允许「单机同卷共享一个文件」（单机 compose）；**跨机器 / 云函数部署必须 MySQL**。
 4. **存储凭据分权**：S3 **写**凭据仅管理端 / Worker 持有；分发端仅持**受限只读凭据**（限 `proceed/`、`cover/`、`metadata/` 前缀，用于生成播放预签名 URL——2026-09-20 随 ADR-0005 放弃 EO TypeA，由原「零读凭据」约束调整而来）。
 5. **键前缀分区即隔离**：`original/` 仅管理端写；`proceed/`、`cover/`、`metadata/` 管理端与 Worker 写、分发端经预签名读。单桶足够，不按应用拆桶。

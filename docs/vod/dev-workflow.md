@@ -11,6 +11,7 @@
 | 管理端 admin（UI + API） | `apps/admin` | Node（`next dev` / `next start`） | `:8787` · `GET /healthz` | UI/API 同源，无 CORS（ADR-0013）；端口由 `ADMIN_PORT` 控制 |
 | 分发端 delivery | `apps/delivery` | Go（Chi） | `:9000` · `GET /healthz` | 播放热路径（ADR-0010）；端口由 `DELIVERY_LISTEN` 控制 |
 | 转码 Worker | `apps/worker` | Bun（常驻） | 无端口（轮询） | 需 `ffmpeg` / `ffprobe`（ADR-0008）；`bun scripts/dev.ts` 已一并启动，**不启动则转码任务停在「排队中」** |
+| 播放演示 App player | `apps/player` | Node（`next dev` / `next start`） | `:3100` · `GET /healthz` | 播放端 Web 参考实现（spec.md §11）；免登录（预览账号服务端换 JWT），只消费分发端 `/v1` API；端口由 `PLAYER_PORT` 控制 |
 | 共享包 | `packages/{db,shared,crypto,storage,transcode,contracts}` | TS 源码直引 | — | Next 经 `transpilePackages` 转译 |
 
 ## 2. 前置工具链
@@ -152,21 +153,21 @@ mkdir -p prisma/migrations/20260918000000_init
 
 ## 5. 启动
 
-> **容器形态（预构建镜像，常驻）**：`scripts/compose.sh up` 以 docker compose 常驻运行 admin + worker
+> **容器形态（预构建镜像，常驻）**：`scripts/compose.sh up` 以 docker compose 常驻运行 admin + worker + player
 > （镜像由流水线预构建；CNB 端口预览 / 挂载 / 公网 DB 连通已实测）。源码直跑（本节各命令）仍是日常
 > 开发调试主路径；**两种形态不要同时起**（端口冲突）。详见 [deploy-apps.md](./deploy-apps.md) 的 Compose 运行章节。
 
 ### 5.1 一键（后台运行）
 
 ```bash
-bun scripts/dev.ts                      # 交互式：勾选服务（admin / delivery / worker）+ 运行方式（前台调试 / 后台常驻）
-bun scripts/dev.ts all --background     # 一键后台起 admin + delivery + worker（等价旧 ./start.sh）
-bun scripts/dev.ts status               # 运行状态（含 worker）
-bun scripts/dev.ts logs worker          # 跟踪日志（admin | delivery | worker；-n 行数 / --no-follow）
-bun scripts/dev.ts stop                 # 停止（worker → delivery → admin；也可只停指定服务）
+bun scripts/dev.ts                      # 交互式：勾选服务（admin / delivery / worker / player）+ 运行方式（前台调试 / 后台常驻）
+bun scripts/dev.ts all --background     # 一键后台起 admin + delivery + worker + player（等价旧 ./start.sh）
+bun scripts/dev.ts status               # 运行状态（含 worker / player）
+bun scripts/dev.ts logs worker          # 跟踪日志（admin | delivery | worker | player；-n 行数 / --no-follow）
+bun scripts/dev.ts stop                 # 停止（worker → player → delivery → admin；也可只停指定服务）
 ```
 
-- 端口跟随根 `.env` 的 `ADMIN_PORT` / `DELIVERY_LISTEN`（缺省 `8787` / `:9000`），健康探测与提示都按实际端口来。
+- 端口跟随根 `.env` 的 `ADMIN_PORT` / `DELIVERY_LISTEN` / `PLAYER_PORT`（缺省 `8787` / `:9000` / `3100`），健康探测与提示都按实际端口来。
 - 日志与 pid 在 `.run/`（已忽略）；启动前自动补依赖与 Prisma 生成物（两份客户端）。
 - 探测方式：`curl -fsS http://localhost:${ADMIN_PORT:-8787}/healthz`、`http://localhost:${DELIVERY_LISTEN#:}/healthz`；**worker 无 HTTP 端口，存活判定用 `.run/worker.pid`**。
 - 后台服务用 `setsid` 起独立进程组，停止时整组收掉（`bun --watch` 吞 SIGTERM → TERM 宽限后 SIGKILL 兜底）。
@@ -179,6 +180,7 @@ bun scripts/dev.ts stop                 # 停止（worker → delivery → admin
 | `bun scripts/dev.ts admin` | 管理端（`ADMIN_PORT`） | 前台，`next dev`；自动加载根 `.env`、补依赖与生成物。**并会自动后台启动 Worker**（日志 `.run/worker.log`），退出（含 Ctrl-C）时一并停掉；若已有 Worker 在跑则沿用、退出时不动它 |
 | `bun scripts/dev.ts delivery` | 分发端（`DELIVERY_LISTEN`） | 前台；每次增量 `go build` 到 `.run/delivery`；`DELIVERY_DATABASE_URL` 为本地占位时自动回退 `DATABASE_URL` |
 | `bun scripts/dev.ts worker` | Worker | 前台单跑（观察认领 / 转码日志）；需 `ffmpeg`/`ffprobe` |
+| `bun scripts/dev.ts player` | 播放演示 App（`PLAYER_PORT`） | 前台 `next dev`；免登录播放端 Demo（spec.md §11），播放依赖分发端与预览账号（`PLAYER_PREVIEW_*`，回退 `DELIVERY_PREVIEW_*`） |
 | `task dev:admin` | 管理端（`ADMIN_PORT`） | `next dev` + `.env` 注入；**注意：此路径不自动起 Worker**，转码需另开 `task dev:worker` |
 | `task dev:delivery` | 分发端（`DELIVERY_LISTEN`） | `go run .`（含 `.env` 注入） |
 | `task dev:worker` | Worker | `bun --watch`，需 `ffmpeg`/`ffprobe` |
@@ -202,7 +204,7 @@ MF=$(curl -s -X POST localhost:9000/v1/media/<媒资id>/play -H "authorization: 
 ffprobe "$MF" && ffmpeg -i "$MF" -c copy /tmp/out.mp4
 ```
 
-- **管理端「产物 → 播放」预览**：在同一份 `.env` 里配置 `DELIVERY_BASE_URL`、`DELIVERY_PREVIEW_USERNAME`、`DELIVERY_PREVIEW_PASSWORD`（预览账号用 `bun apps/admin/scripts/bootstrap-playback.ts preview <密码>` 创建，建议专用）；管理端后端以该账号调分发端换签名主清单 URL，浏览器用 hls.js 直连分发端播放（解密仍在浏览器本地）。未配置时预览接口返回 501，其余管理功能不受影响；
+- **管理端「产物 → 播放」预览**：在同一份 `.env` 里配置 `DELIVERY_BASE_URL`、`DELIVERY_PREVIEW_USERNAME`、`DELIVERY_PREVIEW_PASSWORD`（预览账号用 `bun apps/admin/scripts/bootstrap-playback.ts preview <密码>` 创建，建议专用）；管理端后端经**播放器 SDK**（`openvod-jssdk` password 模式，token 缓存与重登由 SDK 治理）以该账号换签名主清单 URL，浏览器用 hls.js 直连分发端播放（解密仍在浏览器本地）。未配置时预览接口返回 501，其余管理功能不受影响；
 - 无 token 拉清单 / 取密钥 → 403 `bad_token`（P0 门禁语义）；密钥响应固定 16B + `no-store`；
 - token 以 query `t` 为主（改写后的清单里已自动带上）；App / hls.js 也可用 header `X-Playback-Token`（Safari 原生只能 query）；
 - 多套模板产物时 `play` 可带 `template_id`（不指定则取唯一产物或默认模板产物）；
@@ -251,6 +253,7 @@ task contracts            # 契约生成物变更后需入库（契约门禁）
 | 点「密钥管理」被弹回 `/setup`（即使已登录） | 服务端守卫先判向导再判会话（`apps/admin/src/lib/console.ts`）：`system_settings.setup_completed` 非 `1` → 跳 `/setup`（**说明该 admin 进程连的库里没有初始化标记**：向导没走完，或 `DATABASE_URL`/`DB_PROVIDER` 指到了另一个库）；读库抛错反而按“已完成”处理 → 跳 `/login` 而非 `/setup`。已在库中的初始化状态可用 `curl -s <admin>/api/setup` 判定：403「系统已完成初始化」= 正常 |
 | 分发端启动报 `数据库连接失败: dial tcp 127.0.0.1:3306` | `.env` 的 `DELIVERY_DATABASE_URL` 是本地占位；`bun scripts/dev.ts delivery` 会自动回退用 `DATABASE_URL`（亦可手动 `DELIVERY_DATABASE_URL="$DATABASE_URL" bun scripts/dev.ts delivery`；生产必须用受限账号，ADR-0011） |
 | `login` 返回 503「未配置 JWT 签名密钥」 | `signing_keys` 无 ACTIVE 的 JWT 行：`bun apps/admin/scripts/bootstrap-playback.ts <用户> <密码≥8位>` 后重启分发端 |
+| player 报「无法连接分发端（"http://..."）」（值带引号）| `docker run --env-file` 不剥 .env 引号（compose 会剥）——player 已对 URL / 账号做剥离防御，仍报错说明是未覆盖的键；用不带引号的 `-e KEY=value` 覆盖或改用 compose。同类：`next start` 报 `'-p' ... not a non-negative number` = `PLAYER_PORT` 带引号（镜像 CMD 已清洗，自建命令需自行处理） |
 | `play` 返回 409 `not_playable` | 媒资非 `READY`（转码中 / 失败）、该媒资无转码产物，或多套产物未指定 `template_id`（响应消息会列出可选值；模板 ID 亦可在管理端媒资详情查看） |
 | EdgeOne 部署后管理端预览 404，`/healthz` 也返回 Makers HTML `NOT_FOUND` / `The site does not exist` | 请求未到达 delivery。旧构建把共享 Go 源码放入 `cloud-functions/`，CLI 将 `server.go` 识别为 Framework 入口并生成 `/server` 前缀；改用 `task build:edgeone` 构建独立暂存项目并校验根 catch-all，`bun --no-env-file scripts/edgeone.ts deploy` 上传受检查产物到生产环境。再用 `bun --no-env-file scripts/check-delivery-deployment.ts <分发域名>` 验收健康 JSON 与无签名 403；若仍是平台 HTML 404，核对 Makers 域名绑定和生产部署。验收通过后在管理端重新生成播放 URL，完整步骤见 [deploy-delivery.md](./deploy-delivery.md) |
 | Makers 控制台已配置变量，但 Go 函数仍 502、日志报 `DELIVERY_DATABASE_URL 未配置` | Go Framework 上传产物未收到引导变量。使用更新后的 `scripts/edgeone.ts build` / `deploy`：发布前从控制台 Production 读取两项引导配置，写入私有函数包，由 EdgeOne 入口补齐进程环境。检查 `EO_API_REGION` 是否与账号站点一致；不要把 admin 的整份 `.env` 放进公开产物。控制台变量必须在发布前保存。详见 [deploy-delivery.md](./deploy-delivery.md) |
@@ -267,6 +270,7 @@ task contracts            # 契约生成物变更后需入库（契约门禁）
 | 端口被占 / `已是运行状态` | `bun scripts/dev.ts status` 查看，`bun scripts/dev.ts stop` 停止；或换 `ADMIN_PORT` / `DELIVERY_LISTEN` |
 | `bun scripts/dev.ts stop` 执行了，端口仍被占用（status 显示 `pid -`） | 占用者不是本启动器起的进程，典型是 **compose 容器**（`docker ps` 里 `openvod-admin-1` 映射 `0.0.0.0:9000->9000`）：`dev.ts` 只收 `.run/*.pid` 记录的进程组，容器要用 `docker compose stop admin` / `docker compose down`（连 worker 容器一起停）。注意 worker 必须单实例——容器 worker 在跑时别再用 dev 起 worker（两个消费者同抢 `transcode_jobs`），先 `docker compose stop worker` |
 | `bun run --cwd packages/db exec ...` 报 `Script not found "exec"` | 用 `cd packages/db && ./node_modules/.bin/prisma ...` |
+| 管理端显示的版本与发版 tag 不一致（如 UI 显示 0.1.0、tag 却是 0.2.0） | **版本号唯一真源是根 `package.json` 的 `version`**：子包 `package.json` 不得声明 `version`，展示只经 `apps/admin/src/lib/version.ts` 的 `APP_VERSION`（服务端读取后以 prop 下传客户端组件）。静态守卫 `apps/admin/test/version-source.test.ts` 随 `bun test` 执行，违规即失败；约定见 AGENTS.md §仓库约定 |
 
 ## 9. 目录与忽略规则
 

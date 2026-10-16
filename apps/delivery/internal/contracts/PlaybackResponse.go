@@ -6,6 +6,7 @@ type PlaybackResponse struct {
 	Sid         string             `json:"sid"`
 	Subtitles   []PlaybackSubtitle `json:"subtitles"`
 	TemplateID  string             `json:"template_id"`
+	Templates   []PlaybackTemplate `json:"templates"`
 }
 
 type PlaybackSubtitle struct {
@@ -14,4 +15,10 @@ type PlaybackSubtitle struct {
 	Label     string `json:"label"`
 	Lang      string `json:"lang"`
 	URL       string `json:"url"`
+}
+
+type PlaybackTemplate struct {
+	ID        string  `json:"id"`
+	IsDefault bool    `json:"is_default"`
+	Name      *string `json:"name"`
 }

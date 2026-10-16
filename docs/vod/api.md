@@ -411,14 +411,41 @@ JWT 为 ES256（P-256）compact JWS，header `{alg,typ,kid}`，claims `{iss,sub,
 |---|---|
 | 鉴权 | JWT（见 2.1） |
 | 请求 body | **可选**（`Content-Length > 0` 才解析）：`{force_new?: bool, template_id?: string\|null}`；`template_id` 缺省/`null` = 自动选择，`""` = 显式请求旧布局产物（`proceed/{id}/`），非空必须是模板 cuid |
-| 成功 | `200 {sid, manifest_url, expires_at, template_id, subtitles[{id,lang,label,is_default,url}]}`；`sid` = `ps_` + 24 hex；`manifest_url` 已带 `typ=m` 签名 token 与 `tpl`；字幕 `url` 带 `typ=v` 签名 token（同一枚 token 覆盖全部轨道） |
+| 成功 | `200 {sid, manifest_url, expires_at, template_id, subtitles[], templates[]}`；`sid` = `ps_` + 24 hex；`manifest_url` 已带 `typ=m` 签名 token 与 `tpl`；字幕 `url` 带 `typ=v` 签名 token（同一枚 token 覆盖全部轨道）；`templates[]` 见下（spec.md §11.1） |
 | 幂等 | 非 `force_new` 时先复用同用户同媒资的未过期未吊销会话 |
 | 并发上限 | 新建会话前检查 `users.max_concurrent_sessions`（0 = 不限），超限 → `409 session_limit` |
-| 失败 | `400` body 非法；`404` 媒资不存在；`409 not_playable`（非 READY / 无产物 / 同名多产物未指定模板 / 指定模板无产物）；`409 session_limit`；`500` |
+| 失败 | `400` body 非法；`404` 媒资不存在；`409 not_playable`（非 READY / 无任何可播放产物 / 指定模板无产物）；`409 session_limit`；`500`。**多套产物未指定 `template_id` 不再 409**（2026-10-13）：默认模板优先，无默认则自动选 `templates[]` 首项（spec.md §6.3） |
 
 ```bash
 MF=$(curl -s -X POST $D/v1/media/<媒资id>/play -H "authorization: Bearer $TOKEN" -d '{}' \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["manifest_url"])')
+```
+
+#### 🆕 `templates[]`：可用模板产物列表（spec.md §11.1，2026-10-12）
+
+「清晰度」选项 = 该媒资**实际存在的**模板产物子树（`proceed/{id}/{templateId}/`，与 `template_id` 自动选择同一列举逻辑，「有什么放什么」；不列「有模板但无产物」的项）。恒为数组，旧布局为 `[]`：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | string | 模板 ID（cuid 形状）；即 `play` 请求 `template_id` 的可用取值 |
+| `name` | string \| null | `transcode_templates.name` 当前名称（非任务快照）；模板行已删（历史产物）为 `null` |
+| `is_default` | bool | 管理端标记的默认模板（仅展示；自动选择语义仍按 §6.3） |
+
+- **排序**：默认模板优先，其余按 `name`（`null` 排最后）再按 `id` 字典序，保证稳定；
+- **自动选择 = 首项**（2026-10-13）：未指定 `template_id` 且无默认模板时自动播放 `templates[0]`——客户端列表里看到的第一项就是正在播的那套，切换只需回传其 `id`；
+- **容错**：模板表查询失败**不致命**——全部降级 `name: null`（播放链路不因模板表查询失败中断）；
+- **切换**：指定 `template_id` 再次 play（复用会话）→ App 换源并保留播放进度（apps/player 参考实现）。
+
+```json
+{
+  "sid": "ps_2f0c…", "manifest_url": "https://…/manifest/master.m3u8?t=…&tpl=cabc…",
+  "expires_at": "2026-10-12T12:00:00Z", "template_id": "cabc…",
+  "subtitles": [{ "id": "cxyz…", "lang": "zh-CN", "label": "中文", "is_default": true, "url": "https://…/subtitles/cxyz….vtt?t=…" }],
+  "templates": [
+    { "id": "cabc…", "name": "原画加密", "is_default": true },
+    { "id": "cdef…", "name": "720p 加密", "is_default": false }
+  ]
+}
 ```
 
 ### 2.3 播放资源（URL 签名 token）

@@ -1,8 +1,8 @@
-# OpenVOD 单机 Compose 编排（ADR-0011「两应用 + N 进程」中的常驻侧：admin + worker）
+# OpenVOD 单机 Compose 编排（ADR-0011「两应用 + N 进程」中的常驻侧：admin + worker + player）
 #
-# 形态：镜像**预先构建**、由流水线推送（仓库页「构建admin（Docker）」/「构建worker（Docker）」
-#       按钮 → ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/{admin,worker}:latest；
-#       本地等价命令 `task image:admin` / `task image:worker`），本文件只 pull + up，不在运行时构建。
+# 形态：镜像**预先构建**、由流水线推送（仓库页「构建admin（Docker）」/「构建worker（Docker）」/
+#       「构建player（Docker）」按钮 → ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/{admin,worker,player}:latest；
+#       本地等价命令 `task image:admin` / `task image:worker` / `task image:player`），本文件只 pull + up，不在运行时构建。
 #       适用于任意 Docker 宿主：CNB 云原生开发环境 / CVM / 轻量应用服务器。
 #
 # 前置：仓库根 .env 已生成（`sh scripts/gen-env.sh`；CNB 开发环境启动任务已自动注入）。
@@ -21,6 +21,11 @@
 #     需大磁盘（ADR-0003：源片 + 全档产物 + 加密重写）。
 #   - delivery 不在本编排内：它按 ADR-0003 部署到 EdgeOne Cloud Functions / SCF；admin 的
 #     DELIVERY_BASE_URL 必须指向分发端**实际可达地址**（容器内写 127.0.0.1 会指向 admin 自己）。
+#   - player（播放演示 App，spec.md §11）：免登录播放端 Demo，依赖分发端可达 + 预览账号
+#     （PLAYER_PREVIEW_*，回退 DELIVERY_PREVIEW_*，bootstrap-playback.ts 创建）。容器内服务端
+#     经 DELIVERY_BASE_URL 调 login；**浏览器直连地址**由 /api/session 运行时下发
+#     （PLAYER_PUBLIC_DELIVERY_BASE_URL，留空回退 DELIVERY_BASE_URL）——两者视角不同
+#     （容器内 127.0.0.1 ≠ 宿主 / 浏览器）时必须分别配置；CNB 预览地址 = {{port}} 换 PLAYER_PORT。
 #   - 停止 worker 会中断当前转码：任务经 lease 过期自动重派（ADR-0008），attempts 会 +1。
 name: openvod
 
@@ -68,6 +73,28 @@ services:
       timeout: 5s
       retries: 3
       start_period: 60s
+    init: true
+    restart: unless-stopped
+    logging: *logging
+
+  player:
+    image: ${OPENVOD_PLAYER_IMAGE:-docker.cnb.cool/arsrna/media/openvod/player:latest}
+    env_file:
+      - .env
+    environment:
+      # 浏览器直连分发端地址（运行时经 /api/session 下发，构建期不内联）：留空回退 DELIVERY_BASE_URL。
+      # 显式透传便于用 shell 覆盖（compose 插值以 shell 环境变量优先于 .env）
+      PLAYER_PUBLIC_DELIVERY_BASE_URL: ${PLAYER_PUBLIC_DELIVERY_BASE_URL:-}
+    ports:
+      # 宿主与容器同端口；CNB 预览地址 = CNB_VSCODE_PROXY_URI 的 {{port}} 换成本端口
+      - "${PLAYER_PORT:-3100}:${PLAYER_PORT:-3100}"
+    healthcheck:
+      # /healthz 语义：进程存活即 200（与镜像 HEALTHCHECK / admin 同口径）；端口清洗成纯数字（防引号注入）
+      test: ["CMD-SHELL", "node -e \"const p=String(process.env.PLAYER_PORT??3100).replace(/\\D/g,'')||'3100';fetch('http://127.0.0.1:'+p+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     init: true
     restart: unless-stopped
     logging: *logging

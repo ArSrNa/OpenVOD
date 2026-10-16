@@ -2,9 +2,9 @@
 
 用户对 Agent 说「**启动一个体验环境**」（同类说法：「快速试用」「起一个本地体验环境」「搭个试用环境」）时，
 **按本 Runbook 执行**：用 `docker-compose.infra.yml` + `scripts/compose-infra.sh` 拉起本地底座
-（MySQL + RustFS，S3 兼容），再把三端跑起来。
+（MySQL + RustFS，S3 兼容），再把四端（admin / delivery / worker / player）跑起来。
 
-目标：用户最后拿到管理台 / 分发端 / RustFS 控制台地址，**只需在 `/setup` 向导里填一次 RustFS 参数**。
+目标：用户最后拿到管理台 / 分发端 / 播放演示 App / RustFS 控制台地址，**只需在 `/setup` 向导里填一次 RustFS 参数**。
 
 适合：CNB 云原生开发环境（推荐，Docker 已内置）或任意有 Docker 的宿主。
 不适合：生产部署（见 `deploy-delivery.md` / `deploy-apps.md`）。
@@ -38,7 +38,8 @@ sh scripts/compose-infra.sh up
 sh scripts/compose-infra.sh init-env
 ```
 
-- 根 `.env` 存在 → 以它为底，仅覆盖 `DB_PROVIDER` / `DATABASE_URL` / `DELIVERY_DATABASE_URL` 三个键，其余键原样继承；
+- 根 `.env` 存在 → 以它为底，仅覆盖 `DB_PROVIDER` / `DATABASE_URL` / `DELIVERY_DATABASE_URL` 三个键，其余键原样继承
+  （player 键如 `PLAYER_PORT` / `PLAYER_PREVIEW_*` 一并继承；没有则走默认：端口 3100、预览账号回退 `DELIVERY_PREVIEW_*`）；
 - 根 `.env` 不存在 → 生成必需最小集（ADR-0015），`MASTER_KEYS` 随机生成；
 - 产出 `.env.trial`（权限 600，已被 `.gitignore` 的 `.env.*` 规则忽略）；**重复执行会整体重新生成，勿手改**。
 
@@ -62,11 +63,11 @@ docker compose -f docker-compose.infra.yml --env-file .run/infra.env \
 空库 + 仓库自带 migrations 正常一次通过；若报 `P3014`（影子库），用 `scripts/compose-infra.sh env`
 打印的 root 连接串，或走 dev-workflow §4.3 的 baseline 流程。
 
-## 4. 起三端（后台常驻）
+## 4. 起四端（后台常驻）
 
 ```bash
-bun scripts/dev.ts --env-file .env.trial all --background   # admin + delivery + worker 一起后台起
-bun scripts/dev.ts --env-file .env.trial status             # 三行 running
+bun scripts/dev.ts --env-file .env.trial all --background   # admin + delivery + worker + player 一起后台起
+bun scripts/dev.ts --env-file .env.trial status             # 四行 running（worker 无端口）
 ```
 
 **体验环境下所有 `dev.ts` 命令都必须带 `--env-file .env.trial`**：`dev.ts` 指定该文件后完全不读根 `.env`；
@@ -81,8 +82,9 @@ bun scripts/dev.ts --env-file .env.trial status             # 三行 running
 | 首次初始化 | 打开管理台自动进 `/setup` 向导：S3 参数填 **RustFS**——端点 `http://127.0.0.1:9002`、桶（先在 RustFS 控制台创建同名桶）、AK/SK 见 `.run/infra.env`；向导里可顺便创建首个管理员（email + 密码 ≥8 位） |
 | RustFS 控制台 | `sh scripts/compose-infra.sh url`（CNB 预览地址推导）；本机 `http://127.0.0.1:9003` |
 | 分发端 | `http://127.0.0.1:9000`（`DELIVERY_LISTEN`）；CNB 上需在 WebIDE 的 PORTS 面板添加 |
+| 播放演示 App | `http://127.0.0.1:3100`（`PLAYER_PORT`）；CNB 预览：`{{port}}` 换 `PLAYER_PORT`。**免登录**（服务端用预览账号自动换 JWT）——预览账号用 `bun apps/admin/scripts/bootstrap-playback.ts <用户名> <口令≥8位>` 创建（已配 `DELIVERY_PREVIEW_*` 时自动复用）；未配时页面会明确给出配置说明 |
 | 凭据文件 | `.run/infra.env`（MySQL 口令 + RustFS AK/SK）、`.env.trial`（DB 连接串 + MASTER_KEYS）：均 600 且已 gitignore |
-| 停止 / 清理 | 底座 `sh scripts/compose-infra.sh down`（保数据）/ `reset`（**删卷清数据**）；三端 `bun scripts/dev.ts stop` |
+| 停止 / 清理 | 底座 `sh scripts/compose-infra.sh down`（保数据）/ `reset`（**删卷清数据**）；四端 `bun scripts/dev.ts stop` |
 
 ## 安全红线
 
@@ -104,3 +106,5 @@ bun scripts/dev.ts --env-file .env.trial status             # 三行 running
 | 向导页报 MASTER_KEYS 未配置 / 非法 | `.env.trial` 的 `MASTER_KEYS` 格式问题（`init-env` 已自动处理占位值），dev-workflow §8 有逐条自查 |
 | 登录 403 Invalid origin | CNB 预览网关会改写 Origin，见 dev-workflow §8 对应条目 |
 | 分发端 login 返回 503 未配置 JWT 签名密钥 | 向导完成后跑 `bun apps/admin/scripts/bootstrap-playback.ts <用户> <密码≥8位>` 引导播放链路（含签名密钥 + 播放端用户） |
+| player 打开提示「未配置预览播放账号」（501） | 在 `.env.trial` 配置 `PLAYER_PREVIEW_USERNAME` / `PLAYER_PREVIEW_PASSWORD`（或复用 `DELIVERY_PREVIEW_*`），账号用上述 `bootstrap-playback.ts` 创建，再重启 player |
+| player 列表加载失败 / 播放一直转圈 | 浏览器直连的两条 CORS 链路：①业务 API 与清单——`DELIVERY_CORS_ORIGINS` 放行 player 源站（默认 `*` 已满足）；②分片直连对象存储——RustFS 对象桶 CORS 放行 player 源站。另确认分发端在跑（`curl http://127.0.0.1:9000/healthz`）；CNB 预览场景 `NEXT_PUBLIC_DELIVERY_BASE_URL` 需填网关地址（**构建期内联，改后要重启 player**） |

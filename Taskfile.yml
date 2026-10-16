@@ -98,6 +98,11 @@ tasks:
     cmds:
       - docker build -f apps/worker/Dockerfile -t openvod-worker:latest .
 
+  image:player:
+    desc: 播放演示 App 镜像（Next.js 全栈单容器，spec.md §11.8；构建上下文=仓库根）
+    cmds:
+      - docker build -f apps/player/Dockerfile -t openvod-player:latest .
+
   test:
     cmds:
       - bun test

@@ -15,6 +15,7 @@ import {
   PlaybackRequest,
   PlaybackResponse,
   PlaybackSubtitleDTO,
+  PlaybackTemplateDTO,
 } from "../src/index";
 
 const outDir = join(dirname(fileURLToPath(import.meta.url)), "..", "jsonschema");
@@ -28,6 +29,7 @@ const schemas: Array<[string, z.ZodType]> = [
   ["MediaDetail", MediaDetail],
   ["MediaSubtitleDTO", MediaSubtitleDTO],
   ["PlaybackSubtitleDTO", PlaybackSubtitleDTO],
+  ["PlaybackTemplateDTO", PlaybackTemplateDTO],
   ["PageQuery", PageQuery],
   ["PageResponse", PageResponse],
   ["PlaybackRequest", PlaybackRequest],

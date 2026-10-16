@@ -146,10 +146,32 @@ CNB 云原生开发环境实测要点（2026-09-22）：
 | 构建admin（Docker） | `web_trigger_admin_docker` | `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/admin:latest` |
 | 构建worker（Docker） | `web_trigger_worker_docker` | `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/worker:latest` |
 | 构建player（Docker） | `web_trigger_player_docker` | `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/player:latest` |
-| 打 tag 发版（worker + admin + delivery + player 一次构建） | `tag_push` | 四个镜像均推 `:latest` 与 `:<tag名>` 双标签（delivery 构建见 deploy-delivery.md） |
+| 发布播放器SDK | `web_trigger_publish_sdk` | `openvod-jssdk` → npm 官方 + CNB npm 制品库（单测覆盖率上报 CNB 洞察） |
+| 打 tag 发版（worker + admin + delivery + player 一次构建） | `tag_push` | 四个镜像均推 `:latest` 与 `:<tag名>` 双标签（delivery 构建见 deploy-delivery.md）；**同批发布播放器 SDK** |
 
 `tag_push` 流水线（`$` 兜底分支）单流水线串行构建四个运行镜像，任一 stage 失败即中断、
 不留「半个版本」；产物同时保留 `:latest` 与本次 tag 两个标签，制品库可直接按 tag 回滚。
+
+### 发版链路（2026-10-16 起：含播放器 SDK）
+
+1. 升级**根 `package.json` 的 version**（全仓库唯一版本号，子包一律不声明），并合入**默认分支**（当前 `main`，
+   见下条的分支来源）；
+2. Tag 列表页「自动生成 Tag」→ `auto_tag` 读取根 `package.json` 的 version 校验语义化 → 确认同名 tag 不存在 →
+   `git tag -a <version>` 并推送（tag 名即版本号，不带 `v` 前缀）。
+   **配置挂载位置**：CNB 按**分支名**匹配 `auto_tag` 的流水线配置，写在 `$` 兜底里会被忽略——那时平台退化为
+   内置 `cnbcool/git-auto-tag` 插件，按提交语义（`feat` → minor、`fix`/`docs` → patch）推导版本，与根
+   `package.json` 漂移（2026-10-16 实测：`main` 上 version=1.1.0 时插件打出了 0.3.0）。因此本仓库的 auto_tag 任务
+   定义在 `.cnb.yml` 顶部的 `.auto-tag` 锚点、由文件末尾的 **`main:` 段**引用；
+   **运行 / 检出分支**由 CNB「Tag 自动生成配置」决定：默认分支下的 `.cnb/settings.yml` → `tag.auto_tag.branch`
+   （默认值 = 仓库默认分支 `main`；本仓库未配置该文件），Tag 列表页按钮**不能临时选分支**，检出内容为该分支最新 commit；
+3. tag 推送触发 `tag_push`：四个运行镜像（worker → admin → delivery → player）串行构建 + **独立 job**
+   发布播放器 SDK——单测覆盖率（`testing:coverage`，红线见 `.cnb.yml`）→ `bun packages/player-sdk/scripts/publish.ts --registry both`
+   发布到 npm 官方与 CNB 制品库；
+4. SDK 版本与 tag 同源：发布脚本读取同一个根 `package.json` 的 version，并校验 `CNB_BRANCH`（tag 名）与之一致，
+   不一致直接拒绝发布（防「tag 与内容不匹配」的错版）；
+5. 令牌：`NPM_TOKEN` 由密钥仓库 `arsrna/env` 的 `npm.yml` 注入；CNB 制品库用内置 `CNB_TOKEN`，
+   地址在 `.cnb.yml` 的 `CNB_NPM_REGISTRY`（见 [player-sdk-spec.md §12.5](./player-sdk-spec.md)）。
+   仅需补发 SDK 时用「发布播放器SDK」按钮，或在本地跑 `bun run --cwd packages/player-sdk publish:{npm,cnb,both}`。
 
 ## 待办与待验证
 

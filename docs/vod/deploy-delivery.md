@@ -248,3 +248,23 @@ Go Framework 根模块布局下，CLI 生成的响应中间件未自动接入嵌
 `RunEdgeOne()` 现显式包装 HTTP 响应，在首次 `WriteHeader` / `Write` **之前**设置固定 CLI 使用的
 `eo-pages-inner-scf-status`、`eo-pages-inner-status-intercept=false` 和请求 ID，保留业务状态及 JSON / no-store。
 平台响应头只用于 EdgeOne，SCF / Compose 不受影响。适配的最终边缘行为仍需部署后以六项检查验收。
+
+### 发布切换窗口的平台 500（2026-10-17）
+
+实测（流水线 `cnb-7qa-1k5308amo`）：`makers deploy` 上传新版本后，平台滚动新实例期间，
+部分请求会收到平台生成的 **HTTP 500、正文非 JSON** 的错误页：
+
+```text
+500: INTERNAL_SERVER_ERROR
+(Code: INTERNAL_CLOUD_FUNCTION_NOT_READY)
+Cloud Functions not ready.
+```
+
+这不是 delivery 的业务错误，也不能用「业务路由 500 JSON」来判定故障：同一时刻
+`/healthz` 可能已返回成功 JSON（命中仍存活或先就绪的实例），其余路由仍 500；
+实例就绪后自行恢复（本次实测约 20s）。因此发布后的**任何**人工访问都要按此窗口预期——
+先等待重试，持续数分钟以上才需要进 Makers 控制台查函数日志与部署状态。
+
+`scripts/check-delivery-deployment.ts` 已按此修订：六项探测的暂态失败（平台 5xx、平台 HTML 404、
+网络重置与超时）在统一窗口（默认 120s，`retryTimeoutMs`）内逐项重试；重定向、错误服务、
+错误 JSON 等配置类失败仍立即失败，避免把真实故障掩盖成「部署慢」。

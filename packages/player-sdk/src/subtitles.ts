@@ -1,9 +1,9 @@
 // 字幕（player-sdk-spec.md §6）：轨道数据随 handle 下发；VTT 文本拉取辅助（挂载方式由宿主 / 播放器决定）。
 // SDK 不做字幕解析 / 重排 / 翻译 / 样式。
-import type { PlaybackSubtitleDTO, z } from "@openvod/contracts";
 import type { HttpClient } from "./client";
+import type { PlaybackSubtitle } from "./types";
 
-export type PlaybackSubtitle = z.infer<typeof PlaybackSubtitleDTO>;
+export type { PlaybackSubtitle };
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;

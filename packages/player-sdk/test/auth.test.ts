@@ -1,7 +1,7 @@
 // 鉴权与生命周期单测（player-sdk-spec.md §12.1：T1~T5 / T18；注入 fetch + 假时钟，无真实网络）
 import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { createPlayerSdk, DeliveryError, type PlayerSdkStorage, type PlayerSdkEvent } from "../src";
-import { createFetchStub, errorResponse, jsonResponse, LOGIN_BODY, type FetchStub } from "./helpers";
+import { createFetchStub, errorResponse, jsonResponse, LOGIN_BODY, rejection, type FetchStub } from "./helpers";
 
 const BASE = "https://delivery.test";
 const LOGIN = (call: { path: string }) => call.path === "/v1/auth/login";
@@ -58,7 +58,7 @@ describe("鉴权（§3）", () => {
     const stub = createFetchStub(() => errorResponse(401, "invalid_credentials", "用户名或密码错误"));
     const sdk = createPlayerSdk({ baseUrl: BASE, credential: passwordCredential(), fetch: stub.fetch });
 
-    const error = await sdk.auth.getAccessToken().catch((e) => e as DeliveryError);
+    const error = await rejection(sdk.auth.getAccessToken());
     expect(error).toBeInstanceOf(DeliveryError);
     expect(error.code).toBe("invalid_credentials");
     expect(error.status).toBe(401);
@@ -96,7 +96,7 @@ describe("鉴权（§3）", () => {
     const sdk2 = createPlayerSdk({ baseUrl: BASE, credential: passwordCredential(), fetch: stub2.fetch });
     sdk2.on((event) => events2.push(event));
 
-    const error = await sdk2.listMedia().catch((e) => e as DeliveryError);
+    const error = await rejection(sdk2.listMedia());
     expect(error.code).toBe("unauthorized");
     expect(stub2.count(LOGIN)).toBe(2); // 不无限重登
     expect(events2.some((e) => e.type === "auth:changed" && e.reason === "expired")).toBe(true);
@@ -153,7 +153,7 @@ describe("鉴权（§3）", () => {
     expect(await sdk.auth.getAccessToken()).toBe("static-jwt");
 
     jest.advanceTimersByTime(3_700_000); // 越过 expires_at（leeway 300s）
-    const error = await sdk.auth.getAccessToken().catch((e) => e as DeliveryError);
+    const error = await rejection(sdk.auth.getAccessToken());
     expect(error.code).toBe("unauthorized");
     expect(events.some((e) => e.type === "auth:changed" && e.reason === "expired")).toBe(true);
     expect(stub.count(LOGIN)).toBe(0);

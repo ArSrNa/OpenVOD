@@ -1,13 +1,11 @@
 // 媒资消费（player-sdk-spec.md §7）：listMedia / getMedia 透传服务端语义（不变量 N3），
 // parseCustomMetadata 收敛 custom 公开白名单（spec.md §8.4）的防御性解析。
 // DTO 类型以 type-only 引用契约（唯一真相源 packages/contracts），运行时零依赖。
-import type { MediaDetail as MediaDetailSchema, MediaListItem as MediaListItemSchema, PageResponse as PageResponseSchema, z } from "@openvod/contracts";
 import type { JsonRequestOptions } from "./client";
 import type { SdkOperation } from "./events";
+import type { MediaDetail, MediaListItem, MediaPage } from "./types";
 
-export type MediaListItem = z.infer<typeof MediaListItemSchema>;
-export type MediaDetail = z.infer<typeof MediaDetailSchema>;
-export type MediaPage = z.infer<typeof PageResponseSchema>;
+export type { MediaDetail, MediaListItem, MediaPage };
 
 /** 带 401 兜底的业务请求函数（由入口装配，playback 复用同一实现） */
 export type AuthedRequestFn = (

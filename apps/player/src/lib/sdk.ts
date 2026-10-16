@@ -4,7 +4,7 @@
 // getToken 调 Next 路由 /api/session（服务端读预览账号调分发端 login，**凭据不下发浏览器**，spec.md §11.3）。
 // delivery 浏览器直连地址由 /api/session **运行时下发**（`delivery_base`，spec.md §11.8）：页面加载后
 // 首次请求先取一次 session，用其中的地址创建 SDK —— 镜像一次构建跨环境部署，不依赖构建期 NEXT_PUBLIC_* 内联。
-import { createPlayerSdk, DeliveryError, type DeliveryErrorCode, type PlayerSdk } from "@openvod/player-sdk";
+import { createPlayerSdk, DeliveryError, type DeliveryErrorCode, type PlayerSdk } from "openvod-jssdk";
 
 import { envValue } from "./env";
 

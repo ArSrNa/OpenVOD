@@ -204,7 +204,7 @@ MF=$(curl -s -X POST localhost:9000/v1/media/<媒资id>/play -H "authorization: 
 ffprobe "$MF" && ffmpeg -i "$MF" -c copy /tmp/out.mp4
 ```
 
-- **管理端「产物 → 播放」预览**：在同一份 `.env` 里配置 `DELIVERY_BASE_URL`、`DELIVERY_PREVIEW_USERNAME`、`DELIVERY_PREVIEW_PASSWORD`（预览账号用 `bun apps/admin/scripts/bootstrap-playback.ts preview <密码>` 创建，建议专用）；管理端后端经**播放器 SDK**（`@openvod/player-sdk` password 模式，token 缓存与重登由 SDK 治理）以该账号换签名主清单 URL，浏览器用 hls.js 直连分发端播放（解密仍在浏览器本地）。未配置时预览接口返回 501，其余管理功能不受影响；
+- **管理端「产物 → 播放」预览**：在同一份 `.env` 里配置 `DELIVERY_BASE_URL`、`DELIVERY_PREVIEW_USERNAME`、`DELIVERY_PREVIEW_PASSWORD`（预览账号用 `bun apps/admin/scripts/bootstrap-playback.ts preview <密码>` 创建，建议专用）；管理端后端经**播放器 SDK**（`openvod-jssdk` password 模式，token 缓存与重登由 SDK 治理）以该账号换签名主清单 URL，浏览器用 hls.js 直连分发端播放（解密仍在浏览器本地）。未配置时预览接口返回 501，其余管理功能不受影响；
 - 无 token 拉清单 / 取密钥 → 403 `bad_token`（P0 门禁语义）；密钥响应固定 16B + `no-store`；
 - token 以 query `t` 为主（改写后的清单里已自动带上）；App / hls.js 也可用 header `X-Playback-Token`（Safari 原生只能 query）；
 - 多套模板产物时 `play` 可带 `template_id`（不指定则取唯一产物或默认模板产物）；

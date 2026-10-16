@@ -1,10 +1,27 @@
-# @openvod/player-sdk
+# openvod-jssdk
 
 OpenVOD 播放器接入 SDK（v1）：把「登录 → 媒资 → 播放会话 → 签名 URL → 续签 → 换清晰度」的接入逻辑收敛为唯一公共 API，
 宿主只负责播放器元素与 UI。**零运行时依赖**（仅 `fetch`，可注入），浏览器 / Node 18+ / React Native 同一份实现。
 
 权威设计：`docs/vod/player-sdk-intent.md`（定位与范围）、`docs/vod/player-sdk-spec.md`（接口与语义）。
 接口参考：`docs/vod/api.md §2`（分发端 HTTP API）。首个消费方：`apps/player`。
+
+## 安装
+
+```bash
+# npm 官方
+npm i openvod-jssdk
+
+# CNB 制品库（组织级 npm 制品库；地址在「制品库 → 设置 → 基础设置」查看）
+npm i openvod-jssdk --registry=https://npm.cnb.cool/<组织>/<制品库>/-/packages/
+# 长期使用建议写进项目 .npmrc：
+# registry=https://npm.cnb.cool/<组织>/<制品库>/-/packages/
+# always-auth=true
+# //npm.cnb.cool/<组织>/<制品库>/-/packages/:_authToken=${CNB_TOKEN}
+```
+
+发布产物为 **ESM + CJS + 打包后的 `.d.ts`**，零运行时依赖（连 `@openvod/*` 私有包也不需要——公共 DTO 类型
+在 `src/types.ts` 是自包含镜像，一致性由 `bun run typecheck` 的编译期断言守住）。
 
 ## 设计边界（不变量）
 
@@ -19,7 +36,7 @@ OpenVOD 播放器接入 SDK（v1）：把「登录 → 媒资 → 播放会话 �
 ## 快速开始
 
 ```ts
-import { createPlayerSdk } from "@openvod/player-sdk";
+import { createPlayerSdk } from "openvod-jssdk";
 
 // ① 口令模式（SDK 负责 login / JWT 缓存 / 到期重登）
 const sdk = createPlayerSdk({
@@ -139,7 +156,7 @@ sdk.dispose();        // 清全部定时器与缓存（服务端会话按 TTL �
 ## 错误处理
 
 ```ts
-import { DeliveryError, PlayerSdkError, describeError } from "@openvod/player-sdk";
+import { DeliveryError, PlayerSdkError, describeError } from "openvod-jssdk";
 
 try {
   await sdk.play(mediaId);
@@ -226,10 +243,33 @@ async function recoverPlayback(errorCode?: number) {
 ## 开发
 
 ```bash
-bun test packages/player-sdk     # 单测矩阵 T1~T18（注入 fetch + 假时钟，无真实网络）
+bun test packages/player-sdk                  # 单测矩阵（注入 fetch + 假时钟，无真实网络）
+bun run --cwd packages/player-sdk test:coverage   # 同上 + 覆盖率（text + coverage/lcov.info）
+bun run --cwd packages/player-sdk typecheck       # tsc（含契约镜像的编译期一致性断言）
+bun run --cwd packages/player-sdk build           # tsup → dist/{index.js,index.cjs,index.d.ts}
 ```
 
-- 源码：`src/{index,config,client,auth,media,playback,subtitles,events,errors}.ts`
-- 契约类型以 **type-only** 引用 `@openvod/contracts`（唯一真相源）；错误码提示表由 `test/errors.test.ts`
-  与 `@openvod/shared ERROR_CODES` 逐字断言，防双端漂移。
+- 源码：`src/{index,config,client,auth,media,playback,subtitles,events,errors,types}.ts`
+- `src/types.ts` 是公共 DTO 的**自包含镜像**（发布包零依赖，声明文件不得出现私有包 import）；
+  与 `packages/contracts` 的一致性由 `test/contract-parity.ts`（编译期，随 `typecheck`）+ `test/errors.test.ts`
+  （运行时逐字比对 ERROR_CODES）守住。
 - 新增能力必须同步：`docs/vod/player-sdk-spec.md`（接口语义）→ 单测（T 编号）→ 本 README。
+
+## 发布（npm 官方 + CNB 制品库）
+
+```bash
+bun run --cwd packages/player-sdk publish:dry    # 演练：构建 + 打包清单（不联网、无需令牌）
+bun run --cwd packages/player-sdk publish:npm    # 只发 npm 官方
+bun run --cwd packages/player-sdk publish:cnb    # 只发 CNB 制品库
+bun run --cwd packages/player-sdk publish:both   # 两个都发（= 发版流水线用的命令）
+```
+
+- **版本号唯一真源是根 `package.json` 的 `version`**（本包刻意不声明 `version`，仓库守卫见
+  `apps/admin/test/version-source.test.ts`）；脚本读它并注入发布清单，`--version` 可显式覆盖（补发历史版本）。
+- 发布清单在 `.run/sdk-publish/` 暂存生成：`exports` 指向 `dist/`（仓库内仍指向 `src/`，供 workspace 直引）；
+  脚本还会断言产物自包含（4 个产物文件不得 import 私有包）。
+- 令牌只经环境变量传入、临时 `.npmrc` 权限 600 且用后即删：`NPM_TOKEN`（npm 官方）、
+  `CNB_NPM_TOKEN`（CNB，流水线内缺省回退内置 `CNB_TOKEN`）、`CNB_NPM_REGISTRY`（制品库地址）。
+- **CI**：`.cnb.yml` 的 `.publish-sdk` 任务在 **`tag_push`** 时自动执行（也可用仓库页「发布播放器SDK」按钮手动触发）：
+  单测覆盖率 → `testing:coverage` 上报 CNB 洞察/徽章（红线 95%）→ 发布到两个制品库；
+  `NPM_TOKEN` 经密钥仓库 `arsrna/env` 的 `npm.yml` 注入。tag 名与根版本不一致时脚本会拒绝发布。

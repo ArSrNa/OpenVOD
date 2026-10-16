@@ -1,6 +1,6 @@
 "use client";
 
-// 播放页（spec.md §11.4）：**播放器 SDK（@openvod/player-sdk）** 接入——
+// 播放页（spec.md §11.4）：**播放器 SDK（openvod-jssdk）** 接入——
 // getMedia 取详情（标题 / probe / custom / 字幕元信息）→ play 拿签名主清单 URL（handle）→ 播放器加载。
 // 清晰度 = handle.templates（该媒资实际存在的模板产物）；切换 = handle.switchTemplate（复用会话换源）
 // → 换源后保留播放进度（失败静默从头）；token 到期 / 播放器内 403 由 SDK 续签（监听 playback:refreshed 换源）。
@@ -30,7 +30,7 @@ import {
   type PlaybackHandle,
   type PlaybackSubtitle,
   type PlaybackTemplate,
-} from "@openvod/player-sdk";
+} from "openvod-jssdk";
 import { formatBitrate, formatDateTime, formatDuration } from "@/lib/format";
 import { getSdk } from "@/lib/sdk";
 

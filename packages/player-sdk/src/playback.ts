@@ -3,19 +3,16 @@
 // - 到期前自动重签（§4.3，含 30s 重试一次后停止）与 403 bad_token 重签重试（§4.4）；
 // - 清晰度切换（§5.2，复用会话换源）与 attach 接管（§5.4）。
 // 不变量：N2 签名 URL 原样透出（不拼接 / 不裁剪）；N3 会话复用 / 模板选择 / token 校验一律以服务端为准。
-import type { PlaybackRequest, PlaybackTemplateDTO, z } from "@openvod/contracts";
 import type { AuthManager } from "./auth";
 import type { HttpClient } from "./client";
 import type { ResolvedConfig } from "./config";
 import { DeliveryError, PlayerSdkError, toSdkError } from "./errors";
 import type { PlayerSdkEmitter, SdkOperation } from "./events";
 import type { AuthedRequestFn } from "./media";
-import { fetchVttText, findMatchingTrack, sanitizeSubtitles, type PlaybackSubtitle } from "./subtitles";
+import { fetchVttText, findMatchingTrack, sanitizeSubtitles } from "./subtitles";
+import type { PlaybackRequest, PlaybackSubtitle, PlaybackTemplate } from "./types";
 
-export type PlaybackTemplate = z.infer<typeof PlaybackTemplateDTO>;
-
-/** play 请求体（以契约 schema 约束字段名，防手拼漂移；空对象 = 全部缺省） */
-type PlaybackRequestBody = z.infer<typeof PlaybackRequest>;
+export type { PlaybackSubtitle, PlaybackTemplate };
 
 export interface PlayOptions {
   /** 指定模板产物（proceed/{id}/{templateId}/）；缺省 / null = 按服务端自动选择（spec.md §6.3） */
@@ -553,7 +550,7 @@ export class PlaybackManager {
     entry: Entry,
     opts: { templateId: string | null; forceNew: boolean; signal?: AbortSignal },
   ): Promise<PlaybackHandle> {
-    const body: PlaybackRequestBody = {};
+    const body: PlaybackRequest = {};
     if (opts.forceNew) body.force_new = true;
     if (opts.templateId != null) body.template_id = opts.templateId;
 

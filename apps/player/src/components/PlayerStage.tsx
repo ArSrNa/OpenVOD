@@ -10,7 +10,7 @@ import { HlsJsVideo } from "@videojs/react/media/hlsjs-video";
 import { VideoPlayer, VideoSkin } from "@videojs/react/video";
 import { forwardRef, useCallback, useEffect, useRef, type CSSProperties } from "react";
 
-import type { PlaybackSubtitle } from "@openvod/player-sdk";
+import type { PlaybackSubtitle } from "openvod-jssdk";
 
 /** 皮肤尺寸与圆角：皮肤不带尺寸，必须外部指定（16:9 + maxHeight 70vh，与管理端皮肤约定一致） */
 const SKIN_STYLE = {

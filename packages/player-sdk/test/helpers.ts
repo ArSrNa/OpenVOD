@@ -1,5 +1,30 @@
 // 测试基建：注入 fetch stub（记录调用）+ 响应构造 + 假 token URL（spec §12.1：无真实网络、无真实 delivery）
-import type { FetchLike } from "../src";
+import { DeliveryError, PlayerSdkError, type FetchLike } from "../src";
+
+/**
+ * 捕获 promise 的拒绝值并断言为分发端错误（断言 code / status / message / hint 前的类型收窄）。
+ * 未拒绝或错误类型不符 → 抛出原始值，让用例明确失败。
+ */
+export async function rejection(promise: Promise<unknown>): Promise<DeliveryError> {
+  try {
+    await promise;
+  } catch (error) {
+    if (error instanceof DeliveryError) return error;
+    throw error;
+  }
+  throw new Error("期望 promise 被拒绝，但它成功返回了");
+}
+
+/** 同 rejection，但允许 SDK 自身错误（如 sdk_no_credential / sdk_disposed） */
+export async function sdkError(promise: Promise<unknown>): Promise<DeliveryError | PlayerSdkError> {
+  try {
+    await promise;
+  } catch (error) {
+    if (error instanceof DeliveryError || error instanceof PlayerSdkError) return error;
+    throw error;
+  }
+  throw new Error("期望 promise 被拒绝，但它成功返回了");
+}
 
 export interface RecordedCall {
   url: string;

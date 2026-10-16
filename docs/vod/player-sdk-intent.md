@@ -56,7 +56,7 @@
 ## 核心使用流程（接入方视角，权威）
 
 ```ts
-import { createPlayerSdk } from "@openvod/player-sdk";
+import { createPlayerSdk } from "openvod-jssdk";
 
 const sdk = createPlayerSdk({
   baseUrl: "https://vod.example.com",                 // delivery 地址

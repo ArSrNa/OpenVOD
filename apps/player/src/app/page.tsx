@@ -7,7 +7,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 import { PosterImage } from "@/components/PosterImage";
-import { DeliveryError, parseCustomMetadata, type MediaListItem } from "@openvod/player-sdk";
+import { DeliveryError, parseCustomMetadata, type MediaListItem } from "openvod-jssdk";
 import { formatDuration } from "@/lib/format";
 import { getSdk } from "@/lib/sdk";
 

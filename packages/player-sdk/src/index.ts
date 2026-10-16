@@ -1,4 +1,4 @@
-// OpenVOD 播放器 SDK（@openvod/player-sdk）入口：createPlayerSdk + 公共类型 / 辅助函数导出。
+// OpenVOD 播放器 SDK（openvod-jssdk）入口：createPlayerSdk + 公共类型 / 辅助函数导出。
 // 权威设计见 docs/vod/player-sdk-spec.md / player-sdk-intent.md。
 //
 // 设计不变量（任何改动不得违反）：
@@ -213,6 +213,7 @@ export { parseCustomMetadata, templateLabel } from "./media";
 export type { MediaListItem, MediaDetail, MediaPage, MediaPage as PageResponse, CustomMetadata } from "./media";
 export type { PlaybackSubtitle } from "./subtitles";
 export type { PlaybackHandle, PlayOptions, AttachedPlayback, PlaybackTemplate } from "./playback";
+export type { MediaProbe, MediaSubtitle, PlaybackRequest } from "./types";
 export type { PlayerSdkConfig } from "./config";
 export type { CredentialSource, PlayerSdkStorage, TokenProviderResult } from "./auth";
 export type { PlayerSdkEvent, PlayerSdkEventListener, SdkOperation } from "./events";

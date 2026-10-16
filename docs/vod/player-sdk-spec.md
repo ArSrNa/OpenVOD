@@ -26,17 +26,17 @@
 
 ## 1. 包与工程形态
 
-- 位置：`packages/player-sdk`；包名 `@openvod/player-sdk`；`"private": true`（v1 不发布 npm，见 §13），`exports: { ".": "./src/index.ts" }`（与 `packages/shared` 同形，workspace 直引源码）；
+- 位置：`packages/player-sdk`；包名 `openvod-jssdk`；`"private": true`（v1 不发布 npm，见 §13），`exports: { ".": "./src/index.ts" }`（与 `packages/shared` 同形，workspace 直引源码）；
 - **零运行时依赖**：只用 `fetch`（可注入）；浏览器 / Node 18+ / React Native 同一份实现；不 import 任何播放器库；
-- 类型层以 **type-only** 引用 `@openvod/contracts`（`MediaListItem` / `MediaDetail` / `PageResponse` / `PlaybackRequest` / `PlaybackResponse` / `PlaybackSubtitleDTO` / `PlaybackTemplateDTO` / `ErrorCode`）——编译期与契约对齐，运行时零负担；
-- 测试：`bun test`；全部用例注入 fetch stub 与假时钟，**无真实网络、无真实 delivery 依赖**；
+- 类型层与契约对齐：`packages/contracts` 仍是唯一真相源，但发布包必须零依赖——公共 DTO 在 `src/types.ts` 为**自包含镜像**，`test/contract-parity.ts` 做编译期双向可赋值断言（`bun run typecheck` 执行）；
+- 测试：`bun test`；全部用例注入 fetch stub 与假时钟，**无真实网络、无真实 delivery 依赖**；覆盖率经 `bun test --coverage`（lcov）上报 CNB（§12.5）；
 - 首个消费者：`apps/player`（S2 验收，见 §12.3）。
 
-目录初稿：
+目录（实现落点）：
 
 ```
 packages/player-sdk/
-  package.json            # @openvod/player-sdk, type: module, private
+  package.json            # openvod-jssdk, type: module, private（发布清单由 scripts/publish.ts 注入 version 后生成）
   src/index.ts            # createPlayerSdk 入口 + 公共类型 / 辅助函数导出
   src/config.ts           # 配置校验与默认值（sdk_invalid_config）
   src/client.ts           # HTTP 传输：baseUrl 规范化 / fetch 注入 / 超时 / 错误信封解析
@@ -46,8 +46,14 @@ packages/player-sdk/
   src/subtitles.ts        # 字幕轨道提取 / VTT 文本拉取
   src/events.ts           # 事件类型与订阅（监听器异常隔离）
   src/errors.ts           # DeliveryError / PlayerSdkError / 错误文案辅助
-  test/*.test.ts          # §12.1 单测矩阵
-  README.md               # 快速开始 / 生命周期 / 故障处置（S4 交付物）
+  src/types.ts            # 公共 DTO 自包含镜像（发布包零依赖；契约一致性见 test/contract-parity.ts）
+  test/*.test.ts          # §12.1 单测矩阵 + sdk-surface（事件 / 详情 / 字幕 / 配置分支）
+  test/contract-parity.ts # 契约镜像的编译期断言（非 *.test.ts，随 typecheck 执行）
+  tsup.config.ts          # 发布构建：ESM + CJS + 打包 .d.ts（platform neutral）
+  tsconfig.json           # typecheck（src + test + scripts）
+  bunfig.toml             # 覆盖率报告配置（text + lcov）
+  scripts/publish.ts      # 发布脚本：版本注入 / 产物自包含校验 / 暂存清单 / npm + CNB 双发
+  README.md               # 快速开始 / 生命周期 / 故障处置 / 安装与发布（S4 交付物）
 ```
 
 ---
@@ -77,7 +83,7 @@ import {
   type PlaybackHandle,
   type PlayerSdkEvent,
   type PlayerSdkStorage,
-} from "@openvod/player-sdk";
+} from "openvod-jssdk";
 
 export interface PlayerSdkConfig {
   /** delivery 基址（必填；仅 http/https，自动去尾斜杠） */
@@ -398,10 +404,10 @@ export type PlayerSdkEvent =
 
 ## 12. 测试与验收
 
-> **实现落点（2026-10-16）**：S1 源码在 `packages/player-sdk/src/{index,config,client,auth,media,playback,subtitles,events,errors}.ts`；
-> §12.1 单测矩阵 T1~T18 落在 `packages/player-sdk/test/{auth,playback,media-errors}.test.ts`（`bun test packages/player-sdk`，30 项全绿）；
+> **实现落点（2026-10-16）**：S1 源码在 `packages/player-sdk/src/`（含自包含公共类型 `src/types.ts`）；
+> §12.1 单测矩阵 T1~T18 落在 `packages/player-sdk/test/{auth,playback,media-errors,sdk-surface}.test.ts`（`bun test packages/player-sdk`，35 项全绿，行覆盖率 ~98.8%）；
 > S2 消费方改造见 `apps/player/src/lib/sdk.ts`（tokenProvider）+ `components/PlayView.tsx` / `app/page.tsx`，`lib/delivery.ts` 已删除；
-> S4 交付物 README 见 `packages/player-sdk/README.md`。**S3（体验环境端到端）待维护者按 §12.2 执行。**
+> S4 交付物 README 见 `packages/player-sdk/README.md`；发布与覆盖率见 §12.5。**S3（体验环境端到端）待维护者按 §12.2 执行。**
 
 ### 12.1 单测矩阵（注入 fetch stub + 假时钟）
 
@@ -443,8 +449,21 @@ export type PlayerSdkEvent =
 ### 12.4 交付物
 
 - `packages/player-sdk` 源码 + §12.1 单测；
-- `packages/player-sdk/README.md`：快速开始（四种鉴权模式各一段）、生命周期时序（登录 → play → 自动重签 → dispose）、换源保留进度片段、播放器内 403 处置片段、CORS / 黑屏排查清单；
+- `packages/player-sdk/README.md`：安装（npm / CNB 制品库）、快速开始（四种鉴权模式各一段）、生命周期时序（登录 → play → 自动重签 → dispose）、换源保留进度片段、播放器内 403 处置片段、CORS / 黑屏排查清单、发布与覆盖率；
 - `apps/player` 改造；文档索引同步：`README.md` 阅读顺序（第 10/11 项）与 `intent.md`「播放器 SDK」章节已在本次设计中登记。
+
+### 12.5 覆盖率与发布（2026-10-16 落地）
+
+- **覆盖率**：`bun run --cwd packages/player-sdk test:coverage`（`bunfig.toml` 指定 `text` + `lcov` 报告，统计范围仅 `src/**`，
+  排除测试自身与 workspace 私有包）→ `packages/player-sdk/coverage/lcov.info`；
+- **上报 CNB**：`.cnb.yml` 的 `.publish-sdk` 任务用内置任务 `testing:coverage`（`pattern` 指向上述 lcov，
+  `allowExts: .ts`，全量行覆盖率红线 `lines: 95`）上报洞察与徽章；未找到报告或低于红线会阻断后续发布阶段；
+- **发布目标**：npm 官方（`registry.npmjs.org`，令牌 `NPM_TOKEN` 由密钥仓库 `arsrna/env` 的 `npm.yml` 注入）
+  与 CNB **组织级** npm 制品库（地址 `CNB_NPM_REGISTRY`，令牌缺省用内置 `CNB_TOKEN`）；
+- **触发**：`tag_push`（与运行镜像同批的独立 job，便于单独重试）+ 仓库页手动按钮「发布播放器SDK」；
+  版本号取**根 `package.json` 的 version**（与 `auto_tag` 同口径），脚本在 tag 流水线中额外校验 tag 名与版本一致；
+- **可复现命令**：`bun run --cwd packages/player-sdk publish:{dry,npm,cnb,both}`（本地与 CI 同一条命令；
+  `publish:dry` 不联网、无需令牌，用于演练与产物检查）。
 
 ---
 
@@ -453,7 +472,7 @@ export type PlayerSdkEvent =
 | # | 项 | 说明 |
 |---|---|---|
 | Q1 | **服务端会话释放端点** | v1 无（`dispose` 仅本地）。新增 `DELETE /v1/media/{id}/sessions/{sid}` 可让 SDK 立即归还并发额度；需走 ADR / 契约流程 |
-| Q2 | **npm 公开发布形态** | v1 为 workspace 包（`private: true`）。公开发布需：dist 构建 + 类型内联（或 `@openvod/contracts` 一并发布）+ 独立 semver——与仓库「版本号唯一真源 = 根 package.json」规则的协调方案待定 |
+| Q2 | **npm 公开发布形态** | **已落地（2026-10-16）**：发布名 `openvod-jssdk`（npm 官方 + CNB 制品库双发）；tsup 产出 ESM + CJS + 打包 `.d.ts`，公共 DTO 以 `src/types.ts` 自包含镜像 + 编译期断言替代「一并发布 contracts」；版本随根 `package.json` 注入（仓库内 `private: true` 且不声明 version，防误发源码包）——详见 §12.5。**独立 semver 仍未采纳**：SDK 与仓库同版本号发布，若日后需独立节奏，`scripts/publish.ts --version` 已支持显式覆盖 |
 | Q3 | **token refresh 端点** | 可让 `password` 模式退化为 refresh token（凭据不常驻内存），与 ADR-0007 演进联动 |
 | Q4 | 播放器适配器 | hls.js / Video.js / ExoPlayer / AVPlayer 适配子包（自动换源、进度保留、字幕挂载）——v1 明确非目标，本文档 §4.3 / §5.2 已预留事件与语义 |
 | Q5 | 播放进度持久化 / 上报 | 本地续播与服务端进度端点（需新数据面）；本轮未选入 v1 |

@@ -4,7 +4,7 @@
 // 管理端只做「以预览账号向分发端换一个签名主清单 URL」，**绝不自行解封 / 转发密钥**；
 // 浏览器按标准 HLS 播放（hls.js / Safari 原生），清单、密钥、分片全部由分发端 / 对象存储直达浏览器。
 //
-// 接入方式（2026-10-16）：改用**播放器 SDK（@openvod/player-sdk）**的服务端形态——login、
+// 接入方式（2026-10-16）：改用**播放器 SDK（openvod-jssdk）**的服务端形态——login、
 // JWT 缓存 / 401 重登、play 请求组装（templateId → template_id 单点映射）、错误保真全部由 SDK 治理；
 // 本文件只保留管理端特有的三件事：预览账号配置读取、`encrypted` 提示（本地 hls_keys 行）、对象桶 CORS 诊断。
 // 签名 URL **原样透出**（SDK 不变量 N2）：播放域名由分发端按系统设置 `playback_base_url` 生成（spec §2.1.2），
@@ -13,7 +13,7 @@
 // 配置（ADR-0015）：分发端地址 DELIVERY_BASE_URL（env）；
 // 预览账号 delivery_preview_username（明文设置）+ delivery_preview_password（MK 封装设置），
 // env 同名键兜底（预览账号用 apps/admin/scripts/bootstrap-playback.ts 创建，建议专用）。
-import { createPlayerSdk, DeliveryError, PlayerSdkError, type PlaybackHandle, type PlayerSdk } from "@openvod/player-sdk";
+import { createPlayerSdk, DeliveryError, PlayerSdkError, type PlaybackHandle, type PlayerSdk } from "openvod-jssdk";
 import { getDb } from "@openvod/db";
 
 import { getSettingsSnapshot } from "./settings";

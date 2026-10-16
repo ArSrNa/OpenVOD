@@ -1,11 +1,10 @@
 // 错误模型（player-sdk-spec.md §8）：DeliveryError 保真透出服务端错误（不变量 N4），
-// PlayerSdkError 承载 SDK 自身错误。错误码类型以 **type-only** 引用契约 ErrorCode
-// （唯一真相源 packages/contracts，编译期防漂移）；运行时提示表在下方手工维护，
-// test/errors.test.ts 与 @openvod/shared ERROR_CODES 逐字断言（dev 依赖，不进运行时）。
-import type { ErrorCode, z } from "@openvod/contracts";
+// PlayerSdkError 承载 SDK 自身错误。错误码来自 ./types 的自包含镜像（发布包零依赖），
+// 与契约 ErrorCode / 共享包 ERROR_CODES 的一致性由 test/contract-parity.ts（编译期）
+// 与 test/errors.test.ts（运行时）守住。
+import type { DeliveryErrorCode } from "./types";
 
-/** 服务端错误码（api.md §0.2 全表；契约 `ErrorCode` 的 TS 联合） */
-export type DeliveryErrorCode = z.infer<typeof ErrorCode>;
+export type { DeliveryErrorCode };
 
 /**
  * 错误码 → 排查建议表（api.md §2 错误码表同源；`describeError` 的唯一数据源）。

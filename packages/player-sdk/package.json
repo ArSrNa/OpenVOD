@@ -1,13 +1,53 @@
 {
-  "name": "@openvod/player-sdk",
+  "name": "openvod-jssdk",
   "private": true,
+  "description": "OpenVOD 播放器 SDK：登录 / 播放会话 / 签名 URL / 自动续签 / 清晰度切换 / 字幕，零运行时依赖（浏览器 / Node 18+ / React Native 同源）",
+  "keywords": [
+    "openvod",
+    "vod",
+    "hls",
+    "m3u8",
+    "player",
+    "sdk",
+    "playback"
+  ],
   "license": "Apache-2.0",
   "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://cnb.cool/arsrna/media/openvod.git",
+    "directory": "packages/player-sdk"
+  },
+  "homepage": "https://cnb.cool/arsrna/media/openvod/-/tree/demo/packages/player-sdk",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test",
+    "test:coverage": "bun test --coverage",
+    "publish:npm": "bun scripts/publish.ts --registry npm",
+    "publish:cnb": "bun scripts/publish.ts --registry cnb",
+    "publish:both": "bun scripts/publish.ts --registry both",
+    "publish:dry": "bun scripts/publish.ts --registry both --dry-run"
   },
   "devDependencies": {
     "@openvod/contracts": "workspace:*",
-    "@openvod/shared": "workspace:*"
+    "@openvod/shared": "workspace:*",
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.0"
   }
 }

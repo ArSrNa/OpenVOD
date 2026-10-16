@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { ERROR_CODES } from "@openvod/shared";
 import { createPlayerSdk, DeliveryError, parseCustomMetadata, PlayerSdkError, templateLabel } from "../src";
 import { ERROR_HINTS, describeError } from "../src/errors";
-import { createFetchStub, errorResponse, flush, jsonResponse, type RecordedCall } from "./helpers";
+import { createFetchStub, errorResponse, flush, jsonResponse, rejection, type RecordedCall } from "./helpers";
 
 const BASE = "https://delivery.test";
 const MEDIA_PAGE = { items: [], next_cursor: null };
@@ -98,7 +98,7 @@ describe("T17 超时 / 网络失败 / 重试", () => {
     });
     const sdk = createPlayerSdk({ baseUrl: BASE, credential: STATIC, fetch: stub.fetch, retries: 2 });
 
-    const error = await sdk.listMedia().catch((e) => e as DeliveryError);
+    const error = await rejection(sdk.listMedia());
     expect(error).toBeInstanceOf(DeliveryError);
     expect(error.code).toBe("internal");
     expect(error.status).toBe(0);
@@ -127,7 +127,7 @@ describe("T17 超时 / 网络失败 / 重试", () => {
     expect(attempts).toBe(3);
 
     attempts = 0;
-    const error = await sdk.play("55395830").catch((e) => e as DeliveryError);
+    const error = await rejection(sdk.play("55395830"));
     expect(error.code).toBe("internal");
     expect(attempts).toBe(1); // POST 不重试
   });
@@ -141,7 +141,7 @@ describe("T17 超时 / 网络失败 / 重试", () => {
     );
     const sdk = createPlayerSdk({ baseUrl: BASE, credential: STATIC, fetch: stub.fetch, timeoutMs: 50 });
 
-    const pending = sdk.listMedia().catch((e) => e as DeliveryError);
+    const pending = rejection(sdk.listMedia());
     await flush(); // 先让请求真正发起（内部 setTimeout 注册到假时钟）
     jest.advanceTimersByTime(60);
     await flush();
@@ -154,13 +154,13 @@ describe("T17 超时 / 网络失败 / 重试", () => {
   it("非 JSON 错误体 → internal + HTTP 状态保真；错误信封码透传", async () => {
     const htmlStub = createFetchStub(() => new Response("<html>bad gateway</html>", { status: 502 }));
     const sdk = createPlayerSdk({ baseUrl: BASE, credential: STATIC, fetch: htmlStub.fetch });
-    const error = await sdk.listMedia().catch((e) => e as DeliveryError);
+    const error = await rejection(sdk.listMedia());
     expect(error.code).toBe("internal");
     expect(error.status).toBe(502);
 
     const envelopeStub = createFetchStub(() => errorResponse(409, "not_playable", "媒资尚未就绪"));
     const sdk2 = createPlayerSdk({ baseUrl: BASE, credential: STATIC, fetch: envelopeStub.fetch });
-    const error2 = await sdk2.play("55395830").catch((e) => e as DeliveryError);
+    const error2 = await rejection(sdk2.play("55395830"));
     expect(error2.code).toBe("not_playable");
     expect(error2.status).toBe(409);
     expect(error2.message).toBe("媒资尚未就绪");
@@ -178,7 +178,7 @@ describe("T17 超时 / 网络失败 / 重试", () => {
     sdk.on((event) => events.push(event));
 
     const controller = new AbortController();
-    const pending = sdk.listMedia({ signal: controller.signal }).catch((e) => e as DeliveryError);
+    const pending = rejection(sdk.listMedia({ signal: controller.signal }));
     controller.abort();
     const error = await pending;
     expect(error.code).toBe("internal");

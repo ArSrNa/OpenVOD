@@ -9,6 +9,8 @@ import {
   jsonResponse,
   LOGIN_BODY,
   playBody,
+  rejection,
+  sdkError,
   signedUrl,
   textResponse,
   type FetchStub,
@@ -287,7 +289,7 @@ describe("清晰度切换（§5.1 / §5.2 / T11）", () => {
     // 失败（409 not_playable）→ 不打断当前播放
     const beforeUrl = handle.manifest_url;
     const beforeTemplate = handle.template_id;
-    const error = await handle.switchTemplate("cbad00000000000000000000").catch((e) => e as DeliveryError);
+    const error = await rejection(handle.switchTemplate("cbad00000000000000000000"));
     expect(error.code).toBe("not_playable");
     expect(error.status).toBe(409);
     expect(error.message).toContain("指定模板产物不存在");
@@ -311,7 +313,7 @@ describe("错误映射（T12）", () => {
     });
     const sdk = createPlayerSdk({ baseUrl: BASE, credential: passwordCredential(), fetch: stub.fetch });
 
-    const error = await sdk.play(MEDIA, { forceNew: true }).catch((e) => e as DeliveryError);
+    const error = await rejection(sdk.play(MEDIA, { forceNew: true }));
     expect(error.code).toBe("session_limit");
     expect(error.status).toBe(409);
     expect(error.message).toBe("并发播放会话数已达上限");
@@ -328,7 +330,7 @@ describe("错误映射（T12）", () => {
     const events: PlayerSdkEvent[] = [];
     sdk.on((event) => events.push(event));
 
-    const error = await sdk.play(MEDIA).catch((e) => e as DeliveryError);
+    const error = await rejection(sdk.play(MEDIA));
     expect(error.code).toBe("not_playable");
     expect(events).toContainEqual(
       expect.objectContaining({ type: "error", operation: "play", error: expect.any(DeliveryError) }),
@@ -362,7 +364,7 @@ describe("身份热切换与 attach（§3.5 / §5.4 / T13 / T14）", () => {
     expect(events).toContainEqual({ type: "auth:changed", reason: "switched" });
 
     // 旧句柄全部失效
-    expect(await handle.refresh().catch((e) => e)).toMatchObject({ code: "sdk_disposed" });
+    expect(await sdkError(handle.refresh())).toMatchObject({ code: "sdk_disposed" });
 
     // 新身份：重新 login + play
     const fresh = await sdk.play(MEDIA);
@@ -429,7 +431,7 @@ describe("身份热切换与 attach（§3.5 / §5.4 / T13 / T14）", () => {
     state.playHits = 0;
     handle.dispose();
     expect(handle.disposed).toBe(true);
-    expect(await handle.refresh().catch((e) => e)).toMatchObject({ code: "sdk_disposed" });
+    expect(await sdkError(handle.refresh())).toMatchObject({ code: "sdk_disposed" });
 
     jest.advanceTimersByTime(10_000_000);
     await flush();
@@ -437,7 +439,7 @@ describe("身份热切换与 attach（§3.5 / §5.4 / T13 / T14）", () => {
 
     // sdk.dispose 后全部入口拒绝
     sdk.dispose();
-    expect(await sdk.play(MEDIA).catch((e) => e)).toMatchObject({ code: "sdk_disposed" });
-    expect(await sdk.listMedia().catch((e) => e)).toMatchObject({ code: "sdk_disposed" });
+    expect(await sdkError(sdk.play(MEDIA))).toMatchObject({ code: "sdk_disposed" });
+    expect(await sdkError(sdk.listMedia())).toMatchObject({ code: "sdk_disposed" });
   });
 });

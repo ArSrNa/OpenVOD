@@ -16,6 +16,7 @@
     "@openvod/contracts": "workspace:*",
     "@openvod/crypto": "workspace:*",
     "@openvod/db": "workspace:*",
+    "@openvod/player-sdk": "workspace:*",
     "@openvod/shared": "workspace:*",
     "@openvod/storage": "workspace:*",
     "@openvod/transcode": "workspace:*",

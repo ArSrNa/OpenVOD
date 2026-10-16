@@ -592,12 +592,13 @@ export const CreateUserRequest = z.object({
     .trim()
     .regex(USERNAME_PATTERN, "用户名需为 3–32 位字母、数字、`.`、`_` 或 `-`"),
   password: UserPassword,
-  display_name: z.string().trim().max(64).optional(),
+  /** 可选：缺省 / null / 空串 = 默认沿用用户名（业务侧归一，见 apps/admin/src/lib/users.ts） */
+  display_name: z.string().trim().max(64).nullish(),
   max_concurrent_sessions: UserMaxConcurrentSessions.default(0),
   status: z.enum(USER_STATUSES).default("ACTIVE"),
 });
 
-/** PATCH 语义：字段缺省 = 不修改；display_name 传 null = 清空展示名 */
+/** PATCH 语义：字段缺省 = 不修改；display_name 传 null / 空串 = 回退沿用用户名（与创建一致） */
 export const UpdateUserRequest = z
   .object({
     display_name: z.string().trim().max(64).nullable().optional(),

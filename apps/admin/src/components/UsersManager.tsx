@@ -16,6 +16,7 @@ import {
   PlusOutlined,
   ReloadOutlined,
   StopOutlined,
+  ThunderboltOutlined,
 } from "@ant-design/icons";
 import { ProCard } from "@ant-design/pro-components";
 import {
@@ -37,6 +38,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { generatePassword } from "@/lib/random-password";
 import { useTableBodyHeight } from "./tableScroll";
 
 // ---- 与 contracts UserDTO 对应的客户端形状 ----
@@ -102,6 +104,10 @@ export function UsersManager() {
   const [pwdTargetOpen, setPwdTargetOpen] = useState(false);
   const [pwdSaving, setPwdSaving] = useState(false);
   const [pwdForm] = Form.useForm<{ password: string; confirm: string }>();
+  /** 初始密码明文可见性：随机生成后自动展开，便于复制交付 */
+  const [createPwdVisible, setCreatePwdVisible] = useState(false);
+  /** 重置密码明文可见性（同上） */
+  const [resetPwdVisible, setResetPwdVisible] = useState(false);
   /** 吊销会话进行中的用户 id */
   const [revokingId, setRevokingId] = useState<string | null>(null);
 
@@ -142,6 +148,7 @@ export function UsersManager() {
       max_concurrent_sessions: 0,
       status: "ACTIVE",
     });
+    setCreatePwdVisible(false);
     setModalOpen(true);
   };
 
@@ -155,6 +162,7 @@ export function UsersManager() {
       max_concurrent_sessions: item.max_concurrent_sessions,
       status: item.status,
     });
+    setCreatePwdVisible(false);
     setModalOpen(true);
   };
 
@@ -204,7 +212,25 @@ export function UsersManager() {
   const openResetPassword = (item: UserItem) => {
     setPwdTarget(item);
     pwdForm.resetFields();
+    setResetPwdVisible(false);
     setPwdTargetOpen(true);
+  };
+
+  /** 随机生成 12 位初始口令：填入「新建」表单并展开明文（仅用于复制交付，不落日志） */
+  const fillRandomInitialPassword = () => {
+    const generated = generatePassword(12);
+    form.setFieldValue("password", generated);
+    setCreatePwdVisible(true);
+    void form.validateFields(["password"]).catch(() => {}); // 重新校验，清掉此前的校验红字
+  };
+
+  /** 随机生成 12 位新口令：填入「重置密码」表单（含确认框）并展开明文 */
+  const fillRandomNewPassword = () => {
+    const generated = generatePassword(12);
+    pwdForm.setFieldValue("password", generated);
+    pwdForm.setFieldValue("confirm", generated);
+    setResetPwdVisible(true);
+    void pwdForm.validateFields(["password", "confirm"]).catch(() => {});
   };
 
   const submitResetPassword = async () => {
@@ -517,12 +543,29 @@ export function UsersManager() {
                 { max: 72, message: "密码最多 72 个字符" },
               ]}
             >
-              <Input.Password placeholder="至少 8 位" maxLength={72} autoComplete="new-password" />
+              <Input.Password
+                placeholder="至少 8 位"
+                maxLength={72}
+                autoComplete="new-password"
+                visibilityToggle={{
+                  visible: createPwdVisible,
+                  onVisibleChange: setCreatePwdVisible,
+                }}
+                addonAfter={
+                  <Button icon={<ThunderboltOutlined />} onClick={fillRandomInitialPassword}>
+                    随机生成
+                  </Button>
+                }
+              />
             </Form.Item>
           )}
 
-          <Form.Item name="display_name" label="展示名" tooltip="可选，仅用于控制台展示">
-            <Input placeholder="可选，≤64 字符" maxLength={64} allowClear />
+          <Form.Item
+            name="display_name"
+            label="展示名"
+            tooltip="可选，留空默认与用户名一致，仅用于控制台展示"
+          >
+            <Input placeholder="可选，留空默认与用户名一致" maxLength={64} allowClear />
           </Form.Item>
 
           <Space size="large" wrap align="start">
@@ -589,7 +632,20 @@ export function UsersManager() {
               { max: 72, message: "密码最多 72 个字符" },
             ]}
           >
-            <Input.Password placeholder="至少 8 位" maxLength={72} autoComplete="new-password" />
+            <Input.Password
+              placeholder="至少 8 位"
+              maxLength={72}
+              autoComplete="new-password"
+              visibilityToggle={{
+                visible: resetPwdVisible,
+                onVisibleChange: setResetPwdVisible,
+              }}
+              addonAfter={
+                <Button icon={<ThunderboltOutlined />} onClick={fillRandomNewPassword}>
+                  随机生成
+                </Button>
+              }
+            />
           </Form.Item>
           <Form.Item
             name="confirm"

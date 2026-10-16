@@ -157,27 +157,29 @@ CNB 云原生开发环境实测要点（2026-09-22）：
 1. 升级**根 `package.json` 的 version**（全仓库唯一版本号，子包一律不声明），并合入**默认分支**（当前 `main`，
    见下条的分支来源）；
 2. Tag 列表页「自动生成 Tag」→ `auto_tag` 打 tag，**tag 名 = 根 `package.json` 的 version**（不带 `v` 前缀）。
-   实现见 `.cnb.yml` 顶部 `.auto-tag` 锚点：平台会注入内置的 `cnbcool/git-auto-tag` 流水线（按提交语义推导版本），
-   本仓库用 `settings.tagFormat` 把 tag 名**钉死**成 package.json 的版本号，并在打完后校验一致性。
-   四处易踩的点：
-   - **必须复用内置插件**：`auto_tag` 是平台「页面操作事件」，点按钮时平台先注入一条内置流水线再与 `.cnb.yml`
-     合并；**写在 `$` 下的 `auto_tag` 会被忽略**（官方 `build/trigger-rule.md`「配置覆盖规则」原文）。
-     本仓库此前把自写 job 挂在 `$` 下，因此**从未执行**——2026-10-16 构建 `cnb-nuh-1k52f23cb` 日志里只有内置
-     插件在跑，把 package.json=1.1.0 的库按提交语义打成了 **0.3.0**（此前几次「成功」也都是内置插件打的语义化 tag）。
-     平台是否会采纳 `$` 下的配置**尚未验证**：若 Tag 列表页仍打出 0.x，把 `.auto-tag` 整段挪到 `main:` 分支名下
-     （同分支覆盖成立），并补 `imports` 提供 `CNB_TOKEN_USER_NAME` / `CNB_TOKEN`；
-   - **tag 名怎么钉死**：`tagFormat` 最终交 semantic-release 过 lodash 模板，`${...}` 是**求值表达式**，
-     作用域里只有 `version` 一个变量。所以 `${PKG_VERSION}` / `\${PKG_VERSION}` 都会抛
-     `ReferenceError`（stage 的 `exports` 到不了插件用 `exec` 起的 git 环境，自定义变量一律不可用），
-     只有 `${'1.1.0'}` 这种**字符串字面量**求值可行 ⇒ 配置写成 `'${''$PKG_VERSION''}'`；
+   实现见 `.cnb.yml` 顶部 `.auto-tag` 锚点，由文件末尾的 **`main:` 段**引用：读 `package.json` 的 version →
+   校验远端没有同名 tag → `git tag -a` + `git push` → `git ls-remote` 复核。全程不经 `git-auto-tag` 插件，
+   因此不会出现「插件按 feat/fix 推导出 0.3.0」的漂移。四个易踩的点：
+   - **挂载位置必须是分支名（`main:`），不能写 `$` 兜底**：`auto_tag` 是平台「页面操作事件」，点按钮时平台先注入
+     一条内置流水线（`cnbcool/git-auto-tag`，按提交语义推导版本）再与 `.cnb.yml` 合并；官方
+     `build/trigger-rule.md`「配置覆盖规则」原文：**写在 `$` 下的 `auto_tag` 会被忽略**。本仓库两次在这条上翻车，
+     都是把「生效的是内置插件」误读成「我们的 job 生效了」：
+     - `cnb-s7p-1k51v01kf`（sha `6e982a2`，当时挂 `main:`）→ 日志里是本任务的 stage，内置插件的
+       `docker run` 没有出现 ⇒ **同分支覆盖成立**；
+     - `cnb-tp7-1k52fq5kb`（sha `f8f600a`，挂 `$`）与 `cnb-nuh-1k52f23cb`（sha `09de7a5`）→ 日志里只有
+       `docker run cnbcool/git-auto-tag` 与**内置 job 特有的末尾那句 `echo $NEW_TAG`**，本任务的 stage
+       一个都没出现 ⇒ `$` 下确实被忽略，version=1.1.0 被打成了 0.3.0。
+     辨析「跑的是谁」看末尾有没有 `echo $NEW_TAG`：有 = 内置 job，没有 = 本任务；
+   - **不要再用 `settings.tagFormat` 钉 tag 名**：那条路要求把版本号以**字符串字面量**嵌进
+     `tagFormat`（`'${''$PKG_VERSION''}'`），依赖「settings 变量替换 + semantic-release 的 lodash 模板求值」
+     两层隐式行为，且插件仍会按提交语义决定「是否发版」。既然 `main:` 下本任务会盖掉内置那条，直接自己打 tag
+     更短、更确定；
    - **运行 / 检出分支**由 CNB「Tag 自动生成配置」决定：默认分支下的 `.cnb/settings.yml` → `tag.auto_tag.branch`
      （默认值 = 仓库默认分支 `main`；本仓库未配置该文件）；Tag 列表页按钮**不能临时选分支**，
-     检出 = 该分支最新 commit ⇒ **发版前先把待发布提交合入 `main`**；
-   - **Git LFS**：本仓库用 LFS 追踪 `videos/mv.mp4`（`.gitattributes`）。早前自写 push 阶段遇过
-     `git-lfs was not found`（缺 `git-lfs` 的镜像 + 检出带的 `pre-push` 钩子）；改由内置插件推送后该问题消失，
-     但 job 仍用开发镜像（内置 `git-lfs` 3.4.1）以便末尾 `git ls-remote` 复核；
-   - 手动验证：`.cnb/web_trigger.yml` 的 **「验证autoTag」**按钮（`web_trigger_verify_autotag`）跑等价 job，
-     可在不动 Tag 列表页的前提下确认 tagFormat 行为；
+     检出 = 该分支最新 commit ⇒ **发版前先把待发布提交合入 `main`**。若日后改发版源分支，`main:` 键名要同步改；
+   - **Git LFS**：本仓库用 LFS 追踪 `videos/mv.mp4`（`.gitattributes`），CNB 检出会带 `git-lfs` 的 `pre-push`
+     钩子。曾因镜像缺 `git-lfs` 直接 push 失败（`git-lfs was not found`）；现在 job 用开发镜像（内置 `git-lfs`），
+     且推 tag 时显式 `--no-verify`——推 tag 只上传 tag 对象、不涉及任何 LFS 对象，跳过该钩子是安全的；
 3. tag 推送触发 `tag_push`：四个运行镜像（worker → admin → delivery → player）串行构建 + **独立 job**
    发布播放器 SDK——单测覆盖率（`testing:coverage`，红线见 `.cnb.yml`）→ `bun packages/player-sdk/scripts/publish.ts --registry both`
    发布到 npm 官方与 CNB 制品库；

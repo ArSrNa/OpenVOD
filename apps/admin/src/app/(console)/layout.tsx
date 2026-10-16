@@ -1,5 +1,6 @@
 import { requireConsoleSession } from "@/lib/console";
 import { ConsoleShell } from "@/components/ConsoleShell";
+import { cravatarAvatarUrl } from "@/lib/avatar";
 import { APP_VERSION } from "@/lib/version";
 
 // 显式声明动态渲染，不依赖推断：守卫读 headers() + DB，Next 虽能从动态 API 推出整条路由
@@ -23,7 +24,12 @@ export const dynamic = "force-dynamic";
 export default async function ConsoleLayout({ children }: { children: React.ReactNode }) {
   const session = await requireConsoleSession();
   return (
-    <ConsoleShell userName={session.user.name} version={APP_VERSION}>
+    // 头像走 Cravatar：MD5 在服务端算（浏览器无 md5），结果以 prop 下传（lib/avatar.ts）
+    <ConsoleShell
+      userName={session.user.name}
+      avatarUrl={cravatarAvatarUrl(session.user.email)}
+      version={APP_VERSION}
+    >
       {children}
     </ConsoleShell>
   );

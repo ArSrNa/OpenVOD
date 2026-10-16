@@ -168,12 +168,19 @@ function JobsMenuBadge() {
   return <Badge count={count} size="small" />;
 }
 
+// Cravatar（Gravatar 兼容的国内镜像）：点左下角头像去站点注册 / 更换头像。
+// 头像 URL 的生成在服务端（src/lib/avatar.ts，依赖 node:crypto），这里只用站点地址。
+const CRAVATAR_HOME = "https://cravatar.cn/";
+
 export function ConsoleShell({
   userName,
+  avatarUrl,
   version,
   children,
 }: {
   userName: string;
+  /** 左下角头像地址（Cravatar，服务端按邮箱 MD5 生成，见 lib/avatar.ts）；缺省时回退占位图标 */
+  avatarUrl?: string;
   version: string;
   /** 页面内容；未实现模块渲染 scaffold 占位 */
   children?: ReactNode;
@@ -300,9 +307,15 @@ export function ConsoleShell({
         </div>
       )}
       avatarProps={{
+        // 有 src 时渲染真实头像；未注册 Cravatar（d=404）或加载失败时由 antd Avatar 回退到占位图标
+        src: avatarUrl,
         icon: <UserOutlined />,
         size: "small",
         title: userName,
+        // 点头像去 Cravatar 设置头像（新标签打开，不丢管理端会话）；
+        // 退出登录仍走整块区域的 hover 下拉，两者不冲突
+        onClick: () => window.open(CRAVATAR_HOME, "_blank", "noopener,noreferrer"),
+        style: { cursor: "pointer" },
         render: (_props, dom) => (
           <Dropdown
             menu={{

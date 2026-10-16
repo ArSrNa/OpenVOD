@@ -88,10 +88,20 @@ export function typeCUrl(baseUrl: string, path: string, key: string, opts: EdgeO
   return `${trimBase(baseUrl)}/${typeCHash(path, ts, key)}/${ts}${path}`;
 }
 
-/** D：{base}/{path}?token={md5hash}&t={timestamp}（token / t 为官方默认参数名；控制台自定义时须与本实现一致） */
-export function typeDUrl(baseUrl: string, path: string, key: string, opts: EdgeOneUrlOptions): string {
+/** 方式 D 的组装选项：token / t 参数名（对应 storage_cdn_auth_token_param / storage_cdn_auth_time_param，缺省为官方默认名） */
+export interface TypeDUrlOptions extends EdgeOneUrlOptions {
+  /** 签名参数名（默认 token） */
+  authParam?: string;
+  /** 时间戳参数名（默认 t） */
+  timeParam?: string;
+}
+
+/** D：{base}/{path}?{token}={md5hash}&{t}={timestamp}（参数名可自定义，须与 CDN 控制台一致） */
+export function typeDUrl(baseUrl: string, path: string, key: string, opts: TypeDUrlOptions): string {
   const ts = String(opts.timestampSec);
-  return `${trimBase(baseUrl)}${path}?token=${typeDHash(path, ts, key)}&t=${ts}`;
+  const authParam = opts.authParam?.trim() || "token";
+  const timeParam = opts.timeParam?.trim() || "t";
+  return `${trimBase(baseUrl)}${path}?${authParam}=${typeDHash(path, ts, key)}&${timeParam}=${ts}`;
 }
 
 /** V：{base}/{path}?t={t}&sign={sign}（本实现不生成 plive/exper/us 等选填参数：

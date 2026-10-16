@@ -80,6 +80,12 @@ function checkEffective(group: SettingsGroup, values: Map<string, string>, env: 
         throw new SettingsError("bad_request", "cdn_url_auth 模式必须配置 CDN 边缘鉴权密钥（与 CDN 控制台一致）");
       }
     }
+    // 方式 D 的两个参数名不能相同（否则生成 URL 出现重复 query 键，CDN 侧行为未定义）
+    const tokenParam = get("storage_cdn_auth_token_param") || "token";
+    const timeParam = get("storage_cdn_auth_time_param") || "t";
+    if (tokenParam === timeParam) {
+      throw new SettingsError("bad_request", "方式 D 的签名参数名与时间戳参数名不能相同");
+    }
   }
   if (group === "security") {
     for (const key of ["better_auth_secret", "url_sign_key_hex"]) {

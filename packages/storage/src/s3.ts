@@ -38,6 +38,10 @@ export interface S3Config {
   cdnAuthType?: string;
   /** 方式 A 的鉴权 query 参数名（.env: STORAGE_CDN_AUTH_PARAM，默认 sign，1–100 位字母/数字/下划线） */
   cdnAuthParam?: string;
+  /** 方式 D 的签名参数名（.env: STORAGE_CDN_AUTH_TOKEN_PARAM，默认 token） */
+  cdnAuthTokenParam?: string;
+  /** 方式 D 的时间戳参数名（.env: STORAGE_CDN_AUTH_TIME_PARAM，默认 t） */
+  cdnAuthTimeParam?: string;
   /** cdn_url_auth 的对齐窗口秒数（.env: STORAGE_CDN_AUTH_TTL_SEC，默认 3600） */
   cdnAuthTtlSec?: number;
   /** custom 模式的提供者名（.env: STORAGE_CUSTOM_SIGNER，默认 "custom"） */
@@ -66,6 +70,8 @@ export class S3Adapter implements StorageAdapter {
       cdnAuthKey: cfg.cdnAuthKey,
       cdnAuthType: cfg.cdnAuthType,
       cdnAuthParam: cfg.cdnAuthParam,
+      cdnAuthTokenParam: cfg.cdnAuthTokenParam,
+      cdnAuthTimeParam: cfg.cdnAuthTimeParam,
       cdnAuthTtlSec: cfg.cdnAuthTtlSec,
       customSignerName: cfg.customSignerName,
     });

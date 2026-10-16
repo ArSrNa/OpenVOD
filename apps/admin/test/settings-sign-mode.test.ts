@@ -92,3 +92,27 @@ describe("storage_cdn_auth_param（ADR-0019：方式 A 鉴权参数名）", () =
     expect(settingFallback("storage_cdn_auth_param", {})).toEqual({ value: "sign", source: "default" });
   });
 });
+
+describe("storage_cdn_auth_token_param / storage_cdn_auth_time_param（方式 D 参数名）", () => {
+  test("形状校验：1–100 位字母 / 数字 / 下划线；空串回退默认", () => {
+    expect(normalizeSettingValue("storage_cdn_auth_token_param", " token ")).toBe("token");
+    expect(normalizeSettingValue("storage_cdn_auth_time_param", "ts")).toBe("ts");
+    expect(normalizeSettingValue("storage_cdn_auth_time_param", "")).toBe("");
+    expect(() => normalizeSettingValue("storage_cdn_auth_token_param", "bad name")).toThrow(SettingsError);
+    expect(() => normalizeSettingValue("storage_cdn_auth_time_param", "签名")).toThrow(SettingsError);
+  });
+
+  test("默认值与 env 兜底（STORAGE_CDN_AUTH_TOKEN_PARAM / STORAGE_CDN_AUTH_TIME_PARAM）", () => {
+    expect(SETTING_DEFAULTS["storage_cdn_auth_token_param"]).toBe("token");
+    expect(SETTING_DEFAULTS["storage_cdn_auth_time_param"]).toBe("t");
+    expect(settingFallback("storage_cdn_auth_token_param", { STORAGE_CDN_AUTH_TOKEN_PARAM: "sig" })).toEqual({
+      value: "sig",
+      source: "env",
+    });
+    expect(settingFallback("storage_cdn_auth_time_param", { STORAGE_CDN_AUTH_TIME_PARAM: "ts" })).toEqual({
+      value: "ts",
+      source: "env",
+    });
+    expect(settingFallback("storage_cdn_auth_time_param", {})).toEqual({ value: "t", source: "default" });
+  });
+});

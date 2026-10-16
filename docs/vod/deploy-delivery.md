@@ -104,7 +104,7 @@ spec.md §6.7）：`s3_presign`（默认，签名在 S3）| `cdn_url_auth`（签
 | # | 配置项 | 要求 |
 |---|---|---|
 | 1 | 私有回源 | 源站侧配置回源鉴权（EO「源站鉴权」/ COS 私有桶回源授权，以控制台实际入口为准）：存储凭证配在 CDN 控制台，**不入库、不进本仓库、不写日志** |
-| 2 | Token 鉴权 | 站点加速 → 规则引擎 → Token 鉴权：**鉴权方式与「CDN 鉴权方式」（`storage_cdn_auth_type`，A/B/C/D/V）一致**；**主鉴权密钥 = 管理端「CDN 边缘鉴权密钥」（`storage_cdn_auth_key`）双侧一致**；「有效时长」=「CDN 鉴权有效期」（`storage_cdn_auth_ttl_sec`，默认 3600 秒）；方式 A 的「鉴权加密串参数名称」= 管理端「鉴权参数名」（`storage_cdn_auth_param`，默认 `sign`）；方式 D 为 `token` / `t`（暂固定默认名） |
+| 2 | Token 鉴权 | 站点加速 → 规则引擎 → Token 鉴权：**鉴权方式与「CDN 鉴权方式」（`storage_cdn_auth_type`，A/B/C/D/V）一致**；**主鉴权密钥 = 管理端「CDN 边缘鉴权密钥」（`storage_cdn_auth_key`）双侧一致**；「有效时长」=「CDN 鉴权有效期」（`storage_cdn_auth_ttl_sec`，默认 3600 秒）；方式 A 的「鉴权加密串参数名称」= 管理端「鉴权参数名（方式 A）」（`storage_cdn_auth_param`，默认 `sign`）；方式 D 的两个参数名 = 「签名参数名（方式 D）」/「时间戳参数名（方式 D）」（`storage_cdn_auth_token_param` / `storage_cdn_auth_time_param`，默认 `token` / `t`） |
 | 3 | 缓存 | 缓存键含 query；缓存 TTL ≤ 签名窗口。EO 在鉴权通过后**自动忽略鉴权参数参与缓存**（官方行为）——窗口内 URL 稳定即可跨会话命中；重转码后的陈旧缓存仍靠 TTL / 刷新治理 |
 | 4 | 回源 Host | 私有回源由 CDN 凭据完成，无需再依赖 S3 签名透传 |
 

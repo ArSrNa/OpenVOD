@@ -37,6 +37,9 @@ const (
 	TypeAFixedUID  = "0"
 	// TypeAAuthParam EO 控制台的鉴权参数名（可自定义，默认 sign；部署文档要求两侧一致）
 	TypeAAuthParam = "sign"
+	// TypeDTokenParam / TypeDTimeParam 方式 D 的默认参数名（storage_cdn_auth_token_param / storage_cdn_auth_time_param 可覆盖）
+	TypeDTokenParam = "token"
+	TypeDTimeParam  = "t"
 	// TypeAMinWindowSec 对齐窗口下限（与 SETTING_TTL_LIMITS.storage_cdn_auth_ttl_sec 对齐）
 	TypeAMinWindowSec = 60
 )
@@ -99,13 +102,22 @@ func isEdgeOneAuthType(v string) bool {
 	}
 }
 
+// edgeOneURLParams 组装参数（随鉴权方式取用；参数名对应管理端设置，缺省为官方默认名）
+type edgeOneURLParams struct {
+	tsSec      int64
+	authParam  string // 方式 A 的鉴权参数名（默认 sign）
+	tokenParam string // 方式 D 的签名参数名（默认 token）
+	timeParam  string // 方式 D 的时间戳参数名（默认 t）
+}
+
 // buildEdgeOneURL 按方式组装鉴权 URL（与 TS 侧组装函数同式；测试由 fixtures 直接驱动）：
 //   - A：{base}{path}?{authParam}={ts}-{rand}-{uid}-{md5}（rand/uid 固定常量；authParam 默认 sign）
 //   - B：{base}/{ts(UTC+8 分钟)}/{md5}/{path}
 //   - C：{base}/{md5}/{ts(hex)}/{path}
-//   - D：{base}{path}?token={md5}&t={ts}
+//   - D：{base}{path}?{tokenParam}={md5}&{timeParam}={ts}（默认 token / t，可配置）
 //   - V：{base}{path}?t={t(hex)}&sign={sha1}（tsSec 即过期时刻）
-func buildEdgeOneURL(authType, base, path, key string, tsSec int64, authParam string) string {
+func buildEdgeOneURL(authType, base, path, key string, p edgeOneURLParams) string {
+	tsSec := p.tsSec
 	switch authType {
 	case "b":
 		tsStr := UTC8MinuteString(tsSec)
@@ -115,12 +127,12 @@ func buildEdgeOneURL(authType, base, path, key string, tsSec int64, authParam st
 		return fmt.Sprintf("%s/%s/%s%s", base, TypeCHash(path, tsHex, key), tsHex, path)
 	case "d":
 		tsDec := strconv.FormatInt(tsSec, 10)
-		return fmt.Sprintf("%s%s?token=%s&t=%s", base, path, TypeDHash(path, tsDec, key), tsDec)
+		return fmt.Sprintf("%s%s?%s=%s&%s=%s", base, path, p.tokenParam, TypeDHash(path, tsDec, key), p.timeParam, tsDec)
 	case "v":
 		tHex := strconv.FormatInt(tsSec, 16)
 		return fmt.Sprintf("%s%s?t=%s&sign=%s", base, path, tHex, TypeVHash(path, key, TypeVParams{T: tHex}))
 	default: // a
-		return fmt.Sprintf("%s%s?%s=%d-%s-%s-%s", base, path, authParam, tsSec,
+		return fmt.Sprintf("%s%s?%s=%d-%s-%s-%s", base, path, p.authParam, tsSec,
 			TypeAFixedRand, TypeAFixedUID, TypeAHash(path, tsSec, TypeAFixedRand, TypeAFixedUID, key))
 	}
 }
@@ -128,12 +140,14 @@ func buildEdgeOneURL(authType, base, path, key string, tsSec int64, authParam st
 // ---- EdgeOne 签名器（方式 A/B/C/D/V；装配入口） ----
 
 type edgeOneSigner struct {
-	authType  string // a | b | c | d | v
-	base      string // 加速域名（storage_cdn_base_url 在 cdn_url_auth 模式下的语义）
-	key       string // 边缘鉴权密钥（storage_cdn_auth_key，与 CDN 控制台一致）
-	authParam string // 方式 A 的 query 参数名（storage_cdn_auth_param，默认 sign）
-	windowTtl int64  // 对齐窗口秒（storage_cdn_auth_ttl_sec）
-	nowSecFn  func() int64 // 可注入测试时钟
+	authType   string // a | b | c | d | v
+	base       string // 加速域名（storage_cdn_base_url 在 cdn_url_auth 模式下的语义）
+	key        string // 边缘鉴权密钥（storage_cdn_auth_key，与 CDN 控制台一致）
+	authParam  string // 方式 A 的 query 参数名（storage_cdn_auth_param，默认 sign）
+	tokenParam string // 方式 D 的签名参数名（storage_cdn_auth_token_param，默认 token）
+	timeParam  string // 方式 D 的时间戳参数名（storage_cdn_auth_time_param，默认 t）
+	windowTtl  int64  // 对齐窗口秒（storage_cdn_auth_ttl_sec）
+	nowSecFn   func() int64 // 可注入测试时钟
 }
 
 func newEdgeOneSigner(cfg config.StorageConfig) (*edgeOneSigner, error) {
@@ -160,13 +174,32 @@ func newEdgeOneSigner(cfg config.StorageConfig) (*edgeOneSigner, error) {
 	if !edgeOneAuthParamPattern.MatchString(authParam) {
 		return nil, fmt.Errorf("storage_cdn_auth_param 非法（1–100 位字母 / 数字 / 下划线，与 CDN 控制台「鉴权加密串参数名称」一致）")
 	}
+	tokenParam := strings.TrimSpace(cfg.CDNAuthTokenParam)
+	if tokenParam == "" {
+		tokenParam = TypeDTokenParam
+	}
+	if !edgeOneAuthParamPattern.MatchString(tokenParam) {
+		return nil, fmt.Errorf("storage_cdn_auth_token_param 非法（1–100 位字母 / 数字 / 下划线，与 CDN 控制台一致）")
+	}
+	timeParam := strings.TrimSpace(cfg.CDNAuthTimeParam)
+	if timeParam == "" {
+		timeParam = TypeDTimeParam
+	}
+	if !edgeOneAuthParamPattern.MatchString(timeParam) {
+		return nil, fmt.Errorf("storage_cdn_auth_time_param 非法（1–100 位字母 / 数字 / 下划线，与 CDN 控制台一致）")
+	}
+	if tokenParam == timeParam {
+		return nil, fmt.Errorf("storage_cdn_auth_token_param 与 storage_cdn_auth_time_param 不能相同（URL 会出现重复参数）")
+	}
 	return &edgeOneSigner{
-		authType:  authType,
-		base:      cfg.CDNBaseURL,
-		key:       cfg.CDNAuthKey,
-		authParam: authParam,
-		windowTtl: int64(cfg.CDNAuthTTLSec),
-		nowSecFn:  func() int64 { return time.Now().Unix() },
+		authType:   authType,
+		base:       cfg.CDNBaseURL,
+		key:        cfg.CDNAuthKey,
+		authParam:  authParam,
+		tokenParam: tokenParam,
+		timeParam:  timeParam,
+		windowTtl:  int64(cfg.CDNAuthTTLSec),
+		nowSecFn:   func() int64 { return time.Now().Unix() },
 	}, nil
 }
 
@@ -181,11 +214,22 @@ func (s *edgeOneSigner) Sign(_ context.Context, key string, _ time.Duration) (st
 	if s.authType == "v" {
 		ts += s.windowTtl
 	}
+	// 直接构造（测试）或旧配置：空参数名回退官方默认
 	authParam := s.authParam
-	if authParam == "" { // 直接构造（测试）或旧配置：回退默认参数名
+	if authParam == "" {
 		authParam = TypeAAuthParam
 	}
-	return buildEdgeOneURL(s.authType, s.base, path, s.key, ts, authParam), nil
+	tokenParam := s.tokenParam
+	if tokenParam == "" {
+		tokenParam = TypeDTokenParam
+	}
+	timeParam := s.timeParam
+	if timeParam == "" {
+		timeParam = TypeDTimeParam
+	}
+	return buildEdgeOneURL(s.authType, s.base, path, s.key, edgeOneURLParams{
+		tsSec: ts, authParam: authParam, tokenParam: tokenParam, timeParam: timeParam,
+	}), nil
 }
 
 // ---- custom（编译期注册，ADR-0019） ----

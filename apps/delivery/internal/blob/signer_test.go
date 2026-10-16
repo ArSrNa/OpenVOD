@@ -174,9 +174,12 @@ func TestEdgeOneMethodHashesAgainstFixtures(t *testing.T) {
 // 方式 B/C/D/V 的 URL 组装：与 fixtures 的 url 字段逐字一致
 func TestEdgeOneMethodURLsAgainstFixtures(t *testing.T) {
 	f := loadMethodsFixture(t)
+	defaultParams := func(tsSec int64) edgeOneURLParams {
+		return edgeOneURLParams{tsSec: tsSec, authParam: TypeAAuthParam, tokenParam: TypeDTokenParam, timeParam: TypeDTimeParam}
+	}
 	for _, method := range []string{"b", "c", "d"} {
 		for _, v := range f.Methods[method].Vectors {
-			if got := buildEdgeOneURL(method, v.Base, v.Path, v.Key, v.TimestampSec, TypeAAuthParam); got != v.URL {
+			if got := buildEdgeOneURL(method, v.Base, v.Path, v.Key, defaultParams(v.TimestampSec)); got != v.URL {
 				t.Errorf("方式 %s 向量 %s：URL = %s, 期望 %s", method, v.Name, got, v.URL)
 			}
 		}
@@ -187,7 +190,7 @@ func TestEdgeOneMethodURLsAgainstFixtures(t *testing.T) {
 		if v.Us != "" || v.Exper != "" {
 			continue
 		}
-		if got := buildEdgeOneURL("v", v.Base, v.Path, v.Key, v.TimestampSec, TypeAAuthParam); got != v.URL {
+		if got := buildEdgeOneURL("v", v.Base, v.Path, v.Key, defaultParams(v.TimestampSec)); got != v.URL {
 			t.Errorf("方式 V 向量 %s：URL = %s, 期望 %s", v.Name, got, v.URL)
 		}
 	}
@@ -353,6 +356,47 @@ func TestEdgeOneAuthParamConfigurable(t *testing.T) {
 	// 非法参数名：装配即报错（含设置键指引）
 	cfg.CDNAuthParam = "bad name"
 	if _, err := NewURLSigner(cfg, &fakeSigner{}); err == nil || !strings.Contains(err.Error(), "storage_cdn_auth_param") {
+		t.Errorf("非法参数名应报错: %v", err)
+	}
+}
+
+// 方式 D 的参数名可配置（storage_cdn_auth_token_param / storage_cdn_auth_time_param，默认 token / t）
+func TestEdgeOneMethodDParamConfigurable(t *testing.T) {
+	ctx := context.Background()
+	base := config.StorageConfig{
+		SignMode: "cdn_url_auth", CDNBaseURL: "https://cdn.example.com",
+		CDNAuthKey: "0123456789abcdef0123456789abcdef", CDNAuthTTLSec: 3600, CDNAuthType: "d",
+	}
+	// 默认 token / t
+	signer, err := NewURLSigner(base, &fakeSigner{})
+	if err != nil {
+		t.Fatalf("默认装配失败: %v", err)
+	}
+	url, _ := signer.Sign(ctx, "a/b.ts", time.Minute)
+	if !strings.Contains(url, "?token=") || !strings.Contains(url, "&t=") {
+		t.Errorf("默认参数名应为 token / t: %s", url)
+	}
+	// 自定义参数名
+	cfg := base
+	cfg.CDNAuthTokenParam = "sign"
+	cfg.CDNAuthTimeParam = "ts"
+	signer, err = NewURLSigner(cfg, &fakeSigner{})
+	if err != nil {
+		t.Fatalf("自定义参数名装配失败: %v", err)
+	}
+	url, _ = signer.Sign(ctx, "a/b.ts", time.Minute)
+	if !strings.Contains(url, "?sign=") || !strings.Contains(url, "&ts=") {
+		t.Errorf("自定义参数名未生效: %s", url)
+	}
+	// 两个参数名相同：装配即报错（URL 会出现重复参数）
+	cfg.CDNAuthTimeParam = "sign"
+	if _, err := NewURLSigner(cfg, &fakeSigner{}); err == nil || !strings.Contains(err.Error(), "不能相同") {
+		t.Errorf("参数名相同应报错: %v", err)
+	}
+	// 非法形状
+	cfg.CDNAuthTokenParam = "bad name"
+	cfg.CDNAuthTimeParam = "t"
+	if _, err := NewURLSigner(cfg, &fakeSigner{}); err == nil || !strings.Contains(err.Error(), "storage_cdn_auth_token_param") {
 		t.Errorf("非法参数名应报错: %v", err)
 	}
 }

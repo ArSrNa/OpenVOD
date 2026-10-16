@@ -106,6 +106,8 @@ export async function loadWorkerSettings(): Promise<WorkerSettings> {
     cdnAuthKey: secret("storage_cdn_auth_key") || process.env.STORAGE_CDN_AUTH_KEY || "",
     cdnAuthType: pick(values, "storage_cdn_auth_type", "STORAGE_CDN_AUTH_TYPE") || undefined,
     cdnAuthParam: pick(values, "storage_cdn_auth_param", "STORAGE_CDN_AUTH_PARAM") || undefined,
+    cdnAuthTokenParam: pick(values, "storage_cdn_auth_token_param", "STORAGE_CDN_AUTH_TOKEN_PARAM") || undefined,
+    cdnAuthTimeParam: pick(values, "storage_cdn_auth_time_param", "STORAGE_CDN_AUTH_TIME_PARAM") || undefined,
     cdnAuthTtlSec: toInt(pick(values, "storage_cdn_auth_ttl_sec", "STORAGE_CDN_AUTH_TTL_SEC"), 3600),
     customSignerName: pick(values, "storage_custom_signer", "STORAGE_CUSTOM_SIGNER") || undefined,
   });

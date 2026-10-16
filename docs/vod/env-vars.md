@@ -102,6 +102,8 @@ STORAGE_CDN_BASE_URL=""               # 加速域名（仅替换 GET 预签名 U
 | `STORAGE_CDN_AUTH_KEY` | 否 | 空 | CDN 边缘鉴权密钥（`cdn_url_auth` 必填；与 CDN 控制台同款密钥双侧一致；system_settings 中 MK 封装，env 兜底） |
 | `STORAGE_CDN_AUTH_TYPE` | 否 | `a` | `cdn_url_auth` 的 EO Token 鉴权方式：`a` \| `b` \| `c` \| `d` \| `v`（与 CDN 控制台 Token 鉴权所选方式一致；A 为 query sign、B/C 为路径前缀、D 为 token/t、V 为过期时刻 t + sha1，§6.7） |
 | `STORAGE_CDN_AUTH_PARAM` | 否 | `sign` | 方式 A 的鉴权 query 参数名（与 CDN 控制台「鉴权加密串参数名称」一致，1–100 位字母 / 数字 / 下划线） |
+| `STORAGE_CDN_AUTH_TOKEN_PARAM` | 否 | `token` | 方式 D 的签名参数名（与 CDN 控制台一致；与时间戳参数名不可相同） |
+| `STORAGE_CDN_AUTH_TIME_PARAM` | 否 | `t` | 方式 D 的时间戳参数名（与 CDN 控制台一致） |
 | `STORAGE_CDN_AUTH_TTL_SEC` | 否 | `3600` | CDN 鉴权窗口（timestamp 按窗口对齐 = 窗口内 URL 稳定缓存友好；与 CDN 控制台「有效时长」一致） |
 | `STORAGE_CUSTOM_SIGNER` | 否 | `custom` | `custom` 模式的提供者注册名（TS `registerUrlSigner` / Go `RegisterURLSigner`；实现入口 `packages/storage/src/custom-signer.ts` 与 `apps/delivery/internal/blob/custom_signer.go`） |
 
@@ -181,6 +183,8 @@ STORAGE_CDN_BASE_URL=""               # 加速域名（可选）
 | `STORAGE_CDN_AUTH_KEY` | 否 | 空 | 同 delivery（system_settings 中 MK 封装，env 兜底） |
 | `STORAGE_CDN_AUTH_TYPE` | 否 | `a` | 同 delivery（EO Token 鉴权方式 `a`–`v`，与 CDN 控制台一致） |
 | `STORAGE_CDN_AUTH_PARAM` | 否 | `sign` | 同 delivery（方式 A 鉴权参数名） |
+| `STORAGE_CDN_AUTH_TOKEN_PARAM` | 否 | `token` | 同 delivery（方式 D 签名参数名） |
+| `STORAGE_CDN_AUTH_TIME_PARAM` | 否 | `t` | 同 delivery（方式 D 时间戳参数名） |
 | `STORAGE_CDN_AUTH_TTL_SEC` | 否 | `3600` | 同 delivery |
 | `STORAGE_CUSTOM_SIGNER` | 否 | `custom` | 同 delivery（Worker 侧经 packages/storage 注册表路由） |
 
@@ -277,6 +281,8 @@ DELIVERY_PUBLIC_BASE_URL=""                      # /api/admin/settings 回退提
 | `STORAGE_CDN_AUTH_KEY` | 否 | 空 | 同 delivery（system_settings 中 MK 封装，env 兜底） |
 | `STORAGE_CDN_AUTH_TYPE` | 否 | `a` | 同 delivery（EO Token 鉴权方式 `a`–`v`，与 CDN 控制台一致） |
 | `STORAGE_CDN_AUTH_PARAM` | 否 | `sign` | 同 delivery（方式 A 鉴权参数名） |
+| `STORAGE_CDN_AUTH_TOKEN_PARAM` | 否 | `token` | 同 delivery（方式 D 签名参数名） |
+| `STORAGE_CDN_AUTH_TIME_PARAM` | 否 | `t` | 同 delivery（方式 D 时间戳参数名） |
 | `STORAGE_CDN_AUTH_TTL_SEC` | 否 | `3600` | 同 delivery |
 | `STORAGE_CUSTOM_SIGNER` | 否 | `custom` | 同 delivery（实现入口 `packages/storage/src/custom-signer.ts`） |
 | `MEDIA_ID_LENGTH` | 否 | `8` | 媒资数字 ID 位数（4–16，保留前导零，spec.md §1.3） |

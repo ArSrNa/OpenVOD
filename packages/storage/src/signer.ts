@@ -40,6 +40,10 @@ export interface EdgeOneSignerOptions {
   windowTtlSec?: number;
   /** 鉴权 query 参数名（仅方式 A 使用；storage_cdn_auth_param，默认 sign；两侧必须一致） */
   authParam?: string;
+  /** 方式 D 的签名参数名（storage_cdn_auth_token_param，默认 token） */
+  tokenParam?: string;
+  /** 方式 D 的时间戳参数名（storage_cdn_auth_time_param，默认 t） */
+  timeParam?: string;
   /** 显式注入当前时间（测试用；缺省取系统时钟） */
   nowSec?: number;
 }
@@ -51,7 +55,7 @@ export type EdgeOneTypeASignerOptions = EdgeOneSignerOptions;
  *  - 方式 A：{base}/{path}?sign={ts}-{rand}-{uid}-{md5}（rand/uid 固定常量）；
  *  - 方式 B：{base}/{ts(UTC+8 分钟)}/{md5}/{path}；
  *  - 方式 C：{base}/{md5}/{ts(hex)}/{path}；
- *  - 方式 D：{base}/{path}?token={md5}&t={ts}；
+ *  - 方式 D：{base}/{path}?{token}={md5}&{t}={ts}（两个参数名可配置，默认 token / t）；
  *  - 方式 V：{base}/{path}?t={过期时刻(hex)}&sign={sha1}。
  *  时间窗语义：A/B/C/D 的 timestamp 为「签发时刻」（窗口内对齐稳定，实际有效期 ≥ 窗口）；
  *  V 的 t 为「过期时刻」（取窗口对齐值 + 1 窗，保证任意签发时刻有效期 ≥ 窗口，另加 EO 300s 容差）。
@@ -72,6 +76,17 @@ export function createEdgeOneSigner(opts: EdgeOneSignerOptions): UrlSigner {
   if (!/^[A-Za-z0-9_]{1,100}$/.test(authParam)) {
     throw new Error("storage_cdn_auth_param 非法（1–100 位字母 / 数字 / 下划线，与 CDN 控制台「鉴权加密串参数名称」一致）");
   }
+  const tokenParam = (opts.tokenParam ?? "token").trim() || "token";
+  const timeParam = (opts.timeParam ?? "t").trim() || "t";
+  if (!/^[A-Za-z0-9_]{1,100}$/.test(tokenParam)) {
+    throw new Error("storage_cdn_auth_token_param 非法（1–100 位字母 / 数字 / 下划线，与 CDN 控制台一致）");
+  }
+  if (!/^[A-Za-z0-9_]{1,100}$/.test(timeParam)) {
+    throw new Error("storage_cdn_auth_time_param 非法（1–100 位字母 / 数字 / 下划线，与 CDN 控制台一致）");
+  }
+  if (tokenParam === timeParam) {
+    throw new Error("storage_cdn_auth_token_param 与 storage_cdn_auth_time_param 不能相同（URL 会出现重复参数）");
+  }
   return {
     sign(key: string, _ttlSec: number): Promise<string> {
       // 注意：签名 path 含 root 前缀（CDN 回源桶时 URL path 即完整对象键）；
@@ -85,7 +100,9 @@ export function createEdgeOneSigner(opts: EdgeOneSignerOptions): UrlSigner {
         case "c":
           return Promise.resolve(typeCUrl(base, path, opts.key, { timestampSec: ts }));
         case "d":
-          return Promise.resolve(typeDUrl(base, path, opts.key, { timestampSec: ts }));
+          return Promise.resolve(
+            typeDUrl(base, path, opts.key, { timestampSec: ts, authParam: tokenParam, timeParam }),
+          );
         case "v":
           return Promise.resolve(typeVUrl(base, path, opts.key, { timestampSec: ts + windowTtlSec }));
         default: {
@@ -138,6 +155,10 @@ export interface UrlSignerFactoryDeps {
   cdnAuthType?: string;
   /** cdn_url_auth 方式 A 的鉴权 query 参数名（storage_cdn_auth_param，默认 sign） */
   cdnAuthParam?: string;
+  /** cdn_url_auth 方式 D 的签名参数名（storage_cdn_auth_token_param，默认 token） */
+  cdnAuthTokenParam?: string;
+  /** cdn_url_auth 方式 D 的时间戳参数名（storage_cdn_auth_time_param，默认 t） */
+  cdnAuthTimeParam?: string;
   customSignerName?: string;
 }
 
@@ -150,6 +171,8 @@ export function createUrlSigner(deps: UrlSignerFactoryDeps): UrlSigner {
         key: deps.cdnAuthKey ?? "",
         authType: deps.cdnAuthType,
         authParam: deps.cdnAuthParam,
+        tokenParam: deps.cdnAuthTokenParam,
+        timeParam: deps.cdnAuthTimeParam,
         windowTtlSec: deps.cdnAuthTtlSec,
       });
     case "custom": {

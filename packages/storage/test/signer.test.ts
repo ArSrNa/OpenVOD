@@ -321,3 +321,30 @@ test("createEdgeOneSigner：非法鉴权参数名报错（1–100 位字母 / �
     /storage_cdn_auth_param/,
   );
 });
+
+test("createEdgeOneSigner：方式 D 的参数名可配置（token / t，默认官方名）", async () => {
+  const key = "0123456789abcdef0123456789abcdef";
+  const base = { baseUrl: "https://cdn.example.com", key, authType: "d", windowTtlSec: 3600, nowSec: 1721026800 };
+  const def = await createEdgeOneSigner(base).sign("a/b.ts", 60);
+  expect(def).toMatch(/\?token=[0-9a-f]{32}&t=\d+$/);
+  const custom = await createEdgeOneSigner({ ...base, tokenParam: "sign", timeParam: "ts" }).sign("a/b.ts", 60);
+  expect(custom).toMatch(/\?sign=[0-9a-f]{32}&ts=\d+$/);
+  // 工厂透传（cdnAuthTokenParam / cdnAuthTimeParam）
+  const viaFactory = createUrlSigner({
+    signMode: "cdn_url_auth",
+    cdnBaseUrl: "https://cdn.example.com",
+    cdnAuthKey: key,
+    cdnAuthTtlSec: 3600,
+    cdnAuthType: "d",
+    cdnAuthTokenParam: "sig",
+    cdnAuthTimeParam: "time",
+  });
+  expect(await viaFactory.sign("a/b.ts", 60)).toMatch(/\?sig=[0-9a-f]{32}&time=\d+$/);
+});
+
+test("createEdgeOneSigner：方式 D 参数名非法 / 两者相同报错", () => {
+  const base = { baseUrl: "https://cdn.example.com", key: "k", authType: "d" };
+  expect(() => createEdgeOneSigner({ ...base, tokenParam: "bad name" })).toThrow(/storage_cdn_auth_token_param/);
+  expect(() => createEdgeOneSigner({ ...base, timeParam: "签名" })).toThrow(/storage_cdn_auth_time_param/);
+  expect(() => createEdgeOneSigner({ ...base, tokenParam: "same", timeParam: "same" })).toThrow(/不能相同/);
+});

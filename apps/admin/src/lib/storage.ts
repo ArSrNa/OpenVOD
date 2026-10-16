@@ -26,6 +26,8 @@ export async function getStorage(): Promise<StorageAdapter> {
     s.cdnAuthKey,
     s.cdnAuthType,
     s.cdnAuthParam,
+    s.cdnAuthTokenParam,
+    s.cdnAuthTimeParam,
     s.cdnAuthTtlSec,
     s.customSigner,
   ].join("|");
@@ -44,6 +46,8 @@ export async function getStorage(): Promise<StorageAdapter> {
         cdnAuthKey: s.cdnAuthKey,
         cdnAuthType: s.cdnAuthType,
         cdnAuthParam: s.cdnAuthParam,
+        cdnAuthTokenParam: s.cdnAuthTokenParam,
+        cdnAuthTimeParam: s.cdnAuthTimeParam,
         cdnAuthTtlSec: s.cdnAuthTtlSec,
         customSignerName: s.customSigner,
       }),

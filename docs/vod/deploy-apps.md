@@ -156,17 +156,28 @@ CNB 云原生开发环境实测要点（2026-09-22）：
 
 1. 升级**根 `package.json` 的 version**（全仓库唯一版本号，子包一律不声明），并合入**默认分支**（当前 `main`，
    见下条的分支来源）；
-2. Tag 列表页「自动生成 Tag」→ `auto_tag`（`.cnb.yml` 的 **`$` 兜底分支下**，任务定义在文件顶部 `.auto-tag` 锚点）
-   读取根 `package.json` 的 version 校验语义化 → 确认同名 tag 不存在 → `git tag -a <version>` 并推送
-   （tag 名即版本号，不带 `v` 前缀）。三处易踩的点：
-   - **挂载位置**：`$` 兜底分支下即可（本仓库自 0.2.0 起一直如此，2026-10-16 实测确认会被执行——流水线跑的就是
-     该任务）。CNB 文档中「auto_tag 配置写在 `$` 下会被忽略」的说法与本仓库实测不符，以实测为准，不要挪到分支名下；
+2. Tag 列表页「自动生成 Tag」→ `auto_tag` 打 tag，**tag 名 = 根 `package.json` 的 version**（不带 `v` 前缀）。
+   实现见 `.cnb.yml` 顶部 `.auto-tag` 锚点：平台会注入内置的 `cnbcool/git-auto-tag` 流水线（按提交语义推导版本），
+   本仓库用 `settings.tagFormat` 把 tag 名**钉死**成 package.json 的版本号，并在打完后校验一致性。
+   四处易踩的点：
+   - **必须复用内置插件**：`auto_tag` 是平台「页面操作事件」，点按钮时平台先注入一条内置流水线再与 `.cnb.yml`
+     合并；**写在 `$` 下的 `auto_tag` 会被忽略**（官方 `build/trigger-rule.md`「配置覆盖规则」原文）。
+     本仓库此前把自写 job 挂在 `$` 下，因此**从未执行**——2026-10-16 构建 `cnb-nuh-1k52f23cb` 日志里只有内置
+     插件在跑，把 package.json=1.1.0 的库按提交语义打成了 **0.3.0**（此前几次「成功」也都是内置插件打的语义化 tag）。
+     平台是否会采纳 `$` 下的配置**尚未验证**：若 Tag 列表页仍打出 0.x，把 `.auto-tag` 整段挪到 `main:` 分支名下
+     （同分支覆盖成立），并补 `imports` 提供 `CNB_TOKEN_USER_NAME` / `CNB_TOKEN`；
+   - **tag 名怎么钉死**：`tagFormat` 最终交 semantic-release 过 lodash 模板，`${...}` 是**求值表达式**，
+     作用域里只有 `version` 一个变量。所以 `${PKG_VERSION}` / `\${PKG_VERSION}` 都会抛
+     `ReferenceError`（stage 的 `exports` 到不了插件用 `exec` 起的 git 环境，自定义变量一律不可用），
+     只有 `${'1.1.0'}` 这种**字符串字面量**求值可行 ⇒ 配置写成 `'${''$PKG_VERSION''}'`；
    - **运行 / 检出分支**由 CNB「Tag 自动生成配置」决定：默认分支下的 `.cnb/settings.yml` → `tag.auto_tag.branch`
      （默认值 = 仓库默认分支 `main`；本仓库未配置该文件）；Tag 列表页按钮**不能临时选分支**，
      检出 = 该分支最新 commit ⇒ **发版前先把待发布提交合入 `main`**；
-   - **Git LFS**：本仓库用 LFS 追踪 `videos/mv.mp4`（`.gitattributes`），CNB 检出会带 `git-lfs` 的 `pre-push` 钩子——
-     缺 `git-lfs` 的镜像（原用 `node:22`）会在推送 tag 时直接失败（`git-lfs was not found`，2026-10-16 实测）。
-     故该 job 改用开发镜像（内置 `git-lfs` 3.4.1），并保留 `--no-verify` 兜底重试一次（推 tag 不涉及 LFS 对象，安全）；
+   - **Git LFS**：本仓库用 LFS 追踪 `videos/mv.mp4`（`.gitattributes`）。早前自写 push 阶段遇过
+     `git-lfs was not found`（缺 `git-lfs` 的镜像 + 检出带的 `pre-push` 钩子）；改由内置插件推送后该问题消失，
+     但 job 仍用开发镜像（内置 `git-lfs` 3.4.1）以便末尾 `git ls-remote` 复核；
+   - 手动验证：`.cnb/web_trigger.yml` 的 **「验证autoTag」**按钮（`web_trigger_verify_autotag`）跑等价 job，
+     可在不动 Tag 列表页的前提下确认 tagFormat 行为；
 3. tag 推送触发 `tag_push`：四个运行镜像（worker → admin → delivery → player）串行构建 + **独立 job**
    发布播放器 SDK——单测覆盖率（`testing:coverage`，红线见 `.cnb.yml`）→ `bun packages/player-sdk/scripts/publish.ts --registry both`
    发布到 npm 官方与 CNB 制品库；

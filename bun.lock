@@ -20,6 +20,7 @@
         "@openvod/contracts": "workspace:*",
         "@openvod/crypto": "workspace:*",
         "@openvod/db": "workspace:*",
+        "@openvod/player-sdk": "workspace:*",
         "@openvod/shared": "workspace:*",
         "@openvod/storage": "workspace:*",
         "@openvod/transcode": "workspace:*",
@@ -49,7 +50,7 @@
         "@ant-design/icons": "^5.6.1",
         "@ant-design/nextjs-registry": "^1.1.0",
         "@ant-design/v5-patch-for-react-19": "^1.0.3",
-        "@openvod/contracts": "workspace:*",
+        "@openvod/player-sdk": "workspace:*",
         "@videojs/hlsjs-video": "10.0.0-rc.2",
         "@videojs/react": "^10.0.0-rc.2",
         "antd": "^5.22.0",
@@ -95,6 +96,13 @@
       },
       "devDependencies": {
         "prisma": "^6.10.0",
+      },
+    },
+    "packages/player-sdk": {
+      "name": "@openvod/player-sdk",
+      "devDependencies": {
+        "@openvod/contracts": "workspace:*",
+        "@openvod/shared": "workspace:*",
       },
     },
     "packages/shared": {
@@ -342,6 +350,8 @@
     "@openvod/db": ["@openvod/db@workspace:packages/db"],
 
     "@openvod/player": ["@openvod/player@workspace:apps/player"],
+
+    "@openvod/player-sdk": ["@openvod/player-sdk@workspace:packages/player-sdk"],
 
     "@openvod/shared": ["@openvod/shared@workspace:packages/shared"],
 

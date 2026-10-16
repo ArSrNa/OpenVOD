@@ -178,8 +178,9 @@ STORAGE_CDN_BASE_URL=""               # 加速域名（可选）
 | `S3_ACCESS_KEY_ID` | **是** | 空 | 访问密钥 ID |
 | `S3_SECRET_ACCESS_KEY` | **是** | 空 | 访问密钥 |
 | `S3_FORCE_PATH_STYLE` | 否 | `true` | 同 delivery；COS 需 `false` |
+| `S3_ENDPOINT_INTERNAL` | 否 | 空 | **仅 Worker 取源片与水印图**使用的同桶内网 / 本机端点（如 COS `cos-internal.*`、自托管 `http://127.0.0.1:<端口>`）；留空 = 用 `S3_ENDPOINT` 直连。Worker 对候选通路实测吞吐择优（2026-10-17，ADR-0019 修订） |
 | `STORAGE_CDN_BASE_URL` | 否 | 空 | 加速域名（签名 origin 替换 / cdn_url_auth 签名 host） |
-| `STORAGE_SIGN_MODE` | 否 | `s3_presign` | 同 delivery（Worker 取源片 / 水印图与播放分片同一签名形态，ADR-0019） |
+| `STORAGE_SIGN_MODE` | 否 | `s3_presign` | 同 delivery；**Worker 取源片 / 水印图已不走签名通路**（直连 + 内网端点择优，2026-10-17，ADR-0019 修订） |
 | `STORAGE_CDN_AUTH_KEY` | 否 | 空 | 同 delivery（system_settings 中 MK 封装，env 兜底） |
 | `STORAGE_CDN_AUTH_TYPE` | 否 | `a` | 同 delivery（EO Token 鉴权方式 `a`–`v`，与 CDN 控制台一致） |
 | `STORAGE_CDN_AUTH_PARAM` | 否 | `sign` | 同 delivery（方式 A 鉴权参数名） |

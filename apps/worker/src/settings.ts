@@ -1,15 +1,22 @@
 // Worker 运行设置（ADR-0015）：从 system_settings 读取存储凭据与队列参数（env 兜底），
 // 密钥键（s3_secret_access_key）以 MK 封装 hex 存储，读取时用 env MASTER_KEYS 解封。
 // 快照带 30s 缓存：每轮 tick 读取参数即时生效，存储凭据变更按指纹重建适配器。
+//
+// 取源通路（2026-10-17，ADR-0019 修订）：Worker 取源片 / 水印图**不走** GET 签名提供者，
+// 候选 = 内网端点（s3_endpoint_internal，可选）→ 存储直连 → 签名提供者（CDN，兜底），
+// 由 source-fetch.ts 实测吞吐择优；播放端 / 管理端 URL 签名形态不受影响。
 import { parseMasterKeys, unwrap, type MasterKey } from "@openvod/crypto";
 import { getDb } from "@openvod/db";
 import { createStorageFromConfig, type SignMode, type StorageAdapter } from "@openvod/storage";
+import type { SourceFetcher } from "./source-fetch";
 
 const db = getDb<any>();
 
 export interface WorkerSettings {
   storage: StorageAdapter;
   storageConfigured: boolean;
+  /** 取源片 / 水印图的候选通路（source-fetch.ts 实测吞吐择优；见文件头说明） */
+  sourceFetchers: SourceFetcher[];
   pollIntervalMs: number;
   leaseMs: number;
   maxAttempts: number;
@@ -88,21 +95,29 @@ export async function pingDb(): Promise<void> {
 export async function loadWorkerSettings(): Promise<WorkerSettings> {
   const { values, secret } = await loadRaw();
   const endpoint = pick(values, "s3_endpoint", "S3_ENDPOINT");
+  const endpointInternal = pick(values, "s3_endpoint_internal", "S3_ENDPOINT_INTERNAL");
   const bucket = pick(values, "s3_bucket", "S3_BUCKET");
   const accessKeyId = pick(values, "s3_access_key_id", "S3_ACCESS_KEY_ID");
   const secretAccessKey = secret("s3_secret_access_key") || process.env.S3_SECRET_ACCESS_KEY || "";
   const storageConfigured = Boolean(endpoint && bucket && accessKeyId && secretAccessKey);
+  const region = pick(values, "s3_region", "S3_REGION");
+  const forcePathStyle = (pick(values, "s3_force_path_style", "S3_FORCE_PATH_STYLE") || "true") !== "false";
+  const rootPrefix = pick(values, "storage_root_prefix", "STORAGE_ROOT_PREFIX");
+  const cdnBaseUrl = pick(values, "storage_cdn_base_url", "STORAGE_CDN_BASE_URL");
+  const signMode = (pick(values, "storage_sign_mode", "STORAGE_SIGN_MODE") || undefined) as SignMode | undefined;
+  const signModeRaw = (signMode ?? "s3_presign").trim().toLowerCase();
   const storage = createStorageFromConfig({
     endpoint,
-    region: pick(values, "s3_region", "S3_REGION"),
+    region,
     bucket,
     accessKeyId,
     secretAccessKey,
-    forcePathStyle: (pick(values, "s3_force_path_style", "S3_FORCE_PATH_STYLE") || "true") !== "false",
-    cdnBaseUrl: pick(values, "storage_cdn_base_url", "STORAGE_CDN_BASE_URL"),
-    rootPrefix: pick(values, "storage_root_prefix", "STORAGE_ROOT_PREFIX"),
-    // GET 签名方式（ADR-0019）：Worker 取源片 / 水印图与播放分片同一签名形态
-    signMode: (pick(values, "storage_sign_mode", "STORAGE_SIGN_MODE") || undefined) as SignMode | undefined,
+    forcePathStyle,
+    cdnBaseUrl,
+    rootPrefix,
+    // GET 签名方式（ADR-0019）：不再用于取源片 / 水印图（走 sourceFetchers），
+    // 保留为「签名提供者」兜底通路 + 管理性调用（put / list / stat）不经过它
+    signMode,
     cdnAuthKey: secret("storage_cdn_auth_key") || process.env.STORAGE_CDN_AUTH_KEY || "",
     cdnAuthType: pick(values, "storage_cdn_auth_type", "STORAGE_CDN_AUTH_TYPE") || undefined,
     cdnAuthParam: pick(values, "storage_cdn_auth_param", "STORAGE_CDN_AUTH_PARAM") || undefined,
@@ -111,9 +126,44 @@ export async function loadWorkerSettings(): Promise<WorkerSettings> {
     cdnAuthTtlSec: toInt(pick(values, "storage_cdn_auth_ttl_sec", "STORAGE_CDN_AUTH_TTL_SEC"), 3600),
     customSignerName: pick(values, "storage_custom_signer", "STORAGE_CUSTOM_SIGNER") || undefined,
   });
+
+  // ---- 取源通路候选（顺序即兜底顺序；source-fetch.ts 会实测吞吐择优）----
+  const sourceFetchers: SourceFetcher[] = [];
+  if (storageConfigured) {
+    // 内网 / 本机端点（可选，s3_endpoint_internal）：与主端点同桶，恒走 SigV4 直连（不经 CDN 替换）
+    if (endpointInternal && endpointInternal !== endpoint) {
+      const internal = createStorageFromConfig({
+        endpoint: endpointInternal,
+        region,
+        bucket,
+        accessKeyId,
+        secretAccessKey,
+        forcePathStyle,
+        rootPrefix,
+      });
+      sourceFetchers.push({ id: `internal:${endpointInternal}`, presign: (k, t) => internal.presignGet(k, t) });
+    }
+    // 存储端点直连（SigV4，不做 CDN origin 替换）
+    const direct = createStorageFromConfig({
+      endpoint,
+      region,
+      bucket,
+      accessKeyId,
+      secretAccessKey,
+      forcePathStyle,
+      rootPrefix,
+    });
+    sourceFetchers.push({ id: `direct:${endpoint}`, presign: (k, t) => direct.presignGet(k, t) });
+    // 签名提供者（现状行为：cdn_url_auth 的 CDN 鉴权 URL / s3_presign 的加速域名）——仅作兜底
+    if (signModeRaw !== "s3_presign" || cdnBaseUrl) {
+      sourceFetchers.push({ id: `signed:${cdnBaseUrl || signModeRaw}`, presign: (k, t) => storage.presignGet(k, t) });
+    }
+  }
+
   return {
     storage,
     storageConfigured,
+    sourceFetchers,
     pollIntervalMs: toInt(pick(values, "worker_poll_interval_ms", "WORKER_POLL_INTERVAL_MS"), 2000),
     leaseMs: toInt(pick(values, "worker_lease_ms", "WORKER_LEASE_MS"), 60_000),
     maxAttempts: toInt(pick(values, "worker_max_attempts", "WORKER_MAX_ATTEMPTS"), 3),

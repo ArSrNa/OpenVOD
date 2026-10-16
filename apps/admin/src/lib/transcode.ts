@@ -2,7 +2,13 @@
 // 发起时**只做校验与快照**，不生成 argv：源片分辨率 / 帧率未知，编译在 Worker 探测后完成（ADR-0014）。
 // 单次可**多选**模板（编排核心见 ./transcode-submit，依赖注入便于单测）：每个模板各入队一条任务，
 // 产物各落 proceed/{mediaId}/{templateId}/（spec.md §1.3）。
-import { TranscodeJobDTO, TranscodeSubmitResponse, z, type DashboardStats } from "@openvod/contracts";
+import {
+  ACTIVE_JOB_STATUSES,
+  TranscodeJobDTO,
+  TranscodeSubmitResponse,
+  z,
+  type DashboardStats,
+} from "@openvod/contracts";
 import { getDb } from "@openvod/db";
 import { NextResponse } from "next/server";
 import { apiError } from "./api";
@@ -14,11 +20,9 @@ import { submitTranscodeWithDeps, TranscodeSubmitError, type SubmitJobRow } from
 
 const db = getDb<any>();
 
-/**
- * 未终结状态：同一媒资 + **同一模板** 同时只允许一个进行中的任务。
- * 产物按 `proceed/{mediaId}/{templateId}/` 分树存放，不同模板互不覆盖，故同媒资不同模板可并行（spec.md §5.1）。
- */
-const ACTIVE_JOB_STATUSES = ["QUEUED", "PROBING", "ENCODING", "PACKAGING"];
+// 未终结状态（ACTIVE_JOB_STATUSES）唯一真相源在 @openvod/contracts：
+// 同一媒资 + **同一模板** 同时只允许一个进行中的任务；产物按 `proceed/{mediaId}/{templateId}/` 分树存放，
+// 不同模板互不覆盖，故同媒资不同模板可并行（spec.md §5.1）。
 
 export class TranscodeError extends Error {
   constructor(
@@ -37,6 +41,8 @@ type JobRow = {
   templateId: string | null;
   templateSnapshot: unknown;
   attempts: number;
+  /** 当前阶段进度（0–100；DOWNLOADING / ENCODING 阶段有意义，其余为 null） */
+  progress: number | null;
   /** worker 执行租约到期时间（认领时写入、执行期心跳续期；null = 未被认领） */
   leaseUntil: Date | null;
   lastError: string | null;
@@ -59,6 +65,7 @@ function toDto(row: JobRow, mediaTitle: string | null): z.infer<typeof Transcode
     template_id: row.templateId,
     template_name: snapshotName(row.templateSnapshot),
     attempts: row.attempts,
+    progress: row.progress,
     lease_active: row.leaseUntil ? row.leaseUntil.getTime() > Date.now() : false,
     last_error: row.lastError,
     created_at: row.createdAt.toISOString(),
@@ -121,12 +128,19 @@ export async function listTranscodeJobs(limit = 200): Promise<{
 
 export type ActiveJobStats = DashboardStats["jobs"];
 
-/** 四个状态各一次 COUNT（DB 侧聚合，不拉取任务行） */
+/** 各未终结状态一次 COUNT（DB 侧聚合，不拉取任务行） */
 export async function getActiveJobStats(): Promise<ActiveJobStats> {
-  const [queued, probing, encoding, packaging] = await Promise.all(
+  const [queued, probing, downloading, encoding, packaging] = await Promise.all(
     ACTIVE_JOB_STATUSES.map((status) => db.transcodeJob.count({ where: { status } })),
   );
-  return { active: queued + probing + encoding + packaging, queued, probing, encoding, packaging };
+  return {
+    active: queued + probing + downloading + encoding + packaging,
+    queued,
+    probing,
+    downloading,
+    encoding,
+    packaging,
+  };
 }
 
 // ---- 停止 / 重启（任务页操作；语义见 spec.md §5.1） ----

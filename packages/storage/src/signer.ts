@@ -7,7 +7,10 @@
 //   - custom：编译期注册的自定义提供者（registerUrlSigner，见 custom-signer.ts；
 //     运行时动态插件明确不做，ADR-0019）。
 // 消费范围（spec.md §6.7）：所有 GET 形态签名 URL——分发端分片直出、管理端 original / 封面 /
-// 水印图 302、Worker 取源片与水印图。写入路径（presignPut / put）不在此列，仍走 S3 SDK。
+// 水印图 302。写入路径（presignPut / put）不在此列，仍走 S3 SDK。
+// 注（2026-10-17 修订）：Worker 取源片 / 水印图**不再**走此签名提供者——改为存储端点直连
+// （可选内网端点 s3_endpoint_internal）+ 吞吐探测择优（apps/worker/src/source-fetch.ts），
+// 避免 CDN 通路拖慢转码（实测同对象同刻：CDN 0.71 MB/s vs 直连 44–103 MB/s）。
 import { typeAUrl, typeBUrl, typeCUrl, typeDUrl, isEdgeOneAuthType, typeVUrl } from "@openvod/crypto";
 
 export type SignMode = "s3_presign" | "cdn_url_auth" | "custom";

@@ -179,6 +179,8 @@ function trustedOriginsValidator(): Validator {
 /** 非密钥键：键名 → { env 兜底, 校验器 }（密钥键见 SECRET_META）。Record 形态便于字符串索引 */
 const PLAIN_META: Record<string, { env?: string; validate: Validator } | undefined> = {
   [SETTING_KEYS.s3Endpoint]: { env: "S3_ENDPOINT", validate: urlValidator("S3 端点") },
+  // 可选：同桶内网 / 本机端点（仅 Worker 取源片与水印图使用，2026-10-17）
+  [SETTING_KEYS.s3EndpointInternal]: { env: "S3_ENDPOINT_INTERNAL", validate: urlValidator("S3 内网端点") },
   [SETTING_KEYS.s3Region]: { env: "S3_REGION", validate: (v) => v.trim() },
   [SETTING_KEYS.s3Bucket]: { env: "S3_BUCKET", validate: (v) => v.trim() },
   [SETTING_KEYS.s3AccessKeyId]: { env: "S3_ACCESS_KEY_ID", validate: (v) => v.trim() },

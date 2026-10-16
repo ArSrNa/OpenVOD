@@ -28,7 +28,7 @@
    - 内置实现：`s3_presign`（现有 presignGet 的签名段重构为接口实现）与 `edgeone_url_auth`（TypeA，`packages/crypto` 废弃实现为起点，先补 fixtures 再接入）；
    - **自定义提供者**：自托管自编译用户实现接口并在装配处注册（Go 编译期注入 / TS 工厂注入），覆盖非 EO 的 CDN / 存储组合；**运行时动态插件明确不做**（安全面与复杂度，理由同 ADR-0005 仅保留单一存储驱动）；
    - 文档义务：spec §6.7 给出契约、TypeA 算法与 fixtures 要求，使实现可由 AI / 开发照文档独立完成并自验。
-4. **消费范围**：所有 GET 形态签名 URL 统一走提供者——分发端分片直出（spec §6.2）、管理端 original / 封面 / 水印图 302、Worker 取水印图（ffmpeg 输入）。清单 / 密钥 / 字幕内容仍走分发端自身 token（typ=m/k/v，§6.2 / §7.5），**不变**（它们是分发端函数路由，不经对象存储）。签名只改变「播放端可见的 URL 形态」：清单读取（`storage.get`）、上传 / 转码写路径仍走 S3 SDK，存储凭据面不变。
+4. **消费范围**：所有 GET 形态签名 URL 统一走提供者——分发端分片直出（spec §6.2）、管理端 original / 封面 / 水印图 302（**2026-10-17 修订**：Worker 取源片 / 水印图移出消费范围——改存储直连 + 内网端点择优，见修订记录）。清单 / 密钥 / 字幕内容仍走分发端自身 token（typ=m/k/v，§6.2 / §7.5），**不变**（它们是分发端函数路由，不经对象存储）。签名只改变「播放端可见的 URL 形态」：清单读取（`storage.get`）、上传 / 转码写路径仍走 S3 SDK，存储凭据面不变。
 5. **缓存指引随模式**（写入部署文档）：`s3_presign` → 缓存键含完整 query 或带 query 不缓存（2026-10-05 口径）；`cdn_url_auth` → 缓存键含 query（TypeA 窗口内可命中），CDN TTL ≤ 签名窗口。
 6. **切换运维**：settings 30s 快照生效、无需重启；在途会话已改写清单按旧模式有效至过期，新播放即时新模式；切换后 CDN 全量刷新一次。
 
@@ -66,6 +66,7 @@
 
 ## 修订记录
 
+- **2026-10-17（Worker 取源通路：不再经签名提供者）**：Worker 取**源片 / 水印图**从「走 GET 签名提供者」改为**存储端点直连**——候选通路 = 内网端点（新设置键 `s3_endpoint_internal`，可选；env 兜底 `S3_ENDPOINT_INTERNAL`）→ 存储直连（SigV4，不做 CDN origin 替换）→ 签名提供者（CDN，兜底）；首次取源对候选各做一次真实 Range 读实测吞吐、选最快者并缓存（`apps/worker/src/source-fetch.ts`，探测结果打 worker 日志）。触因：`cdn_url_auth`（及 `s3_presign` + 加速域名）下 Worker 取源被引到 CDN 域名，实测**同对象、同一时刻 CDN 0.71 MB/s vs COS 直连 44–103 MB/s（60–140 倍）**，而 Worker 串行消费任务——取源耗时直接决定任务墙钟时长（166MB 源片：CDN ≈ 4 分钟 vs 直连 ≈ 2 秒）。边界：**播放端 / 管理端浏览器可见 URL 的签名形态不变**（仍按 `storage_sign_mode` 生成）；Worker 自己持有存储凭据、不面向终端，没有「缓存命中率 / 边缘鉴权」诉求，绕开提供者不损失能力。内网端点只写入取源路径，`put` / `list` / `stat` 等管理面仍走 `s3_endpoint`。
 - **2026-10-17（EO 鉴权方式全系内置）**：`cdn_url_auth` 内置实现从仅方式 A 扩展为 **EO Token 鉴权官方 5 种方式全部内置**（A/B/C/D/V）——新增设置键 `storage_cdn_auth_type`（默认 `a`，与 EO 控制台 Token 鉴权「鉴权方式」一一对应）；算法实现落 `@openvod/crypto`（`edgeone.ts`）与 Go `blob`（同式手工对齐），新增共享 fixtures `url-sign-eo-methods-v1.json`（含官方示例向量，TS / Go 测试同源防漂移）；管理端 storage 组新增「CDN 鉴权方式」下拉（env 兜底 `STORAGE_CDN_AUTH_TYPE`）；B/C 为路径前缀式（节点验签后剥离回源，规则引擎匹配需正则），V 的 `t` 为过期时刻（窗口对齐值 + 1 窗，EO 300s 容差）；**非 EO 的 CDN 鉴权算法维持不内置**（走 `custom`——本条与同日实现一起明确了「先接 EO、其他暂缓」的边界）。同日补充：方式 A 的鉴权参数名升级为设置项 `storage_cdn_auth_param`（默认 `sign`），方式 D 的两个参数名同样开放（`storage_cdn_auth_token_param` / `storage_cdn_auth_time_param`，默认 `token` / `t`，两者不可相同）——形状均为 1–100 位字母 / 数字 / 下划线，与 CDN 控制台「鉴权加密串参数名称」对应；管理端设置 UI 拆出**「分发设置」分组**（`delivery`）——CDN 加速与资产 URL 鉴权字段（`storage_sign_mode` / `storage_cdn_base_url` / `storage_cdn_auth_*` / `storage_custom_signer`）自「存储设置」迁入，**键名与三端消费逻辑不变**（仅 UI 分组与保存组合校验位置调整）。
 - **2026-10-09（实现落地 + `custom` 扩展）**：
   1. **实现落地**：storage（`packages/storage/src/signer.ts`）与 Go（`apps/delivery/internal/blob/signer.go`）双侧 `UrlSigner` / `URLSigner` 抽象与 `s3_presign` / `cdn_url_auth` 内置实现；TypeA 经 EO 官方文档核对（**timestamp 为十进制** Unix 秒）并产出共享 fixtures `packages/crypto/fixtures/url-sign-v1.json`（含官方示例向量，TS / Go 测试同源防漂移）；设置键登记于 `packages/shared`（本仓 settings 机制实际不经 contracts schema，实现清单第 3 项据此调整）；管理端设置 UI（storage 组四字段 + 保存组合校验）+ `api.md` §1.8 补录 + env 兜底 `STORAGE_SIGN_MODE` / `STORAGE_CDN_AUTH_KEY` / `STORAGE_CDN_AUTH_TTL_SEC` / `STORAGE_CUSTOM_SIGNER`；

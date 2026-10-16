@@ -286,8 +286,8 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 
 ### 5.1 状态机与认领
 
-- 任务状态：`QUEUED → PROBING → ENCODING → PACKAGING → DONE`；异常 → `FAILED`（取值与 Prisma `JobStatus` 逐字一致，`@openvod/contracts JOB_STATUSES`）；
-- **认领用 CAS 条件更新**：候选 = `status ∈ {QUEUED,PROBING,ENCODING,PACKAGING}` 且（`lease_until` 为空或已过期）→ 条件更新为 `PROBING`、续 `lease_until`、`attempts+1`、写 `started_at`；`updateMany` 受影响行数 = 1 才算认领成功。MySQL 与 SQLite 语义一致，多实例并发下只有一个实例能拿到；ADR-0008 里的 MySQL `FOR UPDATE SKIP LOCKED` 作为**高并发演进项**（v1 不做方言分支）；
+- 任务状态：`QUEUED → PROBING → DOWNLOADING → ENCODING → PACKAGING → DONE`；异常 → `FAILED`（取值与 Prisma `JobStatus` 逐字一致，`@openvod/contracts JOB_STATUSES`）。**2026-10-17 增 `DOWNLOADING`（拉取源片）**：源片先流式拉取到任务临时目录再转码——转码输入本地文件、ladder 多档只下载一次、「拉取源片」与「转码」在管理端可区分（ADR-0008 修订）。`transcode_jobs.progress`（0–100）记录**当前阶段**进度：`DOWNLOADING` = 已下载字节/总字节；`ENCODING` = （已完成档位数 + 当前档位 `out_time`/源时长）/ 总档位数（argv 注入 `-progress pipe:1`，Worker 流式解析）；认领时与其余阶段为 `NULL`；
+- **认领用 CAS 条件更新**：候选 = `status ∈ {QUEUED,PROBING,DOWNLOADING,ENCODING,PACKAGING}` 且（`lease_until` 为空或已过期）→ 条件更新为 `PROBING`、续 `lease_until`、`attempts+1`、写 `started_at`、清 `progress`；`updateMany` 受影响行数 = 1 才算认领成功。MySQL 与 SQLite 语义一致，多实例并发下只有一个实例能拿到；ADR-0008 里的 MySQL `FOR UPDATE SKIP LOCKED` 作为**高并发演进项**（v1 不做方言分支）；
 - 执行期按 `leaseMs/3` 心跳续期 → 长转码任务不会被重派；
 - Worker 崩溃 → lease 过期 → 任务被重新认领（`attempts+1`）；`attempts` 超过 `WORKER_MAX_ATTEMPTS`（默认 3）→ 直接判 `FAILED`，防止崩溃循环；
 - **同一媒资 + 同一模板同时只允许一个未终结任务**：管理端发起时校验（409）。产物按 `proceed/{id}/{templateId}/` 分树存放（§1.3），不同模板互不覆盖，故**同一媒资可并行不同模板的转码**；单次 submit 可多选模板，每个模板各入队一条任务。
@@ -451,7 +451,7 @@ http 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_s
 
 > 2026-10-05 CDN 陈旧缓存实测（§6.5 踩坑条目）暴露 presign 直出架构的缓存两难：预签名 query 每次播放都不同 → 缓存键含 query 则命中率归零、忽略 query 则陈旧分片 + 无签名命中缓存绕过鉴权。本节把「URL 签名形态」升级为管理端可配置项并开放自定义提供者，决策源 [ADR-0019](./decisions/0019-signing-mode-pluggable.md)。
 
-**不变量：桶恒为私有**（ADR-0005 纪律，任何模式都不改变桶策略）；可变的只有「**签名发生在 S3 还是 CDN**」。`storage_sign_mode` 作用于所有 GET 形态签名 URL——分发端分片直出（§6.2 第 4 步）、管理端 original / 封面 / 水印图 302、Worker 取水印图喂 ffmpeg：
+**不变量：桶恒为私有**（ADR-0005 纪律，任何模式都不改变桶策略）；可变的只有「**签名发生在 S3 还是 CDN**」。`storage_sign_mode` 作用于所有 GET 形态签名 URL——分发端分片直出（§6.2 第 4 步）、管理端 original / 封面 / 水印图 302（**2026-10-17 修订**：Worker 取源片 / 水印图不再经签名提供者——改为存储直连、可选内网端点 `s3_endpoint_internal`，Worker 实测吞吐择优，见 ADR-0019 修订记录）：
 
 | 模式 | 签名方 | URL 形态 | 回源与验签 | 缓存行为 |
 |---|---|---|---|---|

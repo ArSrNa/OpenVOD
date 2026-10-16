@@ -5,8 +5,10 @@
 // 且**只在快照真正变化时**广播全量 —— 浏览器侧零轮询，仅在变化时收到一帧。
 // 本文件保持纯逻辑（无 DB / 无副作用，调度器可注入），单测见 apps/admin/test/jobs-stream.test.ts。
 
-/** 未终结状态（与 spec.md §5.1 状态机一致）：存在即按「活跃间隔」观察 */
-const ACTIVE_STATUSES = new Set(["QUEUED", "PROBING", "ENCODING", "PACKAGING"]);
+import { ACTIVE_JOB_STATUSES } from "@openvod/contracts";
+
+/** 未终结状态（唯一真相源在 @openvod/contracts）：存在即按「活跃间隔」观察 */
+const ACTIVE_STATUSES = new Set<string>(ACTIVE_JOB_STATUSES);
 
 /** 有未终结任务时的观察间隔：任务在跑，状态迁移较密 */
 const DEFAULT_ACTIVE_INTERVAL_MS = 1500;

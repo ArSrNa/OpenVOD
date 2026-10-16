@@ -310,6 +310,9 @@ export const SETTING_KEYS = {
   setupCompleted: "setup_completed",
   // ---- 存储（ADR-0005：仅 S3 兼容；明文键） ----
   s3Endpoint: "s3_endpoint",
+  /** 可选：同桶的内网 / 本机端点（仅 Worker 取源片与水印图使用，2026-10-17）。
+   *  CNB 上填 COS 内网端点（cos-internal.*），自托管填 127.0.0.1:<端口>；留空 = 用 s3_endpoint 直连。 */
+  s3EndpointInternal: "s3_endpoint_internal",
   s3Region: "s3_region",
   s3Bucket: "s3_bucket",
   s3AccessKeyId: "s3_access_key_id",

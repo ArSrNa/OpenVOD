@@ -171,6 +171,7 @@ bun scripts/dev.ts stop                 # 停止（worker → player → deliver
 - 日志与 pid 在 `.run/`（已忽略）；启动前自动补依赖与 Prisma 生成物（两份客户端）。
 - 探测方式：`curl -fsS http://localhost:${ADMIN_PORT:-8787}/healthz`、`http://localhost:${DELIVERY_LISTEN#:}/healthz`；**worker 无 HTTP 端口，存活判定用 `.run/worker.pid`**。
 - 后台服务用 `setsid` 起独立进程组，停止时整组收掉（`bun --watch` 吞 SIGTERM → TERM 宽限后 SIGKILL 兜底）。
+- `worker` 用 `bun run start` 启动（**无 `--watch`**，2026-10-17 起）：Worker 串行消费转码任务，`--watch` 会在保存任何被 import 的文件时重启并**腰斩正在跑的 ffmpeg**（任务停在 ENCODING、lease 过期后被反复重认领，实测 9 个任务全部卡死）。开发 Worker 代码要热重载时用 `task dev:worker`（`bun --watch`，前台）。
 - ⚠️ **worker 是转码队列的唯一消费者**：只起 admin 而不起 worker 时，管理端发起的任务会一直停在「排队中」（`transcode_jobs.attempts=0`、`lease_until` 为空即"从未被认领"）；启动 admin 会自动带起 worker（`--no-worker` 关闭）。
 
 ### 5.2 单服务前台（调试用）
@@ -179,11 +180,11 @@ bun scripts/dev.ts stop                 # 停止（worker → player → deliver
 |---|---|---|
 | `bun scripts/dev.ts admin` | 管理端（`ADMIN_PORT`） | 前台，`next dev`；自动加载根 `.env`、补依赖与生成物。**并会自动后台启动 Worker**（日志 `.run/worker.log`），退出（含 Ctrl-C）时一并停掉；若已有 Worker 在跑则沿用、退出时不动它 |
 | `bun scripts/dev.ts delivery` | 分发端（`DELIVERY_LISTEN`） | 前台；每次增量 `go build` 到 `.run/delivery`；`DELIVERY_DATABASE_URL` 为本地占位时自动回退 `DATABASE_URL` |
-| `bun scripts/dev.ts worker` | Worker | 前台单跑（观察认领 / 转码日志）；需 `ffmpeg`/`ffprobe` |
+| `bun scripts/dev.ts worker` | Worker | 前台单跑（观察认领 / 转码日志）；无 `--watch`（见 §5.1）；需 `ffmpeg`/`ffprobe` |
 | `bun scripts/dev.ts player` | 播放演示 App（`PLAYER_PORT`） | 前台 `next dev`；免登录播放端 Demo（spec.md §11），播放依赖分发端与预览账号（`PLAYER_PREVIEW_*`，回退 `DELIVERY_PREVIEW_*`） |
 | `task dev:admin` | 管理端（`ADMIN_PORT`） | `next dev` + `.env` 注入；**注意：此路径不自动起 Worker**，转码需另开 `task dev:worker` |
 | `task dev:delivery` | 分发端（`DELIVERY_LISTEN`） | `go run .`（含 `.env` 注入） |
-| `task dev:worker` | Worker | `bun --watch`，需 `ffmpeg`/`ffprobe` |
+| `task dev:worker` | Worker | `bun --watch`（改 Worker 代码热重载用），需 `ffmpeg`/`ffprobe` |
 
 ### 5.3 播放链路本地调试（M3；规则见 spec.md §6）
 

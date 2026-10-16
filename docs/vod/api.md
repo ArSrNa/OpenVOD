@@ -278,7 +278,7 @@ submit 时水印内容**现读现快照**进 `transcode_jobs.template_snapshot.w
 
 | 端点 | 请求 | 成功响应 | 主要错误 |
 |---|---|---|---|
-| `GET /api/admin/jobs` | —（内部固定取 200 条） | `200 {total, items[]}`；任务 = `{id, media_id, media_title\|null, status, template_id\|null, template_name\|null, attempts, lease_active, last_error\|null, created_at, started_at\|null, finished_at\|null}`；`status ∈ QUEUED\|PROBING\|ENCODING\|PACKAGING\|DONE\|FAILED` | `500` |
+| `GET /api/admin/jobs` | —（内部固定取 200 条） | `200 {total, items[]}`；任务 = `{id, media_id, media_title\|null, status, template_id\|null, template_name\|null, attempts, progress\|null, lease_active, last_error\|null, created_at, started_at\|null, finished_at\|null}`；`status ∈ QUEUED\|PROBING\|DOWNLOADING\|ENCODING\|PACKAGING\|DONE\|FAILED`；`progress` = 当前阶段百分比（0–100，仅 `DOWNLOADING` / `ENCODING` 阶段有值，其余为 `null`） | `500` |
 | `GET /api/admin/jobs/stream` | —（SSE） | `200 text/event-stream`；头 `Cache-Control: no-store, no-transform`、`X-Accel-Buffering: no`；事件 `jobs`（全量快照，连上即回放）、`ping`（15s 保活）；**10 分钟主动断开**由 EventSource 重连 | `401`（JSON 信封，非 SSE 流） |
 | `POST /api/admin/jobs/{id}/stop` | — | `200 {id, status:"FAILED"}`（写 `lastError`、清租约） | `404`；`409` 执行中且租约有效 |
 | `POST /api/admin/jobs/{id}/restart` | — | `200 {id, status:"QUEUED"}`（`attempts=0`、清错误与租约） | `404`；`409` 不可重启 |
@@ -305,7 +305,7 @@ submit 时水印内容**现读现快照**进 `transcode_jobs.template_snapshot.w
 
 | 端点 | 请求 | 成功响应 | 主要错误 |
 |---|---|---|---|
-| `GET /api/admin/stats` | — | `200 {media{total,ready,not_ingested}, jobs{active,queued,probing,encoding,packaging}, users{total,active,disabled}, storage{used_bytes}, subtitles{total,media_count}, products{total,media_count}, metadata{total,probe,custom,other}}` | `500` |
+| `GET /api/admin/stats` | — | `200 {media{total,ready,not_ingested}, jobs{active,queued,probing,downloading,encoding,packaging}, users{total,active,disabled}, storage{used_bytes}, subtitles{total,media_count}, products{total,media_count}, metadata{total,probe,custom,other}}` | `500` |
 | `GET /api/admin/settings?group=<playback\|storage\|delivery\|login\|security\|worker>` | — | `200 {group, revision, fields[{key,label,value\|null,source:"db"\|"env"\|"default",secret,configured,overridden}], restart_required[]}`（`secret` 字段 `value` 恒 `null`）；`group=playback` 另附兼容字段 `playback_base_url` / `env_public_base_url` | `400` 未知分组；`500` |
 | `PUT /api/admin/settings` | `Content-Type: application/json`；`{group, revision, values{key:value}}`（≤64 KiB；兼容旧调用 `{playback_base_url}`） | `200` 同 GET 结构 | `400` 未知分组 / 缺 revision / 未登记键 / 无修改 / 约束不满足；`403` Origin 或 `sec-fetch-site: cross-site`；`409` revision 冲突；`413` / `415`；`500` |
 

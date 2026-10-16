@@ -2,6 +2,7 @@
 // 判定维度 = 分辨率 / 帧率 / 码率：低于源的维度按模板降级；不低于源的维度取源值；
 // 三维度均不低于源 → 跳过；全档跳过由 Worker 走 compileSourceMatched 兜底出片。
 import { describe, expect, test } from "bun:test";
+import { INPUT_RW_TIMEOUT_US } from "../src/ffmpeg-input";
 import { buildKeyInfoFile } from "../src/index";
 import {
   compileKeepOriginal,
@@ -190,7 +191,7 @@ describe("规则 4：自适应分辨率", () => {
     expect(executed(plans)).toHaveLength(1);
     expect(plans[0].width).toBe(1920);
     expect(plans[0].height).toBe(960);
-    expect(plans[0].argv).toContain("scale=1920:960:force_original_aspect_ratio=decrease");
+    expect(plans[0].argv).toContain("scale=1920:960:force_original_aspect_ratio=decrease:force_divisible_by=2");
   });
 
   test("源已在约束内（1600x900 + 宽≤1920）：跳过（open-questions #18）", () => {
@@ -231,6 +232,22 @@ describe("规则 4：自适应分辨率", () => {
     );
     expect(plans[0].width % 2).toBe(0);
     expect(plans[0].height % 2).toBe(0);
+  });
+
+  test("回归（2026-10-17）：源码宽高比与目标框不一致 → scale 强制偶数，防编码器拒开", () => {
+    // force_original_aspect_ratio 会按源宽高比**重算**一维尺寸：2114×900 + box 1920×816
+    // 在 ffmpeg 里实际算出 1917×816（宽奇数）→ libx265 报
+    // "Picture width must be an integer multiple of the specified chroma subsampling"
+    // 拒绝打开编码器（线上 9 个任务停摆的根因之一）。force_divisible_by=2 收敛为 1916×816。
+    const plans = compileTemplate(
+      params({ codec: "libx265", resolutions: [{ mode: "adaptive", max_width: 1920 }] }),
+      { width: 2114, height: 900, fps: 30 },
+      OPTS,
+    );
+    expect(executed(plans)).toHaveLength(1);
+    expect(plans[0].width).toBe(1920);
+    expect(plans[0].height).toBe(816);
+    expect(plans[0].argv).toContain("scale=1920:816:force_original_aspect_ratio=decrease:force_divisible_by=2");
   });
 });
 
@@ -290,7 +307,7 @@ describe("保持原分辨率档（mode=source）", () => {
     expect(exec[0].width).toBe(1920);
     expect(exec[0].height).toBe(1080);
     expect(exec[0].argv).not.toContain("-vf");
-    expect(exec[1].argv).toContain("scale=1280:720:force_original_aspect_ratio=decrease");
+    expect(exec[1].argv).toContain("scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2");
   });
 });
 
@@ -557,5 +574,70 @@ describe("水印接入 argv 编译（spec.md §10.4）", () => {
     const argv = compileKeepOriginal({ input: OPTS.input, outDir: "/tmp/out/1080p" });
     expect(argv).toContain("-c");
     expect(argv).not.toContain("-filter_complex");
+  });
+});
+
+// 网络读超时（2026-10-17 回归）：源片与水印图都经预签名 URL 由 ffmpeg 网络拉取，
+// CDN 停滞若无上限会把单任务悬挂到 6h 兜底超时——Worker 串行消费，一个挂死的任务
+// 就堵住整个队列（实测一次 `-c copy` 被拖 10 分钟以上，9 个任务停摆）。
+describe("网络读超时（-rw_timeout）", () => {
+  const IMAGE_WM = {
+    id: "cwmkimg0000000000000001",
+    name: "图片水印",
+    type: "image",
+    params: {
+      type: "image",
+      anchor: "bottom_right",
+      offset_x: -20,
+      offset_y: -20,
+      opacity: 100,
+      blend: "normal",
+      size: { mode: "percent", width: 20 },
+    },
+    image_key: "watermark/cwmkimg0000000000000001.png",
+    image_ext: "png",
+    image_width: 240,
+    image_height: 120,
+  };
+
+  /** 每个 `-i` 之前两参必须恰为 `-rw_timeout <us>` */
+  const allInputsGuarded = (argv: string[]) =>
+    argv.every(
+      (a, i) => a !== "-i" || (argv[i - 2] === "-rw_timeout" && argv[i - 1] === String(INPUT_RW_TIMEOUT_US)),
+    );
+
+  test("变体 argv：主输入前注入 rw_timeout", () => {
+    const argv = compileTemplate(params(), { width: 3840, height: 2160, fps: null }, OPTS)[0].argv!;
+    expect(argv.slice(0, 3)).toEqual(["-y", "-rw_timeout", String(INPUT_RW_TIMEOUT_US)]);
+    expect(allInputsGuarded(argv)).toBe(true);
+  });
+
+  test("水印路径：主输入与图片第二输入都受保护", () => {
+    const argv = compileTemplate(
+      params({ resolutions: [{ mode: "fixed", width: 1280, height: 720 }] }),
+      { width: 1920, height: 1080, fps: 60 },
+      { ...OPTS, watermark: { snapshot: IMAGE_WM, imageUrl: "https://example.invalid/wm.png" } } as Parameters<
+        typeof compileTemplate
+      >[2],
+    )[0].argv!;
+    expect(argv.filter((a) => a === "-i")).toHaveLength(2);
+    expect(allInputsGuarded(argv)).toBe(true);
+  });
+
+  test("keep_original（-c copy）：同样注入 rw_timeout", () => {
+    const argv = compileKeepOriginal({ input: OPTS.input, outDir: "/tmp/out/orig" });
+    expect(argv.slice(0, 3)).toEqual(["-y", "-rw_timeout", String(INPUT_RW_TIMEOUT_US)]);
+    expect(allInputsGuarded(argv)).toBe(true);
+  });
+
+  test("compileSourceMatched 兜底档（含水印）同样受保护", () => {
+    const plan = compileSourceMatched(
+      params(),
+      { width: 1920, height: 1080, fps: 60 },
+      { ...OPTS, watermark: { snapshot: IMAGE_WM, imageUrl: "https://example.invalid/wm.png" } } as Parameters<
+        typeof compileTemplate
+      >[2],
+    );
+    expect(allInputsGuarded(plan.argv!)).toBe(true);
   });
 });

@@ -28,6 +28,7 @@ enum MediaStatus {
 enum JobStatus {
   QUEUED
   PROBING
+  DOWNLOADING
   ENCODING
   PACKAGING
   DONE
@@ -283,6 +284,8 @@ model TranscodeJob {
   attempts   Int       @default(0)
   /// Worker 心跳续期；崩溃后过期重派
   leaseUntil DateTime? @map("lease_until")
+  /// 当前阶段进度（0–100；DOWNLOADING / ENCODING 阶段有意义，其余为 null）
+  progress   Int?
   lastError  String?   @map("last_error")
   startedAt  DateTime? @map("started_at")
   finishedAt DateTime? @map("finished_at")

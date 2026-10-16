@@ -17,6 +17,7 @@ import {
   VideoCameraOutlined,
 } from "@ant-design/icons";
 import { PageContainer, ProCard, ProLayout } from "@ant-design/pro-components";
+import { ACTIVE_JOB_STATUSES } from "@openvod/contracts";
 import { App, Badge, Dropdown, Empty, Spin, Typography } from "antd";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
@@ -138,8 +139,8 @@ function UploadMenuBadge() {
   return <Badge count={count} size="small" />;
 }
 
-// 进行中转码任务状态（同 JobsManager 的 ACTIVE：未终结即计入，spec.md §5.1 状态机）
-const JOBS_ACTIVE = new Set(["QUEUED", "PROBING", "ENCODING", "PACKAGING"]);
+// 进行中转码任务状态（唯一真相源在 @openvod/contracts：未终结即计入，spec.md §5.1 状态机）
+const JOBS_ACTIVE = new Set<string>(ACTIVE_JOB_STATUSES);
 
 /**
  * 「转码任务」菜单项角标（2026-10-01 用户定）：存在进行中任务时显示数量，无则不渲染。

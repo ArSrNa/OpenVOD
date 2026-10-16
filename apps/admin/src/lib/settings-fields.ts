@@ -33,6 +33,13 @@ export const SETTINGS_GROUPS = {
     description: "配置 S3 兼容存储（COS / MinIO）。更换桶或根前缀不会迁移已有资产，已有媒资可能暂时不可访问；CDN 加速与资产 URL 鉴权在「分发设置」。",
     fields: [
       { key: "s3_endpoint", label: "S3 Endpoint", type: "text", placeholder: "https://cos.ap-shanghai.myqcloud.com" },
+      {
+        key: "s3_endpoint_internal",
+        label: "S3 内网端点（可选）",
+        type: "text",
+        placeholder: "https://cos-internal.ap-guangzhou.myqcloud.com",
+        help: "与主端点同桶的内网 / 本机地址，仅 Worker 取源片与水印图使用（播放端 / 管理端不受影响）：腾讯云环境填 COS 内网端点，自托管填 http://127.0.0.1:<端口>。留空 = 用主端点直连；Worker 会实测各通路吞吐并选最快的一条。",
+      },
       { key: "s3_region", label: "Region", type: "text", placeholder: "ap-shanghai" },
       { key: "s3_bucket", label: "Bucket", type: "text" },
       { key: "s3_access_key_id", label: "Access Key ID", type: "text" },

@@ -291,3 +291,33 @@ test("工厂：cdn_url_auth 按 cdnAuthType 装配（B 方式形态）", async (
   const url = await signer.sign("proceed/med00001/tpl00001/seg-000.ts", 600);
   expect(url).toMatch(/^https:\/\/cdn\.example\.com\/\d{12}\/[0-9a-f]{32}\/proceed\/med00001\/tpl00001\/seg-000\.ts$/);
 });
+
+test("createEdgeOneSigner：方式 A 鉴权参数名可配置（storage_cdn_auth_param，默认 sign）", async () => {
+  const key = "0123456789abcdef0123456789abcdef";
+  const nowSec = 1721026800;
+  const base = { baseUrl: "https://cdn.example.com", key, authType: "a", windowTtlSec: 3600, nowSec };
+  const def = await createEdgeOneSigner(base).sign("a/b.ts", 60);
+  expect(def).toContain("?sign=");
+  const custom = await createEdgeOneSigner({ ...base, authParam: "token" }).sign("a/b.ts", 60);
+  expect(custom).toContain("?token=");
+  expect(custom).not.toContain("?sign=");
+  // 工厂透传（cdnAuthParam）
+  const viaFactory = createUrlSigner({
+    signMode: "cdn_url_auth",
+    cdnBaseUrl: "https://cdn.example.com",
+    cdnAuthKey: key,
+    cdnAuthTtlSec: 3600,
+    cdnAuthType: "a",
+    cdnAuthParam: "video_sign",
+  });
+  expect(await viaFactory.sign("a/b.ts", 60)).toContain("?video_sign=");
+});
+
+test("createEdgeOneSigner：非法鉴权参数名报错（1–100 位字母 / 数字 / 下划线）", () => {
+  expect(() => createEdgeOneSigner({ baseUrl: "https://cdn.example.com", key: "k", authParam: "bad name" })).toThrow(
+    /storage_cdn_auth_param/,
+  );
+  expect(() => createEdgeOneSigner({ baseUrl: "https://cdn.example.com", key: "k", authParam: "签名" })).toThrow(
+    /storage_cdn_auth_param/,
+  );
+});

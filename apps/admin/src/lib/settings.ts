@@ -195,6 +195,16 @@ const PLAIN_META: Record<string, { env?: string; validate: Validator } | undefin
     env: "STORAGE_CDN_AUTH_TYPE",
     validate: enumValidator("CDN 鉴权方式", [...CDN_AUTH_TYPES]),
   },
+  [SETTING_KEYS.storageCdnAuthParam]: {
+    env: "STORAGE_CDN_AUTH_PARAM",
+    validate: (v) => {
+      const raw = v.trim();
+      if (raw && !/^[A-Za-z0-9_]{1,100}$/.test(raw)) {
+        throw new SettingsError("bad_request", "鉴权参数名只能包含 1–100 位字母、数字或下划线（与 CDN 控制台「鉴权加密串参数名称」一致）");
+      }
+      return raw;
+    },
+  },
   [SETTING_KEYS.storageCustomSigner]: {
     env: "STORAGE_CUSTOM_SIGNER",
     validate: (v) => {
@@ -441,6 +451,8 @@ export interface StorageSnapshot {
   cdnAuthKey: string;
   /** EO Token 鉴权方式（a | b | c | d | v，默认 a；与 CDN 控制台 Token 鉴权所选方式一致） */
   cdnAuthType: string;
+  /** 方式 A 的鉴权 query 参数名（storage_cdn_auth_param，默认 sign） */
+  cdnAuthParam: string;
   cdnAuthTtlSec: number;
   customSigner: string;
   /** 存储四要素（端点 / 桶 / AK / SK）齐全才算配置完成 */
@@ -525,6 +537,7 @@ function buildSettingsSnapshot(rows: Array<{ key: string; value: string }>): Set
       signMode: get(SETTING_KEYS.storageSignMode) || "s3_presign",
       cdnAuthKey: getSecret("storage_cdn_auth_key"),
       cdnAuthType: get(SETTING_KEYS.storageCdnAuthType) || "a",
+      cdnAuthParam: get(SETTING_KEYS.storageCdnAuthParam) || "sign",
       cdnAuthTtlSec: toInt(get(SETTING_KEYS.storageCdnAuthTtlSec), 3600),
       customSigner: get(SETTING_KEYS.storageCustomSigner) || "custom",
       configured: Boolean(s3Endpoint && s3Bucket && s3Ak && s3Sk),

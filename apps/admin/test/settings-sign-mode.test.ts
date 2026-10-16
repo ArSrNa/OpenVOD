@@ -72,3 +72,23 @@ describe("storage_cdn_auth_type（ADR-0019：EO Token 鉴权方式 A/B/C/D/V）"
     expect(settingFallback("storage_cdn_auth_type", {})).toEqual({ value: "a", source: "default" });
   });
 });
+
+describe("storage_cdn_auth_param（ADR-0019：方式 A 鉴权参数名）", () => {
+  test("形状校验：1–100 位字母 / 数字 / 下划线；空串回退默认", () => {
+    expect(normalizeSettingValue("storage_cdn_auth_param", " sign ")).toBe("sign");
+    expect(normalizeSettingValue("storage_cdn_auth_param", "video_sign1")).toBe("video_sign1");
+    expect(normalizeSettingValue("storage_cdn_auth_param", "")).toBe("");
+    expect(() => normalizeSettingValue("storage_cdn_auth_param", "bad name")).toThrow(SettingsError);
+    expect(() => normalizeSettingValue("storage_cdn_auth_param", "签名")).toThrow(SettingsError);
+    expect(() => normalizeSettingValue("storage_cdn_auth_param", "a-b")).toThrow(SettingsError);
+  });
+
+  test("默认值与 env 兜底（STORAGE_CDN_AUTH_PARAM）", () => {
+    expect(SETTING_DEFAULTS["storage_cdn_auth_param"]).toBe("sign");
+    expect(settingFallback("storage_cdn_auth_param", { STORAGE_CDN_AUTH_PARAM: "token" })).toEqual({
+      value: "token",
+      source: "env",
+    });
+    expect(settingFallback("storage_cdn_auth_param", {})).toEqual({ value: "sign", source: "default" });
+  });
+});

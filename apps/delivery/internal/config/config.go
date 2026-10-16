@@ -36,6 +36,9 @@ type StorageConfig struct {
 	// CDNAuthType EO Token 鉴权方式（STORAGE_CDN_AUTH_TYPE / storage_cdn_auth_type：
 	// a | b | c | d | v，默认 a；与 CDN 控制台 Token 鉴权所选方式一致）
 	CDNAuthType string
+	// CDNAuthParam 方式 A 的鉴权 query 参数名（STORAGE_CDN_AUTH_PARAM / storage_cdn_auth_param，
+	// 默认 sign；1–100 位字母/数字/下划线；与 CDN 控制台「鉴权加密串参数名称」一致）
+	CDNAuthParam string
 	// CustomSigner custom 模式的提供者名（STORAGE_CUSTOM_SIGNER，默认 "custom"）
 	CustomSigner string
 }
@@ -149,6 +152,7 @@ func Load() (*Config, error) {
 		CDNAuthKey:    os.Getenv("STORAGE_CDN_AUTH_KEY"),
 		CDNAuthTTLSec: getEnvInt("STORAGE_CDN_AUTH_TTL_SEC", 3600),
 		CDNAuthType:   strings.TrimSpace(os.Getenv("STORAGE_CDN_AUTH_TYPE")),
+		CDNAuthParam:  strings.TrimSpace(os.Getenv("STORAGE_CDN_AUTH_PARAM")),
 		CustomSigner:  strings.TrimSpace(os.Getenv("STORAGE_CUSTOM_SIGNER")),
 	}
 

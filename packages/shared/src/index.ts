@@ -322,6 +322,8 @@ export const SETTING_KEYS = {
   storageCdnAuthKey: "storage_cdn_auth_key",
   /** EO Token 鉴权方式（cdn_url_auth 模式）：与 CDN 控制台 Token 鉴权所选方式一致（a | b | c | d | v） */
   storageCdnAuthType: "storage_cdn_auth_type",
+  /** 方式 A 的鉴权 query 参数名（CDN 控制台「鉴权加密串参数名称」，默认 sign，1–100 位字母/数字/下划线） */
+  storageCdnAuthParam: "storage_cdn_auth_param",
   /** 鉴权 URL 有效期；timestamp 按 ttl 窗口对齐，窗口内 URL 稳定（缓存友好） */
   storageCdnAuthTtlSec: "storage_cdn_auth_ttl_sec",
   /** custom 模式的提供者名（TS registerUrlSigner / Go RegisterURLSigner 的注册名；默认 "custom"） */
@@ -380,6 +382,7 @@ export const SETTING_DEFAULTS: Record<string, string> = {
   [SETTING_KEYS.storageSignMode]: "s3_presign",
   [SETTING_KEYS.storageCdnAuthTtlSec]: "3600",
   [SETTING_KEYS.storageCdnAuthType]: "a",
+  [SETTING_KEYS.storageCdnAuthParam]: "sign",
   [SETTING_KEYS.storageCustomSigner]: "custom",
   [SETTING_KEYS.urlSignKeyKid]: "urlsign-v1",
   [SETTING_KEYS.jwtTtlSec]: String(DEFAULTS.jwtTtlSec),

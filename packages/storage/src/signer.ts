@@ -38,7 +38,7 @@ export interface EdgeOneSignerOptions {
   authType?: string;
   /** 鉴权窗口（秒，storage_cdn_auth_ttl_sec；应与 EO 控制台「有效时长」一致，为实际有效期下限） */
   windowTtlSec?: number;
-  /** 鉴权 query 参数名（仅方式 A 使用；EO 控制台自定义，默认 sign；两侧必须一致） */
+  /** 鉴权 query 参数名（仅方式 A 使用；storage_cdn_auth_param，默认 sign；两侧必须一致） */
   authParam?: string;
   /** 显式注入当前时间（测试用；缺省取系统时钟） */
   nowSec?: number;
@@ -68,7 +68,10 @@ export function createEdgeOneSigner(opts: EdgeOneSignerOptions): UrlSigner {
   if (!isEdgeOneAuthType(authType)) {
     throw new Error(`storage_cdn_auth_type 非法：${opts.authType}（可选 a | b | c | d | v，ADR-0019）`);
   }
-  const authParam = opts.authParam ?? "sign";
+  const authParam = (opts.authParam ?? "sign").trim() || "sign";
+  if (!/^[A-Za-z0-9_]{1,100}$/.test(authParam)) {
+    throw new Error("storage_cdn_auth_param 非法（1–100 位字母 / 数字 / 下划线，与 CDN 控制台「鉴权加密串参数名称」一致）");
+  }
   return {
     sign(key: string, _ttlSec: number): Promise<string> {
       // 注意：签名 path 含 root 前缀（CDN 回源桶时 URL path 即完整对象键）；
@@ -133,6 +136,8 @@ export interface UrlSignerFactoryDeps {
   cdnAuthTtlSec?: number;
   /** cdn_url_auth 的 EO 鉴权方式（storage_cdn_auth_type：a | b | c | d | v，默认 a） */
   cdnAuthType?: string;
+  /** cdn_url_auth 方式 A 的鉴权 query 参数名（storage_cdn_auth_param，默认 sign） */
+  cdnAuthParam?: string;
   customSignerName?: string;
 }
 
@@ -144,6 +149,7 @@ export function createUrlSigner(deps: UrlSignerFactoryDeps): UrlSigner {
         baseUrl: deps.cdnBaseUrl ?? "",
         key: deps.cdnAuthKey ?? "",
         authType: deps.cdnAuthType,
+        authParam: deps.cdnAuthParam,
         windowTtlSec: deps.cdnAuthTtlSec,
       });
     case "custom": {

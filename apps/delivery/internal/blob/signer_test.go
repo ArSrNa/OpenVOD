@@ -176,7 +176,7 @@ func TestEdgeOneMethodURLsAgainstFixtures(t *testing.T) {
 	f := loadMethodsFixture(t)
 	for _, method := range []string{"b", "c", "d"} {
 		for _, v := range f.Methods[method].Vectors {
-			if got := buildEdgeOneURL(method, v.Base, v.Path, v.Key, v.TimestampSec); got != v.URL {
+			if got := buildEdgeOneURL(method, v.Base, v.Path, v.Key, v.TimestampSec, TypeAAuthParam); got != v.URL {
 				t.Errorf("方式 %s 向量 %s：URL = %s, 期望 %s", method, v.Name, got, v.URL)
 			}
 		}
@@ -187,7 +187,7 @@ func TestEdgeOneMethodURLsAgainstFixtures(t *testing.T) {
 		if v.Us != "" || v.Exper != "" {
 			continue
 		}
-		if got := buildEdgeOneURL("v", v.Base, v.Path, v.Key, v.TimestampSec); got != v.URL {
+		if got := buildEdgeOneURL("v", v.Base, v.Path, v.Key, v.TimestampSec, TypeAAuthParam); got != v.URL {
 			t.Errorf("方式 V 向量 %s：URL = %s, 期望 %s", v.Name, got, v.URL)
 		}
 	}
@@ -320,6 +320,40 @@ func TestNewURLSignerModeValidation(t *testing.T) {
 	if _, err := NewURLSigner(config.StorageConfig{SignMode: "custom", CustomSigner: "missing"}, delegated); err == nil ||
 		!strings.Contains(err.Error(), "custom_signer.go") {
 		t.Errorf("custom 未注册应报错且指明注册文件: %v", err)
+	}
+}
+
+// 方式 A 的鉴权参数名可配置（storage_cdn_auth_param，默认 sign）：URL 与 CDN 控制台「鉴权加密串参数名称」一致
+func TestEdgeOneAuthParamConfigurable(t *testing.T) {
+	ctx := context.Background()
+	base := config.StorageConfig{
+		SignMode: "cdn_url_auth", CDNBaseURL: "https://cdn.example.com",
+		CDNAuthKey: "0123456789abcdef0123456789abcdef", CDNAuthTTLSec: 3600,
+	}
+	// 默认 sign
+	signer, err := NewURLSigner(base, &fakeSigner{})
+	if err != nil {
+		t.Fatalf("默认装配失败: %v", err)
+	}
+	url, _ := signer.Sign(ctx, "a/b.ts", time.Minute)
+	if !strings.Contains(url, "?sign=") {
+		t.Errorf("默认参数名应为 sign: %s", url)
+	}
+	// 自定义参数名（控制台「鉴权加密串参数名称」）
+	cfg := base
+	cfg.CDNAuthParam = "token"
+	signer, err = NewURLSigner(cfg, &fakeSigner{})
+	if err != nil {
+		t.Fatalf("自定义参数名装配失败: %v", err)
+	}
+	url, _ = signer.Sign(ctx, "a/b.ts", time.Minute)
+	if !strings.HasPrefix(url, "https://cdn.example.com/a/b.ts?token=") || strings.Contains(url, "?sign=") {
+		t.Errorf("自定义参数名未生效: %s", url)
+	}
+	// 非法参数名：装配即报错（含设置键指引）
+	cfg.CDNAuthParam = "bad name"
+	if _, err := NewURLSigner(cfg, &fakeSigner{}); err == nil || !strings.Contains(err.Error(), "storage_cdn_auth_param") {
+		t.Errorf("非法参数名应报错: %v", err)
 	}
 }
 

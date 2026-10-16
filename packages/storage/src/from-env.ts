@@ -27,6 +27,8 @@ export function createStorageFromConfig(cfg: Partial<StorageConfig>): StorageAda
     cdnAuthKey: cfg.cdnAuthKey || undefined,
     // EO Token 鉴权方式（a | b | c | d | v，默认 a）：与 CDN 控制台 Token 鉴权所选方式一致
     cdnAuthType: cfg.cdnAuthType || undefined,
+    // 方式 A 的鉴权参数名（storage_cdn_auth_param，默认 sign）
+    cdnAuthParam: cfg.cdnAuthParam || undefined,
     cdnAuthTtlSec: cfg.cdnAuthTtlSec,
     customSignerName: cfg.customSignerName || undefined,
   });
@@ -53,6 +55,7 @@ export function createStorageFromEnv(env: NodeJS.ProcessEnv = process.env): Stor
     signMode: (env.STORAGE_SIGN_MODE || "") as SignMode,
     cdnAuthKey: env.STORAGE_CDN_AUTH_KEY || "",
     cdnAuthType: env.STORAGE_CDN_AUTH_TYPE || "",
+    cdnAuthParam: env.STORAGE_CDN_AUTH_PARAM || "",
     cdnAuthTtlSec: env.STORAGE_CDN_AUTH_TTL_SEC ? Number(env.STORAGE_CDN_AUTH_TTL_SEC) : undefined,
     customSignerName: env.STORAGE_CUSTOM_SIGNER || "",
   });

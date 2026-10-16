@@ -21,10 +21,11 @@ export async function getStorage(): Promise<StorageAdapter> {
     s.forcePathStyle,
     s.cdnBaseUrl,
     s.rootPrefix,
-    // 签名方式（ADR-0019）：模式 / 密钥 / 鉴权方式 / 窗口 / 自定义提供者任一变化即重建
+    // 签名方式（ADR-0019）：模式 / 密钥 / 鉴权方式 / 参数名 / 窗口 / 自定义提供者任一变化即重建
     s.signMode,
     s.cdnAuthKey,
     s.cdnAuthType,
+    s.cdnAuthParam,
     s.cdnAuthTtlSec,
     s.customSigner,
   ].join("|");
@@ -42,6 +43,7 @@ export async function getStorage(): Promise<StorageAdapter> {
         signMode: s.signMode as SignMode,
         cdnAuthKey: s.cdnAuthKey,
         cdnAuthType: s.cdnAuthType,
+        cdnAuthParam: s.cdnAuthParam,
         cdnAuthTtlSec: s.cdnAuthTtlSec,
         customSignerName: s.customSigner,
       }),

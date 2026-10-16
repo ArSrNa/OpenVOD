@@ -312,10 +312,12 @@ submit 时水印内容**现读现快照**进 `transcode_jobs.template_snapshot.w
 分组字段：`playback`（`playback_base_url, jwt_ttl_sec, playback_session_ttl_sec, playback_manifest_ttl_sec,
 playback_subtitle_ttl_sec, cors_origins, delivery_preview_username, delivery_preview_password`）、
 `storage`（`s3_endpoint, s3_region, s3_bucket, s3_access_key_id, s3_secret_access_key, s3_force_path_style,
-storage_root_prefix, storage_sign_mode, storage_cdn_base_url, storage_cdn_auth_key, storage_cdn_auth_type,
-storage_cdn_auth_ttl_sec, storage_custom_signer`——后五项为资产 URL 签名方式（ADR-0019）：`storage_sign_mode` ∈
+storage_root_prefix`）、`delivery`（**分发设置**：`storage_sign_mode, storage_cdn_base_url,
+storage_cdn_auth_key, storage_cdn_auth_type, storage_cdn_auth_param, storage_cdn_auth_ttl_sec,
+storage_custom_signer`——CDN 加速与资产 URL 签名方式（ADR-0019）：`storage_sign_mode` ∈
 `s3_presign`（默认）| `cdn_url_auth` | `custom`，`storage_cdn_auth_key` 为 secret（MK 封装），
 `storage_cdn_auth_type` ∈ `a` | `b` | `c` | `d` | `v`（默认 `a`，与 CDN 控制台 Token 鉴权「鉴权方式」一致），
+`storage_cdn_auth_param` 默认 `sign`（仅方式 A 的鉴权参数名），
 `storage_cdn_auth_ttl_sec` 60–604800，`storage_custom_signer` 默认 `custom`；`cdn_url_auth` 保存时强制
 校验加速域名与边缘密钥齐备）、`login`（`oidc_issuer, oidc_client_id, oidc_client_secret`；
 登录方式与「重置登录密码」UI 同页维护，密码走 better-auth `/api/auth/change-password`）、

@@ -105,6 +105,7 @@ export async function loadWorkerSettings(): Promise<WorkerSettings> {
     signMode: (pick(values, "storage_sign_mode", "STORAGE_SIGN_MODE") || undefined) as SignMode | undefined,
     cdnAuthKey: secret("storage_cdn_auth_key") || process.env.STORAGE_CDN_AUTH_KEY || "",
     cdnAuthType: pick(values, "storage_cdn_auth_type", "STORAGE_CDN_AUTH_TYPE") || undefined,
+    cdnAuthParam: pick(values, "storage_cdn_auth_param", "STORAGE_CDN_AUTH_PARAM") || undefined,
     cdnAuthTtlSec: toInt(pick(values, "storage_cdn_auth_ttl_sec", "STORAGE_CDN_AUTH_TTL_SEC"), 3600),
     customSignerName: pick(values, "storage_custom_signer", "STORAGE_CUSTOM_SIGNER") || undefined,
   });

@@ -208,7 +208,7 @@ export function SettingsManager({ group = "playback" }: { group?: SettingsGroup 
         {loadError && <Alert type="error" showIcon message={loadError} action={<Button size="small" onClick={reload} disabled={disabled}>重试</Button>} style={{ marginBottom: 24 }} />}
         {saveError && <Alert type={conflict ? "warning" : "error"} showIcon message={saveError} action={conflict ? <Button size="small" onClick={reload} disabled={disabled}>重新加载</Button> : undefined} style={{ marginBottom: 24 }} />}
         {saved && <Alert type="success" showIcon message="设置已保存" description={EFFECT_DESCRIPTION} style={{ marginBottom: 24 }} />}
-        {group === "storage" && String(values["storage_sign_mode"] ?? "") === "custom" && (
+        {group === "delivery" && String(values["storage_sign_mode"] ?? "") === "custom" && (
           <Alert
             type="warning"
             showIcon
@@ -223,7 +223,7 @@ export function SettingsManager({ group = "playback" }: { group?: SettingsGroup 
             style={{ marginBottom: 24 }}
           />
         )}
-        {group === "storage" && String(values["storage_sign_mode"] ?? "") === "cdn_url_auth" && (
+        {group === "delivery" && String(values["storage_sign_mode"] ?? "") === "cdn_url_auth" && (
           <Alert
             type="info"
             showIcon

@@ -2,13 +2,13 @@
 // 桶恒为私有（ADR-0005 不变量）——可变的只是「签名发生在 S3 还是 CDN（或自定义提供者）」：
 //   - s3_presign（默认，现状）：S3 SigV4 预签名，CDN 透传回源由 S3 验签；缓存键必须含完整 query
 //     或对带 query 请求不缓存（2026-10-05 踩坑口径，spec.md §6.5）；
-//   - cdn_url_auth：CDN URL 鉴权（v1 实现 EO Token 鉴权方式 A）——URL 无 S3 签名，CDN 以控制台
-//     配置的私有回源凭证直读私有对象；URL 在 ttl 窗口内稳定，跨会话可命中缓存；
+//   - cdn_url_auth：CDN URL 鉴权（内置 EdgeOne Token 鉴权方式 A/B/C/D/V，storage_cdn_auth_type 选择）——
+//     URL 无 S3 签名，CDN 以控制台配置的私有回源凭证直读私有对象；URL 在窗口内稳定，跨会话可命中缓存；
 //   - custom：编译期注册的自定义提供者（registerUrlSigner，见 custom-signer.ts；
 //     运行时动态插件明确不做，ADR-0019）。
 // 消费范围（spec.md §6.7）：所有 GET 形态签名 URL——分发端分片直出、管理端 original / 封面 /
 // 水印图 302、Worker 取源片与水印图。写入路径（presignPut / put）不在此列，仍走 S3 SDK。
-import { typeAUrl } from "@openvod/crypto";
+import { typeAUrl, typeBUrl, typeCUrl, typeDUrl, isEdgeOneAuthType, typeVUrl } from "@openvod/crypto";
 
 export type SignMode = "s3_presign" | "cdn_url_auth" | "custom";
 
@@ -29,23 +29,34 @@ export function typeAWindowTimestamp(nowSec: number, ttlSec: number): number {
   return Math.floor((nowSec + ttlSec) / ttlSec) * ttlSec;
 }
 
-export interface EdgeOneTypeASignerOptions {
+export interface EdgeOneSignerOptions {
   /** 签名 URL 的 host（加速域名，storage_cdn_base_url 在 cdn_url_auth 模式下的语义） */
   baseUrl: string;
   /** CDN 边缘鉴权密钥（storage_cdn_auth_key，与 CDN 控制台同款密钥双侧一致） */
   key: string;
+  /** EO Token 鉴权方式（storage_cdn_auth_type：a | b | c | d | v，默认 a） */
+  authType?: string;
   /** 鉴权窗口（秒，storage_cdn_auth_ttl_sec；应与 EO 控制台「有效时长」一致，为实际有效期下限） */
   windowTtlSec?: number;
-  /** 鉴权 query 参数名（EO 控制台自定义，默认 sign；部署文档要求两侧一致） */
+  /** 鉴权 query 参数名（仅方式 A 使用；EO 控制台自定义，默认 sign；两侧必须一致） */
   authParam?: string;
   /** 显式注入当前时间（测试用；缺省取系统时钟） */
   nowSec?: number;
 }
 
-/** EO Token 鉴权方式 A 签名器：{base}/{fullKey}?sign={ts}-{rand}-{uid}-{md5}（md5(path-ts-rand-uid-key)）。
- *  注意与 s3_presign 的语义差异：窗口取 storage_cdn_auth_ttl_sec（调用方 ttlSec 仅作下限参考被忽略），
- *  这是「窗口内 URL 稳定 = 缓存键稳定」的前提；需要更长的有效期就调大该设置（控制台同步调大）。 */
-export function createEdgeOneTypeASigner(opts: EdgeOneTypeASignerOptions): UrlSigner {
+/** 兼容别名（方式 A 时代命名，字段同 EdgeOneSignerOptions） */
+export type EdgeOneTypeASignerOptions = EdgeOneSignerOptions;
+
+/** EdgeOne Token 鉴权签名器（方式 A/B/C/D/V，ADR-0019 / spec.md §6.7；官方算法见 @openvod/crypto/edgeone）：
+ *  - 方式 A：{base}/{path}?sign={ts}-{rand}-{uid}-{md5}（rand/uid 固定常量）；
+ *  - 方式 B：{base}/{ts(UTC+8 分钟)}/{md5}/{path}；
+ *  - 方式 C：{base}/{md5}/{ts(hex)}/{path}；
+ *  - 方式 D：{base}/{path}?token={md5}&t={ts}；
+ *  - 方式 V：{base}/{path}?t={过期时刻(hex)}&sign={sha1}。
+ *  时间窗语义：A/B/C/D 的 timestamp 为「签发时刻」（窗口内对齐稳定，实际有效期 ≥ 窗口）；
+ *  V 的 t 为「过期时刻」（取窗口对齐值 + 1 窗，保证任意签发时刻有效期 ≥ 窗口，另加 EO 300s 容差）。
+ *  全部忽略调用方 ttlSec——需要更长有效期就调大 storage_cdn_auth_ttl_sec 并同步 CDN 控制台。 */
+export function createEdgeOneSigner(opts: EdgeOneSignerOptions): UrlSigner {
   const base = opts.baseUrl.trim().replace(/\/+$/, "");
   if (!base) throw new Error("cdn_url_auth 需要 storage_cdn_base_url（签名 URL 的加速域名）");
   if (!opts.key) throw new Error("cdn_url_auth 需要 storage_cdn_auth_key（CDN 边缘鉴权密钥）");
@@ -53,22 +64,44 @@ export function createEdgeOneTypeASigner(opts: EdgeOneTypeASignerOptions): UrlSi
   if (!Number.isInteger(windowTtlSec) || windowTtlSec < 60) {
     throw new Error("storage_cdn_auth_ttl_sec 必须为 ≥60 的整数（秒）");
   }
+  const authType = (opts.authType ?? "a").trim().toLowerCase();
+  if (!isEdgeOneAuthType(authType)) {
+    throw new Error(`storage_cdn_auth_type 非法：${opts.authType}（可选 a | b | c | d | v，ADR-0019）`);
+  }
   const authParam = opts.authParam ?? "sign";
   return {
     sign(key: string, _ttlSec: number): Promise<string> {
       // 注意：签名 path 含 root 前缀（CDN 回源桶时 URL path 即完整对象键）；
       // path-style 回源（path 带桶名）等非 EO 标准拓扑请改用 custom 提供者
       const path = `/${key.replace(/^\/+/, "")}`;
-      const timestamp = typeAWindowTimestamp(opts.nowSec ?? Math.floor(Date.now() / 1000), windowTtlSec);
-      const url = typeAUrl(base, path, opts.key, {
-        timestamp,
-        rand: TYPEA_FIXED_RAND,
-        uid: TYPEA_FIXED_UID,
-      });
-      // EO 控制台的鉴权参数名可自定义（默认 sign）；两侧必须一致（deploy 文档前置清单）
-      return Promise.resolve(authParam === "sign" ? url : url.replace("?sign=", `?${authParam}=`));
+      const nowSec = opts.nowSec ?? Math.floor(Date.now() / 1000);
+      const ts = typeAWindowTimestamp(nowSec, windowTtlSec);
+      switch (authType) {
+        case "b":
+          return Promise.resolve(typeBUrl(base, path, opts.key, { timestampSec: ts }));
+        case "c":
+          return Promise.resolve(typeCUrl(base, path, opts.key, { timestampSec: ts }));
+        case "d":
+          return Promise.resolve(typeDUrl(base, path, opts.key, { timestampSec: ts }));
+        case "v":
+          return Promise.resolve(typeVUrl(base, path, opts.key, { timestampSec: ts + windowTtlSec }));
+        default: {
+          const url = typeAUrl(base, path, opts.key, {
+            timestamp: ts,
+            rand: TYPEA_FIXED_RAND,
+            uid: TYPEA_FIXED_UID,
+          });
+          // EO 控制台的鉴权参数名可自定义（默认 sign）；两侧必须一致（deploy 文档前置清单）
+          return Promise.resolve(authParam === "sign" ? url : url.replace("?sign=", `?${authParam}=`));
+        }
+      }
     },
   };
+}
+
+/** 方式 A 专用入口（兼容保留；等价 createEdgeOneSigner({ ...opts, authType: "a" })） */
+export function createEdgeOneTypeASigner(opts: EdgeOneSignerOptions): UrlSigner {
+  return createEdgeOneSigner({ ...opts, authType: "a" });
 }
 
 /**
@@ -98,6 +131,8 @@ export interface UrlSignerFactoryDeps {
   cdnAuthKey?: string;
   /** cdn_url_auth 的对齐窗口（storage_cdn_auth_ttl_sec，默认 3600） */
   cdnAuthTtlSec?: number;
+  /** cdn_url_auth 的 EO 鉴权方式（storage_cdn_auth_type：a | b | c | d | v，默认 a） */
+  cdnAuthType?: string;
   customSignerName?: string;
 }
 
@@ -105,9 +140,10 @@ export interface UrlSignerFactoryDeps {
 export function createUrlSigner(deps: UrlSignerFactoryDeps): UrlSigner {
   switch (deps.signMode) {
     case "cdn_url_auth":
-      return createEdgeOneTypeASigner({
+      return createEdgeOneSigner({
         baseUrl: deps.cdnBaseUrl ?? "",
         key: deps.cdnAuthKey ?? "",
+        authType: deps.cdnAuthType,
         windowTtlSec: deps.cdnAuthTtlSec,
       });
     case "custom": {

@@ -10,6 +10,7 @@ import {
   SETTING_SECRET_KEYS,
   SETTING_TTL_LIMITS,
   STORAGE_SIGN_MODES,
+  CDN_AUTH_TYPES,
   DEFAULTS,
   MEDIA_ID_CONFIG,
   resolveMediaIdLength,
@@ -189,6 +190,10 @@ const PLAIN_META: Record<string, { env?: string; validate: Validator } | undefin
   [SETTING_KEYS.storageCdnAuthTtlSec]: {
     env: "STORAGE_CDN_AUTH_TTL_SEC",
     validate: intValidator("CDN 鉴权有效期", SETTING_TTL_LIMITS[SETTING_KEYS.storageCdnAuthTtlSec].min, SETTING_TTL_LIMITS[SETTING_KEYS.storageCdnAuthTtlSec].max),
+  },
+  [SETTING_KEYS.storageCdnAuthType]: {
+    env: "STORAGE_CDN_AUTH_TYPE",
+    validate: enumValidator("CDN 鉴权方式", [...CDN_AUTH_TYPES]),
   },
   [SETTING_KEYS.storageCustomSigner]: {
     env: "STORAGE_CUSTOM_SIGNER",
@@ -434,6 +439,8 @@ export interface StorageSnapshot {
   /** GET 签名方式（ADR-0019，默认 s3_presign） */
   signMode: string;
   cdnAuthKey: string;
+  /** EO Token 鉴权方式（a | b | c | d | v，默认 a；与 CDN 控制台 Token 鉴权所选方式一致） */
+  cdnAuthType: string;
   cdnAuthTtlSec: number;
   customSigner: string;
   /** 存储四要素（端点 / 桶 / AK / SK）齐全才算配置完成 */
@@ -517,6 +524,7 @@ function buildSettingsSnapshot(rows: Array<{ key: string; value: string }>): Set
       rootPrefix: get(SETTING_KEYS.storageRootPrefix),
       signMode: get(SETTING_KEYS.storageSignMode) || "s3_presign",
       cdnAuthKey: getSecret("storage_cdn_auth_key"),
+      cdnAuthType: get(SETTING_KEYS.storageCdnAuthType) || "a",
       cdnAuthTtlSec: toInt(get(SETTING_KEYS.storageCdnAuthTtlSec), 3600),
       customSigner: get(SETTING_KEYS.storageCustomSigner) || "custom",
       configured: Boolean(s3Endpoint && s3Bucket && s3Ak && s3Sk),

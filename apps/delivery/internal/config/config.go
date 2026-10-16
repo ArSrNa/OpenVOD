@@ -33,6 +33,9 @@ type StorageConfig struct {
 	CDNAuthKey string
 	// CDNAuthTTLSec 鉴权窗口秒（STORAGE_CDN_AUTH_TTL_SEC，默认 3600；与 CDN 控制台「有效时长」一致）
 	CDNAuthTTLSec int
+	// CDNAuthType EO Token 鉴权方式（STORAGE_CDN_AUTH_TYPE / storage_cdn_auth_type：
+	// a | b | c | d | v，默认 a；与 CDN 控制台 Token 鉴权所选方式一致）
+	CDNAuthType string
 	// CustomSigner custom 模式的提供者名（STORAGE_CUSTOM_SIGNER，默认 "custom"）
 	CustomSigner string
 }
@@ -145,6 +148,7 @@ func Load() (*Config, error) {
 		SignMode:      strings.TrimSpace(os.Getenv("STORAGE_SIGN_MODE")),
 		CDNAuthKey:    os.Getenv("STORAGE_CDN_AUTH_KEY"),
 		CDNAuthTTLSec: getEnvInt("STORAGE_CDN_AUTH_TTL_SEC", 3600),
+		CDNAuthType:   strings.TrimSpace(os.Getenv("STORAGE_CDN_AUTH_TYPE")),
 		CustomSigner:  strings.TrimSpace(os.Getenv("STORAGE_CUSTOM_SIGNER")),
 	}
 

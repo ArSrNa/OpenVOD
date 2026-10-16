@@ -228,7 +228,7 @@ export function SettingsManager({ group = "playback" }: { group?: SettingsGroup 
             type="info"
             showIcon
             message="CDN URL 鉴权模式的前置条件"
-            description={<>切换前请在 CDN 控制台完成：① 私有回源（存储凭证配在 CDN 侧，不入库）；② Token 鉴权方式 A 开启，密钥与「CDN 边缘鉴权密钥」一致，参数名 sign，有效时长与「CDN 鉴权有效期」一致；③ 缓存键含 query、缓存 TTL ≤ 签名窗口（详见部署文档 ADR-0019 清单）。切换后建议 CDN 全量刷新一次。</>}
+            description={<>切换前请在 CDN 控制台完成：① 私有回源（存储凭证配在 CDN 侧，不入库）；② Token 鉴权开启——鉴权方式与「CDN 鉴权方式」一致、密钥与「CDN 边缘鉴权密钥」一致、有效时长与「CDN 鉴权有效期」一致（方式 A 的鉴权参数名 sign）；③ 缓存键含 query、缓存 TTL ≤ 签名窗口（逐项清单见部署文档 deploy-delivery.md「CDN 加速域名与资产签名配置清单」）。切换后建议 CDN 全量刷新一次。</>}
             style={{ marginBottom: 24 }}
           />
         )}

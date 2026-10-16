@@ -104,6 +104,7 @@ export async function loadWorkerSettings(): Promise<WorkerSettings> {
     // GET 签名方式（ADR-0019）：Worker 取源片 / 水印图与播放分片同一签名形态
     signMode: (pick(values, "storage_sign_mode", "STORAGE_SIGN_MODE") || undefined) as SignMode | undefined,
     cdnAuthKey: secret("storage_cdn_auth_key") || process.env.STORAGE_CDN_AUTH_KEY || "",
+    cdnAuthType: pick(values, "storage_cdn_auth_type", "STORAGE_CDN_AUTH_TYPE") || undefined,
     cdnAuthTtlSec: toInt(pick(values, "storage_cdn_auth_ttl_sec", "STORAGE_CDN_AUTH_TTL_SEC"), 3600),
     customSignerName: pick(values, "storage_custom_signer", "STORAGE_CUSTOM_SIGNER") || undefined,
   });

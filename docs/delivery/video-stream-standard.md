@@ -31,10 +31,10 @@ App                        delivery                      存储/DB
  │ ◀──改写后主清单(子清单URL注入m token, no-store)──│         │
  │  GET manifest/{variant}/index.m3u8?t=<m>                  │
  │ ─────────────────────────▶ 改写子清单：EXT-X-KEY URI→typ=k token
- │ ◀──改写后子清单(分片URL注入s token或预签名URL, no-store)    │
- │  GET 分片 URL（s token 或 S3 预签名）                      │
- │ ─────────────────────────▶ local: /v1/media/{id}/segment/*│
- │ ◀──分片字节（视频字节不经过函数，P0）                       │ s3: 预签名直出
+ │ ◀──改写后子清单(分片URL注入签名直出URL, no-store)          │
+ │  GET 分片 URL（S3 预签名 或 CDN 鉴权，ADR-0019）            │
+ │ ─────────────────────────▶ 客户端直连存储/CDN（分片直出）  │
+ │ ◀──分片字节（视频字节不经过函数，P0）                       │
  │  GET /v1/media/{id}/key?t=<k>                             │
  │ ─────────────────────────▶ 解封 hls_keys.wrapped_cek      │
  │ ◀──16B 裸 CEK（no-store）──┘                              │
@@ -44,7 +44,7 @@ App                        delivery                      存储/DB
 ### 1.3 核心设计约束（为什么是这样）
 
 1. **播放资源鉴权必须全部走 URL query 签名 token，不依赖请求头**（ADR-0006 §4 / ADR-0007）。根本原因：Safari 原生 HLS 的分片与密钥请求无法携带自定义请求头。JWT 只用于 login / media / play 业务 API。
-2. **分片字节永远不经过云函数**（P0，ADR-0003/0005）。s3 形态用 S3 预签名 URL 直出（2026-09-20 定为最终方案，ADR-0005 修订）；仅 local 自托管形态经 delivery 流式输出。
+2. **分片字节永远不经过云函数**（P0，ADR-0003/0005）。分片一律由客户端直连存储 / CDN 获取：默认 `s3_presign`（S3 预签名直出），或 `cdn_url_auth`（CDN 私有回源 + 边缘 URL 鉴权，ADR-0019 / spec.md §6.7，EO Token 鉴权 A/B/C/D/V 全内置）；local 驱动与分发端代理已随 ADR-0005 2026-09-22 修订移除。
 3. **m3u8、key 与字幕 `.vtt` 响应必须 `Cache-Control: no-store`**（P0，ADR-0006 §5 / spec.md §7.5）。清单内含一次性 token，绝不允许进 CDN/边缘缓存；字幕文本可就地覆盖（编辑后下一次请求必须取到新文本）。CI 门禁：`assert-unsigned-403` / `assert-no-store`。
 4. **明文 CEK 只存在于转码瞬间与密钥接口响应瞬间**（P0，ADR-0006 §1）。日志与响应中绝不出现任何密钥材料。
 
@@ -193,7 +193,7 @@ token.exp = min(会话 expires_at, 签发时刻 + PLAYBACK_MANIFEST_TTL_SEC)
 | 分片行（默认） | 整行替换，见下 |
 
 - 分片 URL 注入（相对名以子清单所在目录拼接）：
-  - `Blob.PresignGet(storageKey, PLAYBACK_MANIFEST_TTL_SEC)` 生成 **S3/COS 预签名 GET URL**（唯一路径，ADR-0005 2026-09-22 修订：local 代理已移除），分片字节不经过函数（P0）。
+  - `Blob.PresignGet(storageKey, PLAYBACK_MANIFEST_TTL_SEC)` 按 `storage_sign_mode` 生成签名 URL——默认 **S3/COS 预签名 GET URL**，或 `cdn_url_auth` 的 **CDN 鉴权 URL**（ADR-0019 / spec.md §6.7；两种模式分片字节都不经过函数，P0）。
 - key token 在改写开始前一次性签好，exp 与清单 token 相同。
 
 ### 4.6 密钥接口 `GET /v1/media/{id}/key`（加密流核心）
@@ -212,13 +212,13 @@ Content-Length: 16
 <body: 16 字节裸 CEK>
 ```
 
-### 4.7 分片获取（S3 预签名直出）
+### 4.7 分片获取（签名直出）
 
 | | 说明 |
 |---|---|
-| URL 形态 | 清单中直接是 S3/COS 预签名 URL（可经 `STORAGE_CDN_BASE_URL` 换加速域名 origin） |
+| URL 形态 | `s3_presign`（默认）：S3/COS 预签名 URL（可经 `STORAGE_CDN_BASE_URL` 换加速域名 origin）；`cdn_url_auth`：CDN 私有回源 + 边缘 URL 鉴权（EO Token 鉴权 A/B/C/D/V，`storage_cdn_auth_type` 选择，ADR-0019 / spec.md §6.7） |
 | 字节路径 | **不经过函数**（P0），客户端直连存储/CDN |
-| 校验 | 预签名自身即鉴权（TTL 与清单 token 对齐） |
+| 校验 | `s3_presign`：预签名自身即鉴权（TTL 与清单 token 对齐）；`cdn_url_auth`：CDN 边缘验签（密钥双侧一致）+ 私有回源凭证 |
 | 演进 | local 驱动分发端代理已随 ADR-0005 2026-09-22 修订移除（存储仅 S3） |
 
 ### 4.8 字幕 `GET /v1/media/{id}/subtitles/{trackId}.vtt`（spec.md §7.5）
@@ -249,7 +249,8 @@ Content-Length: 16
 MK（env MASTER_KEYS="版本:64位hex"，逗号分隔多版本，每版必须 32B）
  ├─wrap→ CEK（16B AES-128，每媒资随机一份，hls_keys.wrapped_cek + mk_ver）
  ├─wrap→ JWT ES256 私钥（signing_keys.private_enc = hex(MK(P-256标量32B))，无 mk_ver 列 → 启动按版本从大到小逐个尝试解封）
- └─wrap→ （已废弃）EO TypeA 密钥：2026-09-20 随 ADR-0005 修订不再使用（枚举保留、未接入链路）
+ └─wrap→ CDN 边缘鉴权密钥（`storage_cdn_auth_key`，ADR-0019）：cdn_url_auth 模式使用，
+         secret 经 MK 封装入 system_settings（`signing_keys.kind=EO_TYPEA` 为历史废弃枚举，不再使用）
 ```
 
 MK 轮换语义：新版本加进 `MASTER_KEYS` 且**保留旧版本**，`hls_keys` 按各自 `mk_ver` 解封，免重转码。
@@ -290,14 +291,14 @@ DB 账号分权（硬约束，ADR-0011）：delivery 使用受限账号——`us
 
 ## 8. 当前实现状态与演进项（截至本文撰写）
 
-**已落地**：login(JWT)、media 列表/详情、play（会话幂等 + 并发上限）、主/子清单行级改写、key 接口（MK 解封 CEK）、S3 预签名直出（`STORAGE_CDN_BASE_URL` 加速域名 origin 替换）、播放域名 DB 覆盖（`playback_base_url` 60s 缓存）、模板产物探测（`resolveTemplate`）。（ADR-0005 2026-09-22 修订：local 分片流式输出已随仅-S3 决策删除）
+**已落地**：login(JWT)、media 列表/详情、play（会话幂等 + 并发上限）、主/子清单行级改写、key 接口（MK 解封 CEK）、签名直出（`s3_presign` 默认；`cdn_url_auth` = CDN 私有回源 + EO Token 鉴权 A/B/C/D/V 全内置，ADR-0019）、`STORAGE_CDN_BASE_URL` 加速域名、播放域名 DB 覆盖（`playback_base_url` 60s 缓存）、模板产物探测（`resolveTemplate`）。（ADR-0005 2026-09-22 修订：local 分片流式输出已随仅-S3 决策删除）
 
 **未落地（演进项，勿当作既有能力）**：
 
 | 项 | 状态 | 依据 |
 |---|---|---|
 | 字幕分发（typ=v） | **已实现**（play 下发签名 URL + `.vtt` 代理输出，spec.md §7.5） | ADR-0009 |
-| ~~EdgeOne TypeA URL 鉴权 + 私有回源~~ | 已关闭（2026-09-20）：S3 预签名直出为最终方案 | ADR-0005 修订、spec.md §6.6 |
+| ~~EdgeOne TypeA URL 鉴权 + 私有回源~~ | **已实现（2026-10-09；2026-10-17 扩展为 EO Token 鉴权 A/B/C/D/V 全内置）**：`cdn_url_auth` 模式，管理端可配（默认仍为 `s3_presign`） | ADR-0019 / spec.md §6.7 |
 | 登录/play 限频 | 未实现（代码有 TODO） | ADR-0010 |
 | 吊销 60s 进程内缓存 | 实现为每请求查库（更严格） | ADR-0006 §6 |
 | poster 直出、`custom_data` 公开白名单 | poster_url 预签名直出（S3-only 后全量生效）；custom 回传空对象 | spec.md §6.6 |
@@ -307,9 +308,9 @@ DB 账号分权（硬约束，ADR-0011）：delivery 使用受限账号——`us
 ## 9. AI 阅读速查（关键事实浓缩）
 
 - 播放入口永远从 `POST /v1/media/{id}/play` 拿 `manifest_url` 开始，之后不再需要 JWT；同一响应还带 `subtitles[]`（每条含 typ=v 签名 `url`），字幕不入清单（§4.8）。
-- token 类型：`m` 清单 / `k` 密钥 / `v` 字幕（`s` 分片型常量保留但不再签发——分片走 S3 预签名）；传递 `?t=` 优先，header `X-Playback-Token` 兜底。
+- token 类型：`m` 清单 / `k` 密钥 / `v` 字幕（`s` 分片型常量保留但不再签发——分片走签名直出，见 §4.7）；传递 `?t=` 优先，header `X-Playback-Token` 兜底。
 - key 接口返回的是 **16 字节二进制**，不是 JSON；用 `Content-Length: 16` 与 `application/octet-stream` 识别。
 - 加密方式：HLS SAMPLE-AES 之外的 **AES-128（METHOD=AES-128, CBC, 清单显式 IV）**，每媒资一把 CEK。
-- 分片 URL：清单中直接是 S3/COS 预签名 URL（无 `t` 参数）。
+- 分片 URL：清单中直接是签名直出 URL（无 `t` 参数）——`s3_presign` 为 S3/COS 预签名；`cdn_url_auth` 为 CDN 鉴权 URL（EO Token 鉴权 A/B/C/D/V）。
 - `tpl` query：模板布局必填 cuid；旧布局传空串。
 - 代码索引：路由 `internal/server/server.go`；token `internal/token/token.go`；清单改写 `internal/playback/playlist.go`；CEK 解封 `internal/mk/mk.go`；存储 `internal/blob/blob.go`；读模型/会话 `internal/store/store.go`；DTO `internal/contracts/`（生成物，源在 `packages/contracts`）。

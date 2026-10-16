@@ -290,9 +290,9 @@ submit 时水印内容**现读现快照**进 `transcode_jobs.template_snapshot.w
 | 端点 | 请求 | 成功响应 | 主要错误 |
 |---|---|---|---|
 | `GET /api/admin/users` | — | `200 {total, items[]}`；用户 = `{id, username, display_name\|null, status, max_concurrent_sessions, active_sessions, last_login_at\|null, created_at, updated_at}` | `500` |
-| `POST /api/admin/users` | `{username(^[a-zA-Z0-9._-]{3,32}$), password(≥8 且 ≤72 字节), display_name?≤64, max_concurrent_sessions?(默认 0), status?(默认 ACTIVE)}` | `201 {item}` | `400`；`409` 用户名已存在 |
+| `POST /api/admin/users` | `{username(^[a-zA-Z0-9._-]{3,32}$), password(≥8 且 ≤72 字节), display_name?≤64（缺省 / null / 空串 = 沿用用户名）, max_concurrent_sessions?(默认 0), status?(默认 ACTIVE)}` | `201 {item}` | `400`；`409` 用户名已存在 |
 | `GET /api/admin/users/{id}` | — | `200 {item}` | `404` |
-| `PATCH /api/admin/users/{id}` | `{display_name?, status?, max_concurrent_sessions?}`（至少一字段） | `200 {item, revoked_sessions}` | `400`；`404` |
+| `PATCH /api/admin/users/{id}` | `{display_name?, status?, max_concurrent_sessions?}`（至少一字段；display_name 传 null / 空串 = 回退沿用用户名） | `200 {item, revoked_sessions}` | `400`；`404` |
 | `DELETE /api/admin/users/{id}` | — | `200 {id, username, revoked_sessions}` | `404` |
 | `POST /api/admin/users/{id}/password` | `{password}`（≥8、≤72 字节） | `200 {id, username, revoked_sessions}`（bcrypt cost 12 + 同步吊销会话） | `400`；`404` |
 | `POST /api/admin/users/{id}/revoke-sessions` | — | `200 {id, username, revoked_sessions}`（分发端 ≤60s 收敛） | `404` |
@@ -312,9 +312,10 @@ submit 时水印内容**现读现快照**进 `transcode_jobs.template_snapshot.w
 分组字段：`playback`（`playback_base_url, jwt_ttl_sec, playback_session_ttl_sec, playback_manifest_ttl_sec,
 playback_subtitle_ttl_sec, cors_origins, delivery_preview_username, delivery_preview_password`）、
 `storage`（`s3_endpoint, s3_region, s3_bucket, s3_access_key_id, s3_secret_access_key, s3_force_path_style,
-storage_root_prefix, storage_sign_mode, storage_cdn_base_url, storage_cdn_auth_key, storage_cdn_auth_ttl_sec,
-storage_custom_signer`——后四项为资产 URL 签名方式（ADR-0019）：`storage_sign_mode` ∈
+storage_root_prefix, storage_sign_mode, storage_cdn_base_url, storage_cdn_auth_key, storage_cdn_auth_type,
+storage_cdn_auth_ttl_sec, storage_custom_signer`——后五项为资产 URL 签名方式（ADR-0019）：`storage_sign_mode` ∈
 `s3_presign`（默认）| `cdn_url_auth` | `custom`，`storage_cdn_auth_key` 为 secret（MK 封装），
+`storage_cdn_auth_type` ∈ `a` | `b` | `c` | `d` | `v`（默认 `a`，与 CDN 控制台 Token 鉴权「鉴权方式」一致），
 `storage_cdn_auth_ttl_sec` 60–604800，`storage_custom_signer` 默认 `custom`；`cdn_url_auth` 保存时强制
 校验加速域名与边缘密钥齐备）、`login`（`oidc_issuer, oidc_client_id, oidc_client_secret`；
 登录方式与「重置登录密码」UI 同页维护，密码走 better-auth `/api/auth/change-password`）、

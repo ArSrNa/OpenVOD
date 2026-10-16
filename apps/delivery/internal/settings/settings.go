@@ -30,6 +30,7 @@ const (
 	KeyStorageSignMode     = "storage_sign_mode"        // ADR-0019：s3_presign | cdn_url_auth | custom
 	KeyStorageCDNAuthKey   = "storage_cdn_auth_key"     // 密钥：MK 封装（cdn_url_auth 必填）
 	KeyStorageCDNAuthTTL   = "storage_cdn_auth_ttl_sec" // ADR-0019：鉴权窗口（秒，默认 3600）
+	KeyStorageCDNAuthType  = "storage_cdn_auth_type"    // ADR-0019：EO Token 鉴权方式（a | b | c | d | v，默认 a）
 	KeyStorageCustomSigner = "storage_custom_signer"    // ADR-0019：custom 模式提供者名
 	KeyURLSignKeyHex       = "url_sign_key_hex"         // 密钥：MK 封装
 	KeyURLSignKeyKid       = "url_sign_key_kid"
@@ -58,7 +59,8 @@ var deliveryKeys = map[string]bool{
 	KeyS3Endpoint: true, KeyS3Region: true, KeyS3Bucket: true,
 	KeyS3AccessKeyID: true, KeyS3SecretAccessKey: true, KeyS3ForcePathStyle: true,
 	KeyStorageRootPrefix: true, KeyStorageCDNBaseURL: true,
-	KeyStorageSignMode: true, KeyStorageCDNAuthKey: true, KeyStorageCDNAuthTTL: true, KeyStorageCustomSigner: true,
+	KeyStorageSignMode: true, KeyStorageCDNAuthKey: true, KeyStorageCDNAuthTTL: true, KeyStorageCDNAuthType: true,
+	KeyStorageCustomSigner: true,
 	KeyURLSignKeyHex: true, KeyURLSignKeyKid: true,
 	KeyJWTTTLSec: true, KeySessionTTLSec: true, KeyManifestTTLSec: true, KeySubtitleTTLSec: true,
 	KeyCORSOrigins: true, KeyPlaybackBaseURL: true,
@@ -185,6 +187,9 @@ func (s *Snapshot) ApplyTo(cfg *config.Config) error {
 	}
 	if v := s.Get(KeyStorageCDNAuthTTL); v != "" {
 		cfg.Storage.CDNAuthTTLSec = s.Int(KeyStorageCDNAuthTTL, cfg.Storage.CDNAuthTTLSec)
+	}
+	if v := s.Get(KeyStorageCDNAuthType); v != "" {
+		cfg.Storage.CDNAuthType = v
 	}
 	if v := s.Get(KeyStorageCustomSigner); v != "" {
 		cfg.Storage.CustomSigner = v

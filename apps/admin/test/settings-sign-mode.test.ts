@@ -51,3 +51,24 @@ describe("storage_sign_mode（ADR-0019）", () => {
     });
   });
 });
+
+describe("storage_cdn_auth_type（ADR-0019：EO Token 鉴权方式 A/B/C/D/V）", () => {
+  test("枚举白名单：五种方式合法（大小写归一化为小写），枚举外拒绝", () => {
+    for (const t of ["a", "b", "c", "d", "v"]) {
+      expect(normalizeSettingValue("storage_cdn_auth_type", t)).toBe(t);
+    }
+    expect(normalizeSettingValue("storage_cdn_auth_type", " B ")).toBe("b");
+    expect(normalizeSettingValue("storage_cdn_auth_type", "")).toBe("");
+    expect(() => normalizeSettingValue("storage_cdn_auth_type", "e")).toThrow(SettingsError);
+    expect(() => normalizeSettingValue("storage_cdn_auth_type", "typea")).toThrow(SettingsError);
+  });
+
+  test("默认值与 env 兜底（STORAGE_CDN_AUTH_TYPE）", () => {
+    expect(SETTING_DEFAULTS["storage_cdn_auth_type"]).toBe("a");
+    expect(settingFallback("storage_cdn_auth_type", { STORAGE_CDN_AUTH_TYPE: "v" })).toEqual({
+      value: "v",
+      source: "env",
+    });
+    expect(settingFallback("storage_cdn_auth_type", {})).toEqual({ value: "a", source: "default" });
+  });
+});

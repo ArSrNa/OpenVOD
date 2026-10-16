@@ -49,6 +49,17 @@ export const SETTINGS_GROUPS = {
         help: "桶恒为私有，切换的只是签名位置。s3_presign：CDN 缓存键必须含完整 query 或带 query 不缓存；cdn_url_auth：URL 在签名窗口内稳定、跨会话可命中缓存，需在 CDN 控制台配置私有回源（切换前请读部署文档 ADR-0019 清单）。",
       },
       { key: "storage_cdn_base_url", label: "存储加速域名", type: "text", placeholder: "https://cdn.example.com", help: "s3_presign：替换预签名对象 URL 的来源（需回源并保留签名 query）；cdn_url_auth：签名 URL 的加速域名。" },
+      {
+        key: "storage_cdn_auth_type", label: "CDN 鉴权方式", type: "enum",
+        options: [
+          { value: "a", label: "方式 A（?sign=timestamp-rand-uid-md5，默认）" },
+          { value: "b", label: "方式 B（/{时间戳}/{md5}/路径；UTC+8 分钟）" },
+          { value: "c", label: "方式 C（/{md5}/{时间戳}/路径；十六进制时间戳）" },
+          { value: "d", label: "方式 D（?token=md5&t=timestamp）" },
+          { value: "v", label: "方式 V（?t=过期时间戳&sign=sha1；视频场景增强）" },
+        ],
+        help: "与 CDN 控制台 Token 鉴权的「鉴权方式」一致（EO 官方 5 种）。A/B/C/D 的时间戳为签发时刻（URL 有效期 = 「CDN 鉴权有效期」）；V 的 t 为过期时刻（URL 有效期 1–2 个窗口，另加 EO 300 秒容差）。",
+      },
       { key: "storage_cdn_auth_key", label: "CDN 边缘鉴权密钥", type: "secret", help: "cdn_url_auth 模式必填；与 CDN 控制台 Token 鉴权密钥同款、双侧一致。经主密钥封装保存，不回显。" },
       { key: "storage_cdn_auth_ttl_sec", label: "CDN 鉴权有效期（秒）", type: "number", min: 60, max: 604800, help: "cdn_url_auth 的签名窗口；应与 CDN 控制台「有效时长」一致。窗口内 URL 稳定（缓存友好），实际有效期 ≥ 该值。" },
       { key: "storage_custom_signer", label: "自定义提供者名", type: "text", placeholder: "custom", help: "sign_mode=custom 时生效；对应代码中 registerUrlSigner / RegisterURLSigner 的注册名（默认 custom）。" },

@@ -53,6 +53,7 @@ PresignGet(key, ttl)        # 下载 / 播放签名 URL（可经 STORAGE_CDN_BAS
 
 ### 修订记录
 
+- **2026-10-17（EO 鉴权以 `cdn_url_auth` 重新纳入）**：本条 2026-09-20 的「放弃 EO TypeA」修订**部分改变**——ADR-0019（2026-10-06 定稿 / 2026-10-09 实现 / 2026-10-17 扩展）把 EO Token 鉴权以**管理端可配置的 `cdn_url_auth` 模式**重新纳入，官方 5 种方式（A/B/C/D/V）全内置（`storage_cdn_auth_type` 选择）；`EO_TYPEA_KEY` 环境变量与 `signing_keys.kind=EO_TYPEA` 仍为废弃载体（密钥改走 `storage_cdn_auth_key` / `STORAGE_CDN_AUTH_KEY`），s3 预签名仍为默认形态。详见 ADR-0019 与 spec.md §6.7。
 - **2026-09-22（管理端首页存储统计）**：S3 首页只展示当前 root 下四个业务分区对象大小之和，不假设固定桶配额，不展示占用百分比或分区进度条；说明固定为「包含媒体、转码、字幕、元数据等产物」。统计复用适配器分页列举的对象元信息，不下载内容；同次请求复用于媒资 / 字幕 / 转码产物 / 元数据计数，具体口径见 spec.md §2.1 与 intent.md「控制台总览」。
 - **2026-09-20（放弃 EO TypeA，s3 预签名转正）**：
   - 原 2026-09-17 决定：s3 形态采用 **EdgeOne URL 鉴权 TypeA**（COS 私有桶 + EO 私有回源；分发端持控制台同款密钥生成 `?sign=timestamp-rand-uid-md5(uri-timestamp-rand-uid-key)`，密钥入 `signing_keys.kind=EO_TYPEA`，轮换需与控制台同步双密钥窗口、有效时长两侧必须一致）。

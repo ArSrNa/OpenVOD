@@ -22,3 +22,6 @@ branch:
       - name: 发布播放器SDK
         description: 单测覆盖率上报 CNB + 发布 openvod-jssdk 到 npm 官方与 CNB 制品库（版本取根 package.json）
         event: web_trigger_publish_sdk
+      - name: 验证autoTag
+        description: 验证 auto_tag 的 tagFormat 行为（按根 package.json 版本创建 Tag，不动 Tag 列表页）
+        event: web_trigger_verify_autotag

@@ -329,7 +329,7 @@ M3/M4 播放链路（login / 播放会话 / 清单改写 / 密钥 / 字幕）已
 播放链路（M3/M4）已跑通，但每个播放端接入方都要重写同一套「login → play → 401/403 恢复 → 会话复用」逻辑（`apps/player` 的 `lib/delivery.ts` 是第一次重写，第二次就会漂移）。新增**播放器 SDK**（`packages/player-sdk`）：TS/Web、零运行时依赖、播放器无关（只输出签名 URL / 元数据 / 事件）——初始化只填 delivery 地址 + 播放账号即可拿到签名主清单 URL；**自动续期 / 重签**（JWT 过期自动重登、会话 / token 过期自动重新 play）与**清晰度切换**（`templates[]` 复用会话换源）由 SDK 治理；四种鉴权模式（用户名口令 / tokenProvider / static JWT / attach 已有 URL）与多账号热切换；零后端改动，P0 纪律不放松（SDK 永不接触 CEK / 分片字节 / 签名密钥）。
 
 - **设计边界（用户 2026-10-13 拍板）**：v1 仅 TS/Web 核心包——不含播放器适配器 / UI 组件、诊断提示系统、进度持久化 / 服务端续播、npm 公开发布（均为演进项）；
-- **实现状态（2026-10-13）**：⏳ 设计定稿、待实现（验收里程碑 S1~S4 见 player-sdk-intent.md「成功标准」）。
+- **实现状态（2026-10-16）**：✅ S1 / S2 / S4 已完成——`packages/player-sdk`（零运行时依赖 TS 包，`bun test packages/player-sdk` 单测矩阵 T1~T18 共 30 项全绿）+ `apps/player` 以 tokenProvider 接入（删除 `lib/delivery.ts`，页面仅保留 React 状态层）+ 包内 `README.md`；S3（体验环境端到端集成验收）待按 player-sdk-spec.md §12.2 执行。
 
 ### 非功能目标
 

@@ -46,7 +46,7 @@ flowchart LR
 7. [deploy-delivery.md](./deploy-delivery.md) — 分发端部署（SCF 容器 / EdgeOne Cloud Functions 双目标）
 8. [deploy-apps.md](./deploy-apps.md) — 管理端与 Worker 镜像（构建上下文、Prisma 生成、硬约束）
 9. [trial-env.md](./trial-env.md) — 体验环境启动 Runbook（用户对 Agent 说「启动一个体验环境」时执行：MySQL + RustFS 底座 + 三端起全）
-10. [player-sdk-intent.md](./player-sdk-intent.md) — 播放器 SDK 意图（范围 / 边界 / 成功标准；权威设计，实现待开始）
+10. [player-sdk-intent.md](./player-sdk-intent.md) — 播放器 SDK 意图（范围 / 边界 / 成功标准；已实现于 `packages/player-sdk`）
 11. [player-sdk-spec.md](./player-sdk-spec.md) — 播放器 SDK 规范（公共 API / 四种鉴权 / 生命周期治理 / 测试验收）
 
 ## 决策索引

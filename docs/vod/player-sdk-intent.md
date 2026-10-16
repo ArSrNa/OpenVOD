@@ -1,7 +1,7 @@
 # Intent — OpenVOD 播放器 SDK（Player SDK）
 
 - 日期：2026-10-13
-- 状态：设计定稿（规范见 [player-sdk-spec.md](./player-sdk-spec.md)；待实现）
+- 状态：已实现（2026-10-16：`packages/player-sdk` + `apps/player` 接入；规范见 [player-sdk-spec.md](./player-sdk-spec.md)；体验环境端到端验收 S3 待执行）
 - 关联：ADR-0006（加密与播放密钥）、ADR-0007（鉴权与用户体系）、ADR-0010（分发端 API 面）、[spec.md](./spec.md) §6（播放链路）/ §7.5（字幕）/ §11（播放演示 App）、[api.md](./api.md) §2（分发端 API）
 
 ## 一句话

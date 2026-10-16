@@ -189,7 +189,7 @@ STORAGE_CDN_BASE_URL=""               # 加速域名（可选）
 
 读取位置：`apps/admin/src/lib/auth.ts`（better-auth / OIDC / 会话）、`apps/admin/src/lib/storage.ts`（存储）、
 `apps/admin/src/lib/keys.ts` 与 `scripts/bootstrap-playback.ts`（`MASTER_KEYS`）、
-`apps/admin/src/lib/media.ts`（`MEDIA_ID_LENGTH`）、`apps/admin/src/lib/delivery-preview.ts`（分发端预览）、
+`apps/admin/src/lib/media.ts`（`MEDIA_ID_LENGTH`）、`apps/admin/src/lib/delivery-preview.ts`（分发端预览，经播放器 SDK 接入）、
 `apps/admin/src/lib/settings.ts`（`DELIVERY_PUBLIC_BASE_URL` 回退提示）；DB 经 `@openvod/db`。
 
 ### .env 格式（可直接复制）
@@ -288,7 +288,8 @@ DELIVERY_PUBLIC_BASE_URL=""                      # /api/admin/settings 回退提
 ## 4. player（播放演示 App，Next.js，`apps/player`；spec.md §11）
 
 读取位置：`apps/player/src/app/api/session/route.ts`（预览账号 → 分发端 login，**服务端专用**，凭据不下发浏览器）、
-`apps/player/src/lib/delivery.ts`（浏览器直连分发端地址，`NEXT_PUBLIC_*` 构建期内联）。
+`apps/player/src/lib/sdk.ts`（SDK 以 tokenProvider 接入：浏览器直连地址由 `/api/session` 运行时下发 `delivery_base`，
+`NEXT_PUBLIC_*` 仅作兜底默认）。
 
 ### .env 格式（可直接复制）
 

@@ -29,6 +29,7 @@
 ![](images/player-list.png)
 
 - 技术栈与管理端同一条播放器路线：Next.js 16 + antd + Video.js v10（`@videojs/react`）；只消费分发端 `/v1` API——不连数据库、不需要管理端登录；
+- 接入逻辑收敛在**播放器 SDK**（`packages/player-sdk`，零运行时依赖、播放器无关）：登录 / 会话复用 / token 自动续签 / 清晰度切换由 SDK 治理，页面只保留 UI 与换源；第三方播放器接入见 [packages/player-sdk/README.md](./packages/player-sdk/README.md)（设计权威：docs/vod/player-sdk-spec.md）；
 - **免登录**：服务端用「预览播放账号」自动向分发端换 JWT（凭据不下发浏览器），账号用 `bun apps/admin/scripts/bootstrap-playback.ts <用户名> <口令≥8位>` 创建；已配置 `DELIVERY_PREVIEW_*` 时会自动复用；
 - **CORS 前置**：浏览器直连分发端与对象存储——`DELIVERY_CORS_ORIGINS` 与对象桶 CORS 需放行播放端源站（本地默认 `*` 已满足；对象桶放行同管理端预览的前提），未放行时页面会给出提示；
 - 定位本地 / 内网体验，**不建议公网暴露**（任何能打开页面的人都能用预览账号播放全部 READY 媒资）。

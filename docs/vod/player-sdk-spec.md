@@ -1,7 +1,7 @@
 # Specification — OpenVOD 播放器 SDK（Player SDK，TS/Web）
 
 - 日期：2026-10-13
-- 状态：设计定稿（待实现；意图与范围见 [player-sdk-intent.md](./player-sdk-intent.md)）
+- 状态：已实现（2026-10-16；意图与范围见 [player-sdk-intent.md](./player-sdk-intent.md)）
 - 决策源：ADR-0006（加密与播放密钥）· ADR-0007（鉴权与用户体系）· ADR-0010（分发端 API 面）· ADR-0019（资产 URL 签名方式，对 SDK 透明）
 - 规范源：[spec.md](./spec.md) §6（播放链路）· §6.3（模板产物选择）· §7.5（字幕）· §11.1（`templates[]`）· [api.md](./api.md) §2（分发端 API 参考）
 - 范围：**仅消费既有 `/v1` API，零后端改动**；纯客户端包（浏览器优先，Node 18+ 兼容），不打包播放器库。
@@ -397,6 +397,11 @@ export type PlayerSdkEvent =
 ---
 
 ## 12. 测试与验收
+
+> **实现落点（2026-10-16）**：S1 源码在 `packages/player-sdk/src/{index,config,client,auth,media,playback,subtitles,events,errors}.ts`；
+> §12.1 单测矩阵 T1~T18 落在 `packages/player-sdk/test/{auth,playback,media-errors}.test.ts`（`bun test packages/player-sdk`，30 项全绿）；
+> S2 消费方改造见 `apps/player/src/lib/sdk.ts`（tokenProvider）+ `components/PlayView.tsx` / `app/page.tsx`，`lib/delivery.ts` 已删除；
+> S4 交付物 README 见 `packages/player-sdk/README.md`。**S3（体验环境端到端）待维护者按 §12.2 执行。**
 
 ### 12.1 单测矩阵（注入 fetch stub + 假时钟）
 

@@ -7,19 +7,20 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 import { PosterImage } from "@/components/PosterImage";
-import { DeliveryError, listMedia } from "@/lib/delivery";
+import { DeliveryError, parseCustomMetadata, type MediaListItem } from "@openvod/player-sdk";
 import { formatDuration } from "@/lib/format";
-import { parseCustom, type MediaListItemDTO } from "@/lib/types";
+import { getSdk } from "@/lib/sdk";
 
 export default function HomePage() {
-  const [items, setItems] = useState<MediaListItemDTO[] | null>(null);
+  const [items, setItems] = useState<MediaListItem[] | null>(null);
   const [error, setError] = useState<DeliveryError | null>(null);
 
   const load = useCallback(async () => {
     setItems(null);
     setError(null);
     try {
-      const page = await listMedia(50);
+      const sdk = await getSdk();
+      const page = await sdk.listMedia({ limit: 50 });
       setItems(page.items);
     } catch (e) {
       setError(e instanceof DeliveryError ? e : new DeliveryError("internal", String(e), 0));
@@ -110,8 +111,8 @@ function ListError({ error, onRetry }: { error: DeliveryError; onRetry: () => vo
   );
 }
 
-function MediaCard({ item }: { item: MediaListItemDTO }) {
-  const custom = parseCustom(item.custom);
+function MediaCard({ item }: { item: MediaListItem }) {
+  const custom = parseCustomMetadata(item.custom);
   const tags = custom.tags ?? [];
   return (
     <Col xs={24} sm={12} md={8} lg={6}>

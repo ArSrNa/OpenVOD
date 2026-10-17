@@ -396,8 +396,13 @@ export const UpdateWatermarkRequest = WatermarkTemplateInput.partial();
 
 // ---- 转码任务（M2，ADR-0008/0014；仅管理端与 Worker 消费，Go 分发端不消费 → 不进 gen-json 清单） ----
 
-/** transcode_jobs.status 取值（与 Prisma `JobStatus` 枚举逐字一致） */
-export const JOB_STATUSES = ["QUEUED", "PROBING", "ENCODING", "PACKAGING", "DONE", "FAILED"] as const;
+/** transcode_jobs.status 取值（与 Prisma `JobStatus` 枚举逐字一致）。
+ *  阶段顺序：排队中 → 探测中 → **拉取源片** → 转码中 → 封装上传中 → 完成（DOWNLOADING 为 2026-10-17 新增，
+ *  源片拉取到本地与转码是两个阶段：转码输入本地文件，多档只下载一次，状态可区分）。 */
+export const JOB_STATUSES = ["QUEUED", "PROBING", "DOWNLOADING", "ENCODING", "PACKAGING", "DONE", "FAILED"] as const;
+
+/** 未终结状态（认领候选 / 「进行中任务」统计 / 产物删除守卫共用；各消费方统一引用此常量） */
+export const ACTIVE_JOB_STATUSES = ["QUEUED", "PROBING", "DOWNLOADING", "ENCODING", "PACKAGING"] as const;
 
 /**
  * 任务快照中的水印段（spec.md §10.4 / ADR-0018）：**自包含**——submit 时把水印模板内容
@@ -484,6 +489,8 @@ export const TranscodeJobDTO = z.object({
   /** 取快照里的模板名（模板被删也能追溯） */
   template_name: z.string().nullable(),
   attempts: z.number().int(),
+  /** 当前阶段进度（0–100；DOWNLOADING / ENCODING 阶段有意义，其余为 null） */
+  progress: z.number().int().min(0).max(100).nullable(),
   /** 分发端是否持有有效租约（执行中）；未认领 / worker 失联（租约过期）时为 false —— 「停止」操作的依据 */
   lease_active: z.boolean(),
   last_error: z.string().nullable(),
@@ -592,12 +599,13 @@ export const CreateUserRequest = z.object({
     .trim()
     .regex(USERNAME_PATTERN, "用户名需为 3–32 位字母、数字、`.`、`_` 或 `-`"),
   password: UserPassword,
-  display_name: z.string().trim().max(64).optional(),
+  /** 可选：缺省 / null / 空串 = 默认沿用用户名（业务侧归一，见 apps/admin/src/lib/users.ts） */
+  display_name: z.string().trim().max(64).nullish(),
   max_concurrent_sessions: UserMaxConcurrentSessions.default(0),
   status: z.enum(USER_STATUSES).default("ACTIVE"),
 });
 
-/** PATCH 语义：字段缺省 = 不修改；display_name 传 null = 清空展示名 */
+/** PATCH 语义：字段缺省 = 不修改；display_name 传 null / 空串 = 回退沿用用户名（与创建一致） */
 export const UpdateUserRequest = z
   .object({
     display_name: z.string().trim().max(64).nullable().optional(),
@@ -766,6 +774,8 @@ export const DashboardStatsResponse = z.object({
     active: DashboardCount,
     queued: DashboardCount,
     probing: DashboardCount,
+    /** 拉取源片中的任务数（2026-10-17） */
+    downloading: DashboardCount,
     encoding: DashboardCount,
     packaging: DashboardCount,
   }),

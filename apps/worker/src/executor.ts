@@ -8,7 +8,7 @@
 // 纪律：argv 一律数组插值（绝不经 shell，ADR-0008）；明文 CEK 只存在于任务临时目录，finally 必删。
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { extname, join } from "node:path";
 import { TranscodeTemplateSnapshot } from "@openvod/contracts";
 import type { MasterKey } from "@openvod/crypto";
 import { DEFAULTS, STORAGE_PARTITIONS } from "@openvod/shared";
@@ -29,17 +29,23 @@ import {
 } from "@openvod/transcode";
 import type { TranscodeJobRow, TranscodeJobStore } from "./job-store";
 import { cleanupJobDir, writeKeyFiles } from "./key-files";
+import { fetchSourceToLocal } from "./source-download";
 import { loadMasterKeys, persistMediaKey, resolveMediaKey, type ResolvedMediaKey } from "./media-keys";
 import type { MediaKeyStore } from "./media-key-store";
 import type { MediaStatusName, MediaStore } from "./media-store";
 
 export class JobExecutionError extends Error {}
 
+/** 取源 / 水印图 URL 解析（缺省 = 签名提供者 `storage.presignGet`；Worker 注入 source-fetch 优选解析器） */
+export type SourceUrlResolver = (key: string, ttlSec: number) => Promise<string>;
+
 export interface JobExecutorDeps {
   jobStore: TranscodeJobStore;
   mediaStore: MediaStore;
   keyStore: MediaKeyStore;
   storage: StorageAdapter;
+  /** 源片 / 水印图的取回通路解析（2026-10-17，ADR-0019 修订）：优选存储直连，避免 CDN 通路拖慢任务 */
+  resolveSourceUrl?: SourceUrlResolver;
   /** 加密任务用 MK；缺省从 MASTER_KEYS 解析 */
   masterKeys?: MasterKey[];
   /** 任务临时目录根，缺省 `{os.tmpdir()}/openvod-jobs` */
@@ -180,9 +186,9 @@ function buildPlans(
   return { plans, entries, sourceFallback };
 }
 
-/** 源片输入：S3 预签名 GET URL（字节不经 Worker 落盘，ffmpeg 原生支持 http 输入） */
-function resolveInput(storage: StorageAdapter, key: string): Promise<string> {
-  return storage.presignGet(key, 6 * 3600);
+/** 源片输入 URL：字节不经 Worker 落盘，ffmpeg 原生支持 http 输入（直连存储或 CDN 由 resolver 决定） */
+function resolveInput(resolveUrl: SourceUrlResolver, key: string): Promise<string> {
+  return resolveUrl(key, 6 * 3600);
 }
 
 /**
@@ -191,7 +197,7 @@ function resolveInput(storage: StorageAdapter, key: string): Promise<string> {
  * 文字型不需要第二输入；图片型缺 image_key（脏快照）在此报错而非产出无水印的片。
  */
 async function resolveWatermark(
-  storage: StorageAdapter,
+  resolveUrl: SourceUrlResolver,
   snapshot: TranscodeSnapshot,
 ): Promise<CompileOpts["watermark"]> {
   const wm = snapshot.watermark;
@@ -200,7 +206,7 @@ async function resolveWatermark(
     if (!wm.image_key) {
       throw new JobExecutionError(`水印「${wm.name}」快照缺少 image_key，无法烧录（提交时水印图尚未上传）`);
     }
-    return { snapshot: wm, imageUrl: await storage.presignGet(wm.image_key, 6 * 3600) };
+    return { snapshot: wm, imageUrl: await resolveUrl(wm.image_key, 6 * 3600) };
   }
   return { snapshot: wm };
 }
@@ -274,6 +280,20 @@ export async function executeClaimedJob(
   const jobDir = join(jobsRoot, job.id);
   const outRoot = join(jobDir, "out");
 
+  // 取源通路：Worker 注入优选解析器（source-fetch.ts）；未注入时回退签名提供者（行为同旧）
+  const resolveUrl: SourceUrlResolver =
+    deps.resolveSourceUrl ?? ((key, ttlSec) => deps.storage.presignGet(key, ttlSec));
+
+  // 阶段进度上报（0–100）：只写变化的整数百分比；失败静默（进度不该影响任务成败）
+  let lastProgress = -1;
+  const reportProgress = (percent: number | null) => {
+    if (percent == null || !Number.isFinite(percent)) return;
+    const pct = Math.max(0, Math.min(100, Math.round(percent)));
+    if (pct === lastProgress) return;
+    lastProgress = pct;
+    void deps.jobStore.setProgress(job.id, pct).catch(() => {});
+  };
+
   // 执行期心跳续期：长转码任务不被其它实例重派（ADR-0008 lease）
   const heartbeat = setInterval(() => {
     void deps.jobStore.extendLease(job.id, leaseMs).catch(() => {});
@@ -286,7 +306,7 @@ export async function executeClaimedJob(
 
     // 1) 输入与探测
     const sourceKey = await resolveSourceKey(deps.storage, media.id, media.sourceKey);
-    const input = await resolveInput(deps.storage, sourceKey);
+    const input = await resolveInput(resolveUrl, sourceKey);
     const probe = await ffprobeJSON(input);
     const summary = summarizeProbe(probe);
     const source: SourceInfo = {
@@ -310,7 +330,22 @@ export async function executeClaimedJob(
       `任务 ${job.id}：源 ${source.width}×${source.height}${source.fps ? `@${source.fps}` : ""}，模板「${snapshot.name}」（${templateId}）`,
     );
 
-    // 2) 加密则先备好密钥材料（**不落库**，spec.md §4.2）；已有密钥则复用（多模板产物共用一份 CEK）
+    // 2) 拉取源片到任务临时目录（spec.md §5.1「拉取源片」阶段，2026-10-17）
+    //    多档复用同一次下载；转码输入本地文件——状态可区分，且不受网络抖动影响
+    const sourceStat = await deps.storage.stat(sourceKey).catch(() => null);
+    await deps.jobStore.setStatus(job.id, "DOWNLOADING", { progress: 0 });
+    const localInput = join(jobDir, `source${extname(sourceKey) || ".bin"}`);
+    const fetched = await fetchSourceToLocal({
+      url: input,
+      destPath: localInput,
+      totalBytes: sourceStat?.size ?? null,
+      onProgress: (downloaded, total) => reportProgress(total ? (downloaded / total) * 100 : null),
+    });
+    log(
+      `任务 ${job.id}：源片已就绪（${(fetched.bytes / 1048576).toFixed(1)} MB${fetched.downloaded ? "，已落盘" : "，本地复用"}）`,
+    );
+
+    // 3) 加密则先备好密钥材料（**不落库**，spec.md §4.2）；已有密钥则复用（多模板产物共用一份 CEK）
     let key: ResolvedMediaKey | null = null;
     let keyInfoPath: string | undefined;
     if (snapshot.encrypt) {
@@ -320,13 +355,14 @@ export async function executeClaimedJob(
       keyInfoPath = paths.keyInfoPath;
     }
 
-    // 3) 编译计划（三维度均不低于源的档位在此被跳过；全档跳过则按源规格兜底出一档）
-    const watermark = await resolveWatermark(deps.storage, snapshot);
+    // 4) 编译计划（三维度均不低于源的档位在此被跳过；全档跳过则按源规格兜底出一档）
+    const watermark = await resolveWatermark(resolveUrl, snapshot);
     if (watermark) {
       log(`任务 ${job.id}：烧录水印 ${describeWatermark(watermark.snapshot)}`);
     }
     const { plans, entries, sourceFallback } = buildPlans(snapshot, source, {
-      input,
+      // 远端来源已落盘（本地复用则原样返回），转码阶段读本地文件
+      input: fetched.input,
       outRoot,
       keyInfoPath,
       hlsTimeSec,
@@ -343,24 +379,31 @@ export async function executeClaimedJob(
       log(`任务 ${job.id}：模板档位均无降级维度（分辨率 / 帧率 / 码率 ≥ 源），已按源规格兜底产出一档`);
     }
 
-    // 4) 逐档转码（顺序执行：转码是 CPU 密集，v1 不做并行以免打满容器）
-    await deps.jobStore.setStatus(job.id, "ENCODING");
-    for (const plan of executed) {
+    // 5) 逐档转码（顺序执行：转码是 CPU 密集，v1 不做并行以免打满容器）
+    //    进度 = （已完成档位数 + 当前档位 out_time / 源时长）/ 总档位数
+    await deps.jobStore.setStatus(job.id, "ENCODING", { progress: 0 });
+    for (const [index, plan] of executed.entries()) {
       const outDir = `${outRoot}/${plan.name}`;
       await mkdir(outDir, { recursive: true });
       log(`任务 ${job.id}：转码 ${plan.name}（${plan.width}×${plan.height}${snapshot.encrypt ? "，AES-128" : ""}）`);
-      await runFFmpeg(plan.argv!);
+      await runFFmpeg(plan.argv!, {
+        onProgress: ({ outTimeUs }) => {
+          if (!summary.durationMs) return;
+          const fraction = Math.min(1, outTimeUs / 1000 / summary.durationMs);
+          reportProgress(((index + fraction) / executed.length) * 100);
+        },
+      });
     }
 
-    // 5) 生成主清单并上传（先写盘再整体上传）
-    await deps.jobStore.setStatus(job.id, "PACKAGING");
+    // 6) 生成主清单并上传（先写盘再整体上传）
+    await deps.jobStore.setStatus(job.id, "PACKAGING", { progress: null });
     await writeFile(join(outRoot, "master.m3u8"), buildMasterPlaylist(entries, { mediaId: media.id }));
     const prefix = `${STORAGE_PARTITIONS.proceed}/${media.id}/${templateId}`;
     const { keys, count } = await uploadTree(deps.storage, outRoot, prefix);
     if (!count) throw new JobExecutionError("产物上传为空（疑似转码未产出任何文件）");
     const deletedStale = await pruneStale(deps.storage, prefix, keys);
 
-    // 6) 产物就绪后才落密钥（每媒资一份：事务内整行替换）；已有密钥则复用，不落库
+    // 7) 产物就绪后才落密钥（每媒资一份：事务内整行替换）；已有密钥则复用，不落库
     let replacedKey: boolean | null = null;
     if (key && !key.reused) {
       replacedKey = (await persistMediaKey(deps.keyStore, media.id, key)).replaced;
@@ -369,9 +412,9 @@ export async function executeClaimedJob(
       log(`任务 ${job.id}：复用该媒资已有密钥（kid=${key.kid.slice(0, 8)}…，多模板产物共用一份 CEK）`);
     }
 
-    // 7) 收尾：媒资就绪 + 任务完成
+    // 8) 收尾：媒资就绪 + 任务完成
     await deps.mediaStore.setStatus(media.id, "READY");
-    await deps.jobStore.setStatus(job.id, "DONE", { finishedAt: new Date(), leaseUntil: null, lastError: null });
+    await deps.jobStore.setStatus(job.id, "DONE", { finishedAt: new Date(), leaseUntil: null, lastError: null, progress: null });
 
     return {
       variants: executed.map((p) => ({

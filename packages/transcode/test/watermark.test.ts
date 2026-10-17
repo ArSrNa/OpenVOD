@@ -4,6 +4,7 @@
 // （负偏移 / 贴边 / 越界）× 等比与变形缩放 × opacity 0/100 × drawtext 转义。
 // 转义规则由 ffmpeg 6.1 逐像素渲染比对标定（见「drawtext text 转义」分组注释），此处锁死防回归。
 import { describe, expect, test } from "bun:test";
+import { INPUT_RW_TIMEOUT_US } from "../src/ffmpeg-input";
 import {
   anchorExpressions,
   compileWatermarkFilter,
@@ -235,7 +236,8 @@ describe("fontfile 映射（Worker 镜像内置 Noto CJK）", () => {
 describe("滤镜链编译：图片水印", () => {
   test("正常模式：画布 → 图片缩放 + 透明度 → overlay 定位 → 合成到视频", () => {
     const plan = compileWatermarkFilter("scale=1280:720", VARIANT, imageSnapshot());
-    expect(plan.extraInputs).toEqual(["-i", "https://example.invalid/wm.png"]);
+    // 第二输入同样是预签名 URL 网络拉取 → 与主输入一样注入 rw_timeout（2026-10-17）
+    expect(plan.extraInputs).toEqual(["-rw_timeout", String(INPUT_RW_TIMEOUT_US), "-i", "https://example.invalid/wm.png"]);
     expect(plan.filterComplex).toContain("[0:v]scale=1280:720[wmwm_main]");
     expect(plan.filterComplex).toContain("color=c=black@0.0:s=1920x1080:r=1:d=1,format=rgba[wmwm_base]");
     expect(plan.filterComplex).toContain("[1:v]scale=120:60,format=rgba,colorchannelmixer=aa=1[wmwm_img]");

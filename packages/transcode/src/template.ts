@@ -10,6 +10,7 @@
 //     是否执行由帧率 / 码率维度判定（三维度均不低于源则跳过）；仍重编码，与 keep_original（-c copy）不同。
 // argv 只做数组插值，永不经 shell 拼接（ADR-0008 安全边界）；密钥路径仅 Worker 注入。
 import { TranscodeTemplateParams, z } from "@openvod/contracts";
+import { inputArgs } from "./ffmpeg-input";
 import { compileWatermarkFilter, type WatermarkSnapshotValue } from "./watermark";
 
 /**
@@ -222,13 +223,15 @@ function buildVariantArgv(opts: {
     "-hls_playlist_type", "vod",
     "-hls_segment_filename", `${opts.outDir}/seg-%05d.ts`,
     ...(opts.keyInfoPath ? ["-hls_key_info_file", opts.keyInfoPath] : []),
+    // 进度通道（2026-10-17）：worker 的 runFFmpeg 流式解析 stdout 的 out_time_* → 「转码中 x%」
+    "-progress", "pipe:1",
     `${opts.outDir}/index.m3u8`,
   ];
 
   if (!opts.watermark) {
     return [
       "-y",
-      "-i", opts.input,
+      ...inputArgs(opts.input),
       ...(opts.scaleFilter ? ["-vf", opts.scaleFilter] : []),
       ...tail,
     ];
@@ -246,7 +249,7 @@ function buildVariantArgv(opts: {
   });
   return [
     "-y",
-    "-i", opts.input,
+    ...inputArgs(opts.input),
     ...plan.extraInputs,
     "-filter_complex", plan.filterComplex,
     "-map", "[wmwm_out]",
@@ -306,9 +309,13 @@ export function compileTemplate(rawParams: unknown, source: SourceInfo, opts: Co
       params,
       effectiveBitrateK,
       fpsDowngrade,
-      // 仅分辨率真降级时缩放；升格 / 持平 / 源已满足约束 → 不写 scale（遵循原视频）
+      // 仅分辨率真降级时缩放；升格 / 持平 / 源已满足约束 → 不写 scale（遵循原视频）。
+      // force_divisible_by=2：force_original_aspect_ratio 会按源宽高比**重算**一维尺寸，
+      // 结果可能为奇数（实测 2114×900 → 1917×816、2534×1080 → 1919×818），libx265/libx264
+      // 会拒绝打开编码器（"Picture width must be an integer multiple of the specified chroma
+      // subsampling"，2026-10-17 线上回归）；该选项把重算结果收敛到偶数。
       scaleFilter: size.scale
-        ? `scale=${size.width}:${size.height}:force_original_aspect_ratio=decrease`
+        ? `scale=${size.width}:${size.height}:force_original_aspect_ratio=decrease:force_divisible_by=2`
         : null,
       outDir,
       input: opts.input,
@@ -375,7 +382,7 @@ export function compileKeepOriginal(opts: {
 }): string[] {
   return [
     "-y",
-    "-i", opts.input,
+    ...inputArgs(opts.input),
     "-map", "0:v:0",
     "-map", "0:a?",
     "-c", "copy",
@@ -383,6 +390,7 @@ export function compileKeepOriginal(opts: {
     "-hls_playlist_type", "vod",
     "-hls_segment_filename", `${opts.outDir}/seg-%05d.ts`,
     ...(opts.keyInfoPath ? ["-hls_key_info_file", opts.keyInfoPath] : []),
+    "-progress", "pipe:1",
     `${opts.outDir}/index.m3u8`,
   ];
 }

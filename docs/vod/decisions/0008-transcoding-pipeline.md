@@ -14,9 +14,9 @@
 ### 任务状态机
 
 ```
-queued → probing → encoding → packaging → ready
+queued → probing → downloading → encoding → packaging → ready
                     ↘ failed（可重试 ≤3，指数退避）
-queued/probing/encoding/packaging 带 lease_until（Worker 心跳续期，崩溃过期重派）
+queued/probing/downloading/encoding/packaging 带 lease_until（Worker 心跳续期，崩溃过期重派）
 media 状态与 job 状态联动（ready / transcoding / failed / archived…）
 ```
 
@@ -62,3 +62,7 @@ media 状态与 job 状态联动（ready / transcoding / failed / archived…）
 
 - Worker 磁盘峰值 ≈ 源片 + 全档产物 + 加密重写，需容量预估与告警（specification 定阈值）。
 - libx264 CPU 转码速度有限，长视频任务小时级；硬件加速（QSV / NVENC）留作宿主机可选项，不进默认镜像。
+
+## 修订记录
+
+- **2026-10-17（`DOWNLOADING` 阶段落地：把「预取源片」从设计补回实现）**：本 ADR 第 2 条原本就是「预取源片到 `/tmp/jobs/{jobId}/`（本地卷）」，实现时让 ffmpeg 边流边转（HTTP 直读源片），带来两个后果——① 状态机分辨不出「拉取源片」与「转码」（用户只看到「转码中」），② ladder 多档时**每档各自重读一遍源片**。本次落地：`JobStatus` 增 `DOWNLOADING`（位于 `PROBING` 与 `ENCODING` 之间）；Worker 探测后把源片流式拉取到任务目录（`apps/worker/src/source-download.ts`：进度回调、字节数校验、读停滞上限 `idleTimeoutMs` 默认 60s），转码阶段输入**本地文件**；`transcode_jobs.progress`（0–100）记录当前阶段进度——`DOWNLOADING` 为下载字节占比，`ENCODING` 为（已完成档位数 + 当前档位 `out_time` / 源时长）/ 总档位数（argv 由模板编译器注入 `-progress pipe:1`，`runFFmpeg` 改 `spawn` 流式解析 stdout）。取舍：单档模板的「下载」与「编码」由重叠变为串行（网络已快时多出数秒），换来状态可读、进度可视、多档只下一次、编码不受网络抖动影响——按 ADR 原设计执行。

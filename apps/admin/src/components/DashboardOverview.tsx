@@ -91,7 +91,7 @@ export function DashboardOverview() {
       label: "进行中任务",
       value: stats?.jobs.active,
       sub: stats
-        ? `转码 ${stats.jobs.encoding} · 探测 ${stats.jobs.probing} · 封装 ${stats.jobs.packaging} · 排队 ${stats.jobs.queued}`
+        ? `转码 ${stats.jobs.encoding} · 拉取源片 ${stats.jobs.downloading} · 探测 ${stats.jobs.probing} · 封装 ${stats.jobs.packaging} · 排队 ${stats.jobs.queued}`
         : pendingText,
       icon: <ThunderboltOutlined />,
     },

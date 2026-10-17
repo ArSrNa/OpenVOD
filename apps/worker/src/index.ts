@@ -14,6 +14,7 @@ import { createPrismaMediaKeyStore } from "./media-key-store";
 import { createPrismaMediaStore } from "./media-store";
 import { describeMasterKeys, loadMasterKeys } from "./media-keys";
 import { loadWorkerMode, loadWorkerSettings, pingDb } from "./settings";
+import { createSourceResolver, type SourceFetcher } from "./source-fetch";
 
 interface ToolCheck {
   name: string;
@@ -107,6 +108,12 @@ if (!boot.storageConfigured) {
   process.exit(1);
 }
 let storage = boot.storage;
+// 取源通路优选（2026-10-17）：源片 / 水印图走存储直连（内网端点可选），不绕 CDN；
+// 候选变化（设置里改端点等）时重建，解析器的探测结果缓存随实例保留
+const fetcherKeyOf = (fetchers: SourceFetcher[]) => fetchers.map((f) => f.id).join("|");
+const sourceLog = (m: string) => console.log(`[worker] ${m}`);
+let sourceFetcherKey = fetcherKeyOf(boot.sourceFetchers);
+let sourceResolver = createSourceResolver(boot.sourceFetchers, { log: sourceLog });
 const mode = await loadWorkerMode();
 
 let running = true;
@@ -123,7 +130,14 @@ async function runOnce(): Promise<boolean> {
   });
   if (s) {
     pollIntervalMs = s.pollIntervalMs;
-    if (s.storageConfigured) storage = s.storage;
+    if (s.storageConfigured) {
+      storage = s.storage;
+      const key = fetcherKeyOf(s.sourceFetchers);
+      if (key !== sourceFetcherKey) {
+        sourceFetcherKey = key;
+        sourceResolver = createSourceResolver(s.sourceFetchers, { log: sourceLog });
+      }
+    }
   }
   const job = await jobStore.claim({ leaseMs: s?.leaseMs ?? boot.leaseMs, maxAttempts: s?.maxAttempts ?? boot.maxAttempts });
   if (!job) return false;
@@ -135,6 +149,8 @@ async function runOnce(): Promise<boolean> {
       mediaStore,
       keyStore,
       storage,
+      // 取源 / 水印图：走优选通路（内网 → 直连 → CDN 兜底），不默认绕 CDN
+      resolveSourceUrl: (key, ttlSec) => sourceResolver.resolve(key, ttlSec).then((r) => r.url),
       masterKeys,
       leaseMs: s?.leaseMs ?? boot.leaseMs,
       log: (msg) => console.log(`[worker] ${msg}`),
@@ -150,7 +166,7 @@ async function runOnce(): Promise<boolean> {
     const message = (e as Error).message;
     console.error(`[worker] 任务 ${job.id} 失败：${message}`);
     await jobStore
-      .setStatus(job.id, "FAILED", { lastError: message, finishedAt: new Date(), leaseUntil: null })
+      .setStatus(job.id, "FAILED", { lastError: message, finishedAt: new Date(), leaseUntil: null, progress: null })
       .catch((err) => console.error("[worker] 标记失败状态出错:", err));
   }
   return true;

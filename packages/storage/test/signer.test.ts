@@ -10,12 +10,26 @@ import { resolve } from "node:path";
 import {
   TYPEA_FIXED_RAND,
   TYPEA_FIXED_UID,
+  createEdgeOneSigner,
   createEdgeOneTypeASigner,
   createUrlSigner,
   getRegisteredUrlSignerFactory,
   registerUrlSigner,
   typeAWindowTimestamp,
 } from "../src/signer";
+import {
+  isEdgeOneAuthType,
+  typeBHash,
+  typeBUrl,
+  typeCHash,
+  typeCUrl,
+  typeDHash,
+  typeDUrl,
+  typeVHash,
+  typeVUrl,
+  utc8MinuteString,
+} from "@openvod/crypto";
+import { CDN_AUTH_TYPES } from "@openvod/shared";
 
 const FIXTURE_PATH = resolve(import.meta.dir, "../../crypto/fixtures/url-sign-v1.json");
 const hasFixture = existsSync(FIXTURE_PATH);
@@ -134,4 +148,203 @@ test("工厂：custom 路由到注册表；未注册时报错并指明注册文�
 
   const missing = () => createUrlSigner({ signMode: "custom", customSignerName: "no-such" });
   expect(missing).toThrow(/custom-signer\.ts/);
+});
+
+// ---- EO Token 鉴权方式 B/C/D/V（官方 5 种全覆盖；fixtures 与 Go 侧共享同一份向量） ----
+
+type EoMethodsFixture = {
+  methods: Record<
+    string,
+    {
+      spec: string;
+      vectors: Array<{
+        name: string;
+        base: string;
+        path: string;
+        timestampSec: number;
+        timestamp?: string;
+        key: string;
+        md5hash?: string;
+        t?: string;
+        exper?: string;
+        us?: string;
+        sign?: string;
+        url: string;
+      }>;
+    }
+  >;
+};
+
+const METHODS_FIXTURE_PATH = resolve(import.meta.dir, "../../crypto/fixtures/url-sign-eo-methods-v1.json");
+const hasMethodsFixture = existsSync(METHODS_FIXTURE_PATH);
+const methodsFixture = hasMethodsFixture
+  ? (JSON.parse(readFileSync(METHODS_FIXTURE_PATH, "utf8")) as EoMethodsFixture)
+  : null;
+
+test("EO B/C/D/V fixtures 存在（官方示例 + 本仓对齐向量）", () => {
+  expect(hasMethodsFixture).toBe(true);
+});
+
+test("isEdgeOneAuthType 与 CDN_AUTH_TYPES 一致（crypto / shared 防漂移）", () => {
+  for (const t of CDN_AUTH_TYPES) expect(isEdgeOneAuthType(t)).toBe(true);
+  expect(isEdgeOneAuthType("x")).toBe(false);
+  expect(isEdgeOneAuthType("")).toBe(false);
+});
+
+test("utc8MinuteString：UTC+8 分钟串（不依赖进程时区）", () => {
+  expect(utc8MinuteString(1721028830)).toBe("202407151533");
+  expect(utc8MinuteString(1721030400)).toBe("202407151600");
+});
+
+test("EO 方式 B/C/D/V：hash 与 URL 组装与 fixtures 逐字一致", () => {
+  expect(methodsFixture).not.toBeNull();
+  for (const [method, m] of Object.entries(methodsFixture!.methods)) {
+    for (const v of m.vectors) {
+      switch (method) {
+        case "b":
+          expect(typeBHash(v.path, v.timestamp!, v.key)).toBe(v.md5hash);
+          expect(typeBUrl(v.base, v.path, v.key, { timestampSec: v.timestampSec })).toBe(v.url);
+          break;
+        case "c":
+          expect(typeCHash(v.path, v.timestamp!, v.key)).toBe(v.md5hash);
+          expect(typeCUrl(v.base, v.path, v.key, { timestampSec: v.timestampSec })).toBe(v.url);
+          break;
+        case "d":
+          expect(typeDHash(v.path, v.timestamp!, v.key)).toBe(v.md5hash);
+          expect(typeDUrl(v.base, v.path, v.key, { timestampSec: v.timestampSec })).toBe(v.url);
+          break;
+        case "v": {
+          // hash 覆盖可选参数（官方示例含 us / exper）；本仓组装不生成它们（非 VOD 源站不支持 us / plive）
+          expect(typeVHash(v.path, v.key, { t: v.t!, exper: v.exper, us: v.us })).toBe(v.sign);
+          if (!v.us && !v.exper) {
+            expect(typeVUrl(v.base, v.path, v.key, { timestampSec: v.timestampSec })).toBe(v.url);
+          }
+          break;
+        }
+      }
+    }
+  }
+});
+
+test("createEdgeOneSigner：五种方式窗口稳定性 + URL 形态", async () => {
+  const key = "0123456789abcdef0123456789abcdef";
+  const windowStart = 1721026800; // 窗口 [1721026800, 1721030400)
+  const mk = (authType: string, nowSec: number) =>
+    createEdgeOneSigner({ baseUrl: "https://cdn.example.com", key, authType, windowTtlSec: 3600, nowSec });
+
+  for (const authType of CDN_AUTH_TYPES) {
+    const a = await mk(authType, windowStart).sign("proceed/x/seg.ts", 60);
+    const b = await mk(authType, windowStart + 3599).sign("proceed/x/seg.ts", 60);
+    const c = await mk(authType, windowStart + 3600).sign("proceed/x/seg.ts", 60);
+    expect(a).toBe(b); // 同窗口稳定（缓存友好）
+    expect(a).not.toBe(c); // 跨窗口变化
+  }
+
+  const nowSec = windowStart;
+  const sign = (authType: string) =>
+    createEdgeOneSigner({
+      baseUrl: "https://cdn.example.com",
+      key,
+      authType,
+      windowTtlSec: 3600,
+      nowSec,
+    }).sign("proceed/x/seg.ts", 60);
+  expect(await sign("a")).toMatch(/\?sign=\d+-openvod-0-[0-9a-f]{32}$/);
+  expect(await sign("b")).toMatch(/^https:\/\/cdn\.example\.com\/\d{12}\/[0-9a-f]{32}\/proceed\/x\/seg\.ts$/);
+  expect(await sign("c")).toMatch(/^https:\/\/cdn\.example\.com\/[0-9a-f]{32}\/[0-9a-f]+\/proceed\/x\/seg\.ts$/);
+  expect(await sign("d")).toMatch(/\?token=[0-9a-f]{32}&t=\d+$/);
+  expect(await sign("v")).toMatch(/\?t=[0-9a-f]+&sign=[0-9a-f]{40}$/);
+});
+
+test("createEdgeOneSigner：V 的 t 为过期时刻（签发即 ≥1 个窗口有效期，另加 EO 300s 容差）", async () => {
+  const key = "0123456789abcdef0123456789abcdef";
+  const nowSec = 1721026800;
+  const url = await createEdgeOneSigner({
+    baseUrl: "https://cdn.example.com",
+    key,
+    authType: "v",
+    windowTtlSec: 3600,
+    nowSec,
+  }).sign("proceed/x/seg.ts", 60);
+  const t = parseInt(url.split("?t=")[1]!.split("&")[0]!, 16);
+  expect(t).toBe(1721034000); // ⌊(now+ttl)/ttl⌋·ttl + ttl
+  expect(t - nowSec).toBeGreaterThanOrEqual(3600);
+  expect(t - nowSec).toBeLessThanOrEqual(2 * 3600);
+});
+
+test("createEdgeOneSigner：非法 authType / 缺配置报错", () => {
+  expect(() => createEdgeOneSigner({ baseUrl: "https://cdn.example.com", key: "k", authType: "x" })).toThrow(
+    /storage_cdn_auth_type/,
+  );
+  expect(() => createEdgeOneSigner({ baseUrl: "", key: "k", authType: "d" })).toThrow(/storage_cdn_base_url/);
+  expect(() => createEdgeOneSigner({ baseUrl: "https://cdn.example.com", key: "" })).toThrow(/storage_cdn_auth_key/);
+});
+
+test("工厂：cdn_url_auth 按 cdnAuthType 装配（B 方式形态）", async () => {
+  const signer = createUrlSigner({
+    signMode: "cdn_url_auth",
+    cdnBaseUrl: "https://cdn.example.com",
+    cdnAuthKey: "0123456789abcdef0123456789abcdef",
+    cdnAuthTtlSec: 3600,
+    cdnAuthType: "b",
+  });
+  const url = await signer.sign("proceed/med00001/tpl00001/seg-000.ts", 600);
+  expect(url).toMatch(/^https:\/\/cdn\.example\.com\/\d{12}\/[0-9a-f]{32}\/proceed\/med00001\/tpl00001\/seg-000\.ts$/);
+});
+
+test("createEdgeOneSigner：方式 A 鉴权参数名可配置（storage_cdn_auth_param，默认 sign）", async () => {
+  const key = "0123456789abcdef0123456789abcdef";
+  const nowSec = 1721026800;
+  const base = { baseUrl: "https://cdn.example.com", key, authType: "a", windowTtlSec: 3600, nowSec };
+  const def = await createEdgeOneSigner(base).sign("a/b.ts", 60);
+  expect(def).toContain("?sign=");
+  const custom = await createEdgeOneSigner({ ...base, authParam: "token" }).sign("a/b.ts", 60);
+  expect(custom).toContain("?token=");
+  expect(custom).not.toContain("?sign=");
+  // 工厂透传（cdnAuthParam）
+  const viaFactory = createUrlSigner({
+    signMode: "cdn_url_auth",
+    cdnBaseUrl: "https://cdn.example.com",
+    cdnAuthKey: key,
+    cdnAuthTtlSec: 3600,
+    cdnAuthType: "a",
+    cdnAuthParam: "video_sign",
+  });
+  expect(await viaFactory.sign("a/b.ts", 60)).toContain("?video_sign=");
+});
+
+test("createEdgeOneSigner：非法鉴权参数名报错（1–100 位字母 / 数字 / 下划线）", () => {
+  expect(() => createEdgeOneSigner({ baseUrl: "https://cdn.example.com", key: "k", authParam: "bad name" })).toThrow(
+    /storage_cdn_auth_param/,
+  );
+  expect(() => createEdgeOneSigner({ baseUrl: "https://cdn.example.com", key: "k", authParam: "签名" })).toThrow(
+    /storage_cdn_auth_param/,
+  );
+});
+
+test("createEdgeOneSigner：方式 D 的参数名可配置（token / t，默认官方名）", async () => {
+  const key = "0123456789abcdef0123456789abcdef";
+  const base = { baseUrl: "https://cdn.example.com", key, authType: "d", windowTtlSec: 3600, nowSec: 1721026800 };
+  const def = await createEdgeOneSigner(base).sign("a/b.ts", 60);
+  expect(def).toMatch(/\?token=[0-9a-f]{32}&t=\d+$/);
+  const custom = await createEdgeOneSigner({ ...base, tokenParam: "sign", timeParam: "ts" }).sign("a/b.ts", 60);
+  expect(custom).toMatch(/\?sign=[0-9a-f]{32}&ts=\d+$/);
+  // 工厂透传（cdnAuthTokenParam / cdnAuthTimeParam）
+  const viaFactory = createUrlSigner({
+    signMode: "cdn_url_auth",
+    cdnBaseUrl: "https://cdn.example.com",
+    cdnAuthKey: key,
+    cdnAuthTtlSec: 3600,
+    cdnAuthType: "d",
+    cdnAuthTokenParam: "sig",
+    cdnAuthTimeParam: "time",
+  });
+  expect(await viaFactory.sign("a/b.ts", 60)).toMatch(/\?sig=[0-9a-f]{32}&time=\d+$/);
+});
+
+test("createEdgeOneSigner：方式 D 参数名非法 / 两者相同报错", () => {
+  const base = { baseUrl: "https://cdn.example.com", key: "k", authType: "d" };
+  expect(() => createEdgeOneSigner({ ...base, tokenParam: "bad name" })).toThrow(/storage_cdn_auth_token_param/);
+  expect(() => createEdgeOneSigner({ ...base, timeParam: "签名" })).toThrow(/storage_cdn_auth_time_param/);
+  expect(() => createEdgeOneSigner({ ...base, tokenParam: "same", timeParam: "same" })).toThrow(/不能相同/);
 });

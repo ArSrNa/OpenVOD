@@ -1,5 +1,5 @@
 // 自定义签名提供者的 AI Agent 提示词生成（ADR-0019 扩展，spec.md §6.7）：
-// 用户在「存储设置」选择 sign_mode=custom 后，把本提示词交给自己的编码 Agent，
+// 用户在「分发设置」选择 sign_mode=custom 后，把本提示词交给自己的编码 Agent，
 // 由 Agent 在两个注册点（TS / Go）生成实现代码并补测试——仍是编译期注入，
 // 不做运行时动态插件（安全边界同 ADR-0019）。
 // 纪律：提示词绝不携带任何密钥材料（cdn_auth_key 等只出现键名），算法细节由用户补充。
@@ -27,7 +27,7 @@ export function buildCustomSignerPrompt(input: CustomSignerPromptInput): string 
 OpenVOD 是自建云点播系统：HLS 分片等资产存放在**私有** S3 兼容对象存储桶中，播放端通过带签名的 GET URL 直出访问（视频字节不经过后端函数，P0 纪律）。签名方式由系统设置 \`storage_sign_mode\` 控制（决策文档 ADR-0019，设计契约 docs/vod/spec.md §6.7）：
 
 - \`s3_presign\`（默认）：S3 SigV4 预签名；
-- \`cdn_url_auth\`：EdgeOne Token 鉴权方式 A（内置实现，不要改动）；
+- \`cdn_url_auth\`：EdgeOne Token 鉴权方式 A/B/C/D/V（内置实现，不要改动）；
 - \`custom\`：**本任务**——本部署的 CDN / 存储组合不属于以上两种，需要注册自定义签名提供者。
 
 **硬性不变量**：

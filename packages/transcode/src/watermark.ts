@@ -13,6 +13,7 @@
 // 掩码为 0 处取原画面，画布自身的 RGB 不参与结果。
 import { WatermarkParams, WatermarkSnapshot, z } from "@openvod/contracts";
 import { WATERMARK_FONT_DIR, type WatermarkAnchor, type WatermarkFont } from "@openvod/shared";
+import { inputArgs } from "./ffmpeg-input";
 
 /** 模板参数类型（zod schema 的 infer 结果；注意 TranscodeTemplateParams 同款，值不能直接当类型用） */
 export type WatermarkParamsValue = z.infer<typeof WatermarkParams>;
@@ -91,7 +92,7 @@ export interface WatermarkCompileInput {
 }
 
 export interface WatermarkFilterPlan {
-  /** 主输入之后追加的额外 `-i`（图片型一项；文字型为空数组） */
+  /** 主输入之后追加的额外输入参数（图片型：`-rw_timeout <us> -i <url>`；文字型为空数组） */
   extraInputs: string[];
   /** 完整 filter_complex：主输入分支（含既有 scale）+ 水印层 + 合成，输出标签固定为 `[wmwm_out]` */
   filterComplex: string;
@@ -216,8 +217,9 @@ function buildWatermarkLayer(
     const size = resolveWatermarkImageSize(params.size, variant, input.snapshot.image_width, input.snapshot.image_height);
     const pos = anchorExpressions(params.anchor, String(size.width), String(size.height), params.offset_x, params.offset_y);
     // 静态图片作为第二输入（单帧）：画布 overlay 用 shortest=1 收敛为单帧，
-    // 再由最终 overlay 的 eof_action=repeat 铺满主输入时长（argv builder 固定此方式）
-    extraInputs.push("-i", input.imageUrl);
+    // 再由最终 overlay 的 eof_action=repeat 铺满主输入时长（argv builder 固定此方式）。
+    // 同样经预签名 URL 网络拉取 → 与主输入一样注入 rw_timeout（网络停滞快速失败而非悬挂）。
+    extraInputs.push(...inputArgs(input.imageUrl));
     chain.push(`[1:v]scale=${size.width}:${size.height},format=rgba,colorchannelmixer=aa=${alpha}[wmwm_img]`);
     chain.push(
       `[wmwm_base][wmwm_img]overlay=${pos.x}:${pos.y}:shortest=1:format=auto[wmwm_layer]`,

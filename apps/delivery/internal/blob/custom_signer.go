@@ -2,7 +2,7 @@
 // ---------------------------------------------------------------------
 // 把 storage_sign_mode 配置为 "custom" 时，分发端的 GET 签名 URL（分片 / 海报直出）
 // 由这里注册的提供者生成，面向非 EO 的 CDN / 存储组合（如 Nginx secure_link、
-// CloudFront 签名 URL、path-style 回源的 TypeA 变体等）。管理端「存储设置」页提供
+// CloudFront 签名 URL、path-style 回源的 TypeA 变体等）。管理端「分发设置」页提供
 // 可交给 AI Agent 的实现提示词（含本契约的完整说明），生成代码后落到本文件并重新构建。
 //
 // 契约：

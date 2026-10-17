@@ -171,6 +171,7 @@ bun scripts/dev.ts stop                 # 停止（worker → player → deliver
 - 日志与 pid 在 `.run/`（已忽略）；启动前自动补依赖与 Prisma 生成物（两份客户端）。
 - 探测方式：`curl -fsS http://localhost:${ADMIN_PORT:-8787}/healthz`、`http://localhost:${DELIVERY_LISTEN#:}/healthz`；**worker 无 HTTP 端口，存活判定用 `.run/worker.pid`**。
 - 后台服务用 `setsid` 起独立进程组，停止时整组收掉（`bun --watch` 吞 SIGTERM → TERM 宽限后 SIGKILL 兜底）。
+- `worker` 用 `bun run start` 启动（**无 `--watch`**，2026-10-17 起）：Worker 串行消费转码任务，`--watch` 会在保存任何被 import 的文件时重启并**腰斩正在跑的 ffmpeg**（任务停在 ENCODING、lease 过期后被反复重认领，实测 9 个任务全部卡死）。开发 Worker 代码要热重载时用 `task dev:worker`（`bun --watch`，前台）。
 - ⚠️ **worker 是转码队列的唯一消费者**：只起 admin 而不起 worker 时，管理端发起的任务会一直停在「排队中」（`transcode_jobs.attempts=0`、`lease_until` 为空即"从未被认领"）；启动 admin 会自动带起 worker（`--no-worker` 关闭）。
 
 ### 5.2 单服务前台（调试用）
@@ -179,11 +180,11 @@ bun scripts/dev.ts stop                 # 停止（worker → player → deliver
 |---|---|---|
 | `bun scripts/dev.ts admin` | 管理端（`ADMIN_PORT`） | 前台，`next dev`；自动加载根 `.env`、补依赖与生成物。**并会自动后台启动 Worker**（日志 `.run/worker.log`），退出（含 Ctrl-C）时一并停掉；若已有 Worker 在跑则沿用、退出时不动它 |
 | `bun scripts/dev.ts delivery` | 分发端（`DELIVERY_LISTEN`） | 前台；每次增量 `go build` 到 `.run/delivery`；`DELIVERY_DATABASE_URL` 为本地占位时自动回退 `DATABASE_URL` |
-| `bun scripts/dev.ts worker` | Worker | 前台单跑（观察认领 / 转码日志）；需 `ffmpeg`/`ffprobe` |
+| `bun scripts/dev.ts worker` | Worker | 前台单跑（观察认领 / 转码日志）；无 `--watch`（见 §5.1）；需 `ffmpeg`/`ffprobe` |
 | `bun scripts/dev.ts player` | 播放演示 App（`PLAYER_PORT`） | 前台 `next dev`；免登录播放端 Demo（spec.md §11），播放依赖分发端与预览账号（`PLAYER_PREVIEW_*`，回退 `DELIVERY_PREVIEW_*`） |
 | `task dev:admin` | 管理端（`ADMIN_PORT`） | `next dev` + `.env` 注入；**注意：此路径不自动起 Worker**，转码需另开 `task dev:worker` |
 | `task dev:delivery` | 分发端（`DELIVERY_LISTEN`） | `go run .`（含 `.env` 注入） |
-| `task dev:worker` | Worker | `bun --watch`，需 `ffmpeg`/`ffprobe` |
+| `task dev:worker` | Worker | `bun --watch`（改 Worker 代码热重载用），需 `ffmpeg`/`ffprobe` |
 
 ### 5.3 播放链路本地调试（M3；规则见 spec.md §6）
 
@@ -246,7 +247,7 @@ task contracts            # 契约生成物变更后需入库（契约门禁）
 | `P1012 the URL must start with file:`（跑 `task db:push` 时） | `.env` 的 `DATABASE_URL` 是 MySQL——`db:push` 只服务 SQLite 开发库；MySQL 用 `task db:migrate`。临时要 SQLite 库可内联覆盖：`DATABASE_URL="file:./dev.db" bun run --cwd packages/db push:sqlite` |
 | `P3009 failed migrations` + MySQL `1064` near `'--…'` | 迁移 SQL 的 `--` 注释后**必须跟空格**（紧跟文字时 MySQL 不识别为注释，整个文件报 1064 且被记为 failed 挡住后续迁移）。修正 SQL 后：`bunx prisma migrate resolve --rolled-back <迁移名> --schema prisma/schema.mysql.prisma`，再 `task db:migrate` |
 | `P3014 could not create the shadow database` | 账号无建库权限；按 §4.3 的 baseline 四步，不要用 `migrate dev` |
-| 重转码后播放**还是旧画面 / 旧水印**（改水印或模板参数重转无效） | 配了 `STORAGE_CDN_BASE_URL` 时九成是 **CDN 缓存键忽略了查询串**：产物按模板树原位替换（路径不变），预签名 query 每次不同但缓存键相同 → CDN 一直回旧分片。验证：对比 CDN 响应头 `last-modified` 与任务完成时间（旧 = 命中陈旧缓存）；或无签名裸打分片 URL，返回 200 即坐实（顺带说明 URL 鉴权已被缓存绕过）。处理：EO 控制台**刷新缓存**（目录刷新 `proceed/`）先恢复，再把缓存键改为**含完整 query** 或启用 CDN URL 鉴权（spec §6.5） |
+| 重转码后播放**还是旧画面 / 旧水印**（改水印或模板参数重转无效） | 配了 `STORAGE_CDN_BASE_URL` 时九成是 **CDN 缓存键忽略了查询串**：产物按模板树原位替换（路径不变），预签名 query 每次不同但缓存键相同 → CDN 一直回旧分片。验证：对比 CDN 响应头 `last-modified` 与任务完成时间（旧 = 命中陈旧缓存）；或无签名裸打分片 URL，返回 200 即坐实（顺带说明 URL 鉴权已被缓存绕过）。处理：EO 控制台**刷新缓存**（目录刷新 `proceed/`）先恢复，再把缓存键改为**含完整 query** 或启用 CDN URL 鉴权（spec §6.5；两模式控制台配置逐项清单见 deploy-delivery.md「CDN 加速域名与资产签名配置清单」） |
 | 登录 403 + `[Better Auth]: Invalid origin: http://xxx` | CNB 预览网关转发时会把请求头 `Origin` 改写成 `http://<目标域名>`（实测：任意 Origin 都被改写，与浏览器是否用 https 无关）。`auth.ts` 已把 `ADMIN_BASE_URL` 的 http 等同体加进 `trustedOrigins`；仍报错时核对 `ADMIN_BASE_URL` 的 host 是否就是访问域名（CNB 上若注入了 `CNB_VSCODE_PROXY_URI`，`auth.ts` 已自动按 `{{port}} → ADMIN_PORT` 覆盖，无需手填）。附：better-auth 对无通配符条目做全量相等比对，`ADMIN_TRUSTED_ORIGINS` 里裸域名会被展开为 http/https 两条 |
 | 分发端启动即退出，提示 `URL_SIGN_KEY_HEX 未配置` / `MASTER_KEYS 未配置` | 未加载 `.env`；改用 `bun scripts/dev.ts delivery` 或 `task dev:delivery` |
 | 管理端向导页报 `MASTER_KEYS 未配置/非法`，但部署环境明明配了 | 该判定同时覆盖两种情况：①**运行进程 env 里没有**——配在构建期（CI/镜像构建参数）、只配了 worker 没配 admin、或改了 `.env` 后没重建容器（compose 必须 `up -d --force-recreate admin worker`，`restart` 不重读 env_file）；②**值格式非法**——带引号 / 含空白或换行 / 全角冒号「：」/ hex 不足 64 位（`openssl rand -hex 32`）。自查：启动日志 `[admin] MASTER_KEYS 自检失败：<原因>`（`bun scripts/dev.ts logs admin`）或 `docker compose exec admin printenv MASTER_KEYS \| cut -c1-12`（**只看前缀，别把密钥贴进聊天/日志**）；向导页也会直接显示原因。`.env` 侧另有 `sh scripts/gen-env.sh --check`，但它只查存在性与占位值，不校验格式 |
@@ -257,6 +258,7 @@ task contracts            # 契约生成物变更后需入库（契约门禁）
 | `play` 返回 409 `not_playable` | 媒资非 `READY`（转码中 / 失败）、该媒资无转码产物，或多套产物未指定 `template_id`（响应消息会列出可选值；模板 ID 亦可在管理端媒资详情查看） |
 | EdgeOne 部署后管理端预览 404，`/healthz` 也返回 Makers HTML `NOT_FOUND` / `The site does not exist` | 请求未到达 delivery。旧构建把共享 Go 源码放入 `cloud-functions/`，CLI 将 `server.go` 识别为 Framework 入口并生成 `/server` 前缀；改用 `task build:edgeone` 构建独立暂存项目并校验根 catch-all，`bun --no-env-file scripts/edgeone.ts deploy` 上传受检查产物到生产环境。再用 `bun --no-env-file scripts/check-delivery-deployment.ts <分发域名>` 验收健康 JSON 与无签名 403；若仍是平台 HTML 404，核对 Makers 域名绑定和生产部署。验收通过后在管理端重新生成播放 URL，完整步骤见 [deploy-delivery.md](./deploy-delivery.md) |
 | Makers 控制台已配置变量，但 Go 函数仍 502、日志报 `DELIVERY_DATABASE_URL 未配置` | Go Framework 上传产物未收到引导变量。使用更新后的 `scripts/edgeone.ts build` / `deploy`：发布前从控制台 Production 读取两项引导配置，写入私有函数包，由 EdgeOne 入口补齐进程环境。检查 `EO_API_REGION` 是否与账号站点一致；不要把 admin 的整份 `.env` 放进公开产物。控制台变量必须在发布前保存。详见 [deploy-delivery.md](./deploy-delivery.md) |
+| EdgeOne 部署后部分请求 500 `INTERNAL_CLOUD_FUNCTION_NOT_READY`（"Cloud Functions not ready."，正文非 JSON） | 平台滚动新版本实例的发布切换窗口：`/healthz` 可能已成功而其余路由暂时 500，实测约 20s 自愈，**不是 delivery 业务错误**。先等待重试：`bun --no-env-file scripts/check-delivery-deployment.ts <分发域名>`（六项探测的暂态 5xx / HTML 404 / 网络错误在 120s 窗口内自动重试）；持续数分钟不恢复再查 Makers 控制台函数日志与部署状态。背景见 [deploy-delivery.md](./deploy-delivery.md) |
 | 管理端「产物 → 播放」有总时长但一直转圈 | **对象桶 CORS 未放行管理端源站**（浏览器直连 COS 拉分片被拦；`curl -H "Origin: http://localhost:8787" <预签名分片 URL>` 可复现「200 但没有 `Access-Control-Allow-Origin`」）。到 COS 控制台加 CORS 规则：Origin 含管理端访问源站（本地 `http://localhost:8787`、CNB 预览 `https://*.cnb.run` 或 `*`）、Method `GET/HEAD`、Header `*`、ExposeHeader `ETag, Content-Length, Content-Range, Accept-Ranges` |
 | `[worker] 缺少必需工具：ffmpeg, ffprobe` | 装 ffmpeg（`.ide/Dockerfile` 镜像已含） |
 | 运行时报 `Cannot find module '@openvod/xxx'`（某 app 里） | **该 app 的 `package.json` 没声明这个 workspace 依赖**：bun 只给声明了依赖的包建软链，缺声明时从该包内解析不到（`packages/*` 之间同理）。补 `"@openvod/xxx": "workspace:*"` 后 `bun i`。已在 `packages/crypto`（→ shared）与 `apps/worker`（→ contracts）踩到过 |

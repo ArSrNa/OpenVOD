@@ -84,7 +84,7 @@ describe("首页 S3 资产统计", () => {
     });
     expect(DashboardStatsResponse.safeParse({
       media: { total: 0, ready: 0, not_ingested: 0 },
-      jobs: { active: 0, queued: 0, probing: 0, encoding: 0, packaging: 0 },
+      jobs: { active: 0, queued: 0, probing: 0, downloading: 0, encoding: 0, packaging: 0 },
       users: { total: 0, active: 0, disabled: 0 },
       ...assets,
     }).success).toBe(true);

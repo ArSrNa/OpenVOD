@@ -100,6 +100,10 @@ STORAGE_CDN_BASE_URL=""               # 加速域名（仅替换 GET 预签名 U
 | `STORAGE_CDN_BASE_URL` | 否 | 空 | 对象存储加速域名（ADR-0005 / ADR-0019）：`s3_presign` 模式仅替换 GET 预签名 URL 的 origin；`cdn_url_auth` 模式为签名 URL 的 host |
 | `STORAGE_SIGN_MODE` | 否 | `s3_presign` | GET 签名方式：`s3_presign`（S3 SigV4 预签名）\| `cdn_url_auth`（EO Token 鉴权方式 A，CDN 私有回源）\| `custom`（编译期注册的自定义提供者）。✅ **已实现（ADR-0019 / spec §6.7）** |
 | `STORAGE_CDN_AUTH_KEY` | 否 | 空 | CDN 边缘鉴权密钥（`cdn_url_auth` 必填；与 CDN 控制台同款密钥双侧一致；system_settings 中 MK 封装，env 兜底） |
+| `STORAGE_CDN_AUTH_TYPE` | 否 | `a` | `cdn_url_auth` 的 EO Token 鉴权方式：`a` \| `b` \| `c` \| `d` \| `v`（与 CDN 控制台 Token 鉴权所选方式一致；A 为 query sign、B/C 为路径前缀、D 为 token/t、V 为过期时刻 t + sha1，§6.7） |
+| `STORAGE_CDN_AUTH_PARAM` | 否 | `sign` | 方式 A 的鉴权 query 参数名（与 CDN 控制台「鉴权加密串参数名称」一致，1–100 位字母 / 数字 / 下划线） |
+| `STORAGE_CDN_AUTH_TOKEN_PARAM` | 否 | `token` | 方式 D 的签名参数名（与 CDN 控制台一致；与时间戳参数名不可相同） |
+| `STORAGE_CDN_AUTH_TIME_PARAM` | 否 | `t` | 方式 D 的时间戳参数名（与 CDN 控制台一致） |
 | `STORAGE_CDN_AUTH_TTL_SEC` | 否 | `3600` | CDN 鉴权窗口（timestamp 按窗口对齐 = 窗口内 URL 稳定缓存友好；与 CDN 控制台「有效时长」一致） |
 | `STORAGE_CUSTOM_SIGNER` | 否 | `custom` | `custom` 模式的提供者注册名（TS `registerUrlSigner` / Go `RegisterURLSigner`；实现入口 `packages/storage/src/custom-signer.ts` 与 `apps/delivery/internal/blob/custom_signer.go`） |
 
@@ -174,9 +178,14 @@ STORAGE_CDN_BASE_URL=""               # 加速域名（可选）
 | `S3_ACCESS_KEY_ID` | **是** | 空 | 访问密钥 ID |
 | `S3_SECRET_ACCESS_KEY` | **是** | 空 | 访问密钥 |
 | `S3_FORCE_PATH_STYLE` | 否 | `true` | 同 delivery；COS 需 `false` |
+| `S3_ENDPOINT_INTERNAL` | 否 | 空 | **仅 Worker 取源片与水印图**使用的同桶内网 / 本机端点（如 COS `cos-internal.*`、自托管 `http://127.0.0.1:<端口>`）；留空 = 用 `S3_ENDPOINT` 直连。Worker 对候选通路实测吞吐择优（2026-10-17，ADR-0019 修订） |
 | `STORAGE_CDN_BASE_URL` | 否 | 空 | 加速域名（签名 origin 替换 / cdn_url_auth 签名 host） |
-| `STORAGE_SIGN_MODE` | 否 | `s3_presign` | 同 delivery（Worker 取源片 / 水印图与播放分片同一签名形态，ADR-0019） |
+| `STORAGE_SIGN_MODE` | 否 | `s3_presign` | 同 delivery；**Worker 取源片 / 水印图已不走签名通路**（直连 + 内网端点择优，2026-10-17，ADR-0019 修订） |
 | `STORAGE_CDN_AUTH_KEY` | 否 | 空 | 同 delivery（system_settings 中 MK 封装，env 兜底） |
+| `STORAGE_CDN_AUTH_TYPE` | 否 | `a` | 同 delivery（EO Token 鉴权方式 `a`–`v`，与 CDN 控制台一致） |
+| `STORAGE_CDN_AUTH_PARAM` | 否 | `sign` | 同 delivery（方式 A 鉴权参数名） |
+| `STORAGE_CDN_AUTH_TOKEN_PARAM` | 否 | `token` | 同 delivery（方式 D 签名参数名） |
+| `STORAGE_CDN_AUTH_TIME_PARAM` | 否 | `t` | 同 delivery（方式 D 时间戳参数名） |
 | `STORAGE_CDN_AUTH_TTL_SEC` | 否 | `3600` | 同 delivery |
 | `STORAGE_CUSTOM_SIGNER` | 否 | `custom` | 同 delivery（Worker 侧经 packages/storage 注册表路由） |
 
@@ -271,6 +280,10 @@ DELIVERY_PUBLIC_BASE_URL=""                      # /api/admin/settings 回退提
 | `STORAGE_CDN_BASE_URL` | 否 | 空 | 加速域名（原视频 / 封面预览 302、presign 分片 origin 替换；cdn_url_auth 下为签名 host） |
 | `STORAGE_SIGN_MODE` | 否 | `s3_presign` | 同 delivery（管理端 302 / probe 读取同一签名形态，ADR-0019） |
 | `STORAGE_CDN_AUTH_KEY` | 否 | 空 | 同 delivery（system_settings 中 MK 封装，env 兜底） |
+| `STORAGE_CDN_AUTH_TYPE` | 否 | `a` | 同 delivery（EO Token 鉴权方式 `a`–`v`，与 CDN 控制台一致） |
+| `STORAGE_CDN_AUTH_PARAM` | 否 | `sign` | 同 delivery（方式 A 鉴权参数名） |
+| `STORAGE_CDN_AUTH_TOKEN_PARAM` | 否 | `token` | 同 delivery（方式 D 签名参数名） |
+| `STORAGE_CDN_AUTH_TIME_PARAM` | 否 | `t` | 同 delivery（方式 D 时间戳参数名） |
 | `STORAGE_CDN_AUTH_TTL_SEC` | 否 | `3600` | 同 delivery |
 | `STORAGE_CUSTOM_SIGNER` | 否 | `custom` | 同 delivery（实现入口 `packages/storage/src/custom-signer.ts`） |
 | `MEDIA_ID_LENGTH` | 否 | `8` | 媒资数字 ID 位数（4–16，保留前导零，spec.md §1.3） |

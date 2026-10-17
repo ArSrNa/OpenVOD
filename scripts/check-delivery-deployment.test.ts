@@ -40,8 +40,30 @@ describe("delivery 部署门禁", () => {
     ]);
   });
 
+  it("发布切换窗口内平台暂态 500 会重试，实例就绪后通过", async () => {
+    let businessCalls = 0;
+    const retries: string[] = [];
+    const results = await checkDeliveryDeployment("https://delivery.example.com", {
+      retryTimeoutMs: 500,
+      retryDelayMs: 1,
+      onRetry: (probe) => retries.push(probe),
+      fetcher: async (url) => {
+        if (url.endsWith("/healthz")) return deliveryResponse(url);
+        businessCalls++;
+        // 模拟新版本实例就绪前平台对新实例返回的非 JSON 500（INTERNAL_CLOUD_FUNCTION_NOT_READY）。
+        if (businessCalls <= 3) return new Response("Cloud Functions not ready.", { status: 500 });
+        return deliveryResponse(url);
+      },
+    });
+    expect(results.every((result) => result.ok)).toBe(true);
+    expect(retries).toEqual(["无签名主清单", "无签名主清单", "无签名主清单"]);
+    expect(businessCalls).toBe(8);
+  });
+
   it("平台 HTML 404 提示检查部署和路由，且不泄露正文", async () => {
     const results = await checkDeliveryDeployment("https://delivery.example.com", {
+      retryTimeoutMs: 20,
+      retryDelayMs: 1,
       fetcher: async () => new Response("<html>private-response-value</html>", {
         status: 404,
         headers: { "content-type": "text/html; charset=utf-8" },
@@ -84,10 +106,12 @@ describe("delivery 部署门禁", () => {
     expect(results.slice(1).every((result) => !result.ok)).toBe(true);
   });
 
-  it("超时中止请求且不会重试", async () => {
+  it("超时中止请求，重试窗口用尽后不无限重试", async () => {
     let requests = 0;
     const results = await checkDeliveryDeployment("https://delivery.example.com", {
       timeoutMs: 5,
+      retryTimeoutMs: 1,
+      retryDelayMs: 1,
       fetcher: async (_url, init) => {
         requests++;
         return new Promise((_resolve, reject) => init.signal!.addEventListener("abort", () => reject(new Error("private-error")), { once: true }));
@@ -101,6 +125,8 @@ describe("delivery 部署门禁", () => {
   it("响应体读取也受超时限制", async () => {
     const results = await checkDeliveryDeployment("https://delivery.example.com", {
       timeoutMs: 5,
+      retryTimeoutMs: 1,
+      retryDelayMs: 1,
       fetcher: async (url, init) => url.endsWith("/healthz")
         ? new Response(new ReadableStream({
           start(controller) {
@@ -117,6 +143,8 @@ describe("delivery 部署门禁", () => {
   it("无效或过大的 JSON 失败，网络异常也不转储错误文本", async () => {
     for (const mode of ["invalid", "large", "network"]) {
       const results = await checkDeliveryDeployment("https://delivery.example.com", {
+        retryTimeoutMs: 1,
+        retryDelayMs: 1,
         fetcher: async (url) => {
           if (!url.endsWith("/healthz")) return deliveryResponse(url);
           if (mode === "network") throw new Error("private-network-error");

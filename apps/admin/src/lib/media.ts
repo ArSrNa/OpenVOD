@@ -34,6 +34,7 @@ import {
 } from "./category-tree";
 import { mergeCustomData, parseMediaTags, serializeCustomData } from "./custom-metadata";
 import { getDb } from "@openvod/db";
+import { ACTIVE_JOB_STATUSES } from "@openvod/contracts";
 import type { DashboardStats, MediaCustomMetadataDTO } from "@openvod/contracts";
 import type { z } from "@openvod/contracts";
 import type { StorageObject } from "@openvod/storage";
@@ -721,8 +722,7 @@ export async function deleteMedia(id: string): Promise<{ removed: boolean }> {
 
 // ---- 删除某套转码产物（proceed/{id}/{模板id}/ 子树；spec.md §1.3/§5.5） ----
 
-/** 未终结任务状态（与 spec.md §5.1 状态机一致；此处独立常量避免与 transcode.ts 循环引用） */
-const ACTIVE_JOB_STATUSES = ["QUEUED", "PROBING", "ENCODING", "PACKAGING"] as const;
+// 未终结任务状态唯一真相源在 @openvod/contracts（spec.md §5.1 状态机）
 
 /**
  * 删除一份模板产物（按模板粒度，不动其它模板子树）：

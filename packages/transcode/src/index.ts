@@ -1,6 +1,6 @@
 // ffmpeg / ffprobe 封装（ADR-0008）：argv 数组模板，永不经 shell 拼接（防注入）
 // 密钥文件路径仅 Worker 注入；执行带超时；fMP4/CENC 演进时在此追加 Shaka Packager 调用。
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileP = promisify(execFile);
@@ -14,12 +14,68 @@ export class FFmpegError extends Error {
   }
 }
 
-export async function runFFmpeg(argv: string[], timeoutMs = 6 * 3600_000): Promise<void> {
-  try {
-    await execFileP("ffmpeg", argv, { timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 });
-  } catch (e) {
-    throw new FFmpegError(argv, (e as { stderr?: string }).stderr ?? String(e));
-  }
+/** 单次进度更新（argv 由模板编译器注入 `-progress pipe:1`，Worker 解析 stdout 得到） */
+export interface FFmpegProgressInfo {
+  /** 已输出时长（微秒）。ffmpeg 的 `out_time_ms` 字段实为微秒（历史命名），与 `out_time_us` 同口径 */
+  outTimeUs: number;
+}
+
+export interface RunFFmpegOptions {
+  /** 兜底超时（毫秒），默认 6 小时；超时即 SIGKILL 并按失败处理 */
+  timeoutMs?: number;
+  /** 进度回调（仅在 argv 带 `-progress pipe:1` 时有值） */
+  onProgress?: (info: FFmpegProgressInfo) => void;
+}
+
+/** stderr 只保尾部（失败消息取末 500 字符；避免长任务把内存吃满） */
+const STDERR_KEEP_CHARS = 256 * 1024;
+
+/**
+ * 执行一次 ffmpeg：argv 直传 spawn（不经 shell，ADR-0008 安全边界）。
+ * 用 spawn 而非 execFile 是为了**流式**读 `-progress pipe:1` 的 stdout（execFile 只能在退出后拿到全部输出）——
+ * 进度是「转码中 x%」的唯一来源（spec.md §5.1）。
+ */
+export async function runFFmpeg(argv: string[], opts: RunFFmpegOptions = {}): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? 6 * 3600_000;
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn("ffmpeg", argv, { stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    let stdoutRest = "";
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      stderr += `\n[runFFmpeg] 超时 ${timeoutMs}ms，已终止`;
+      child.kill("SIGKILL");
+    }, timeoutMs);
+    timer.unref?.();
+
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      if (!opts.onProgress) return;
+      stdoutRest += chunk;
+      const lines = stdoutRest.split("\n");
+      stdoutRest = lines.pop() ?? "";
+      for (const line of lines) {
+        const m = /^out_time_(?:us|ms)=(\d+)$/.exec(line.trim());
+        if (m) opts.onProgress({ outTimeUs: Number(m[1]) });
+      }
+    });
+
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+      if (stderr.length > STDERR_KEEP_CHARS) stderr = stderr.slice(-STDERR_KEEP_CHARS);
+    });
+
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+    child.on("error", (e) => finish(() => reject(new FFmpegError(argv, `${stderr}\n${String(e)}`))));
+    child.on("close", (code) => finish(() => (code === 0 ? resolve() : reject(new FFmpegError(argv, stderr)))));
+  });
 }
 
 // ---- ffprobe 系统元数据（spec.md §1.3 `metadata/{id}/probe.json`；管理端「生成元数据」/ Worker 探测共用） ----

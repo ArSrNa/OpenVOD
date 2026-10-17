@@ -8,6 +8,7 @@ import {
   KeyOutlined,
   LogoutOutlined,
   PictureOutlined,
+  ReadOutlined,
   SettingOutlined,
   SlidersOutlined,
   TeamOutlined,
@@ -16,11 +17,13 @@ import {
   VideoCameraOutlined,
 } from "@ant-design/icons";
 import { PageContainer, ProCard, ProLayout } from "@ant-design/pro-components";
+import { ACTIVE_JOB_STATUSES } from "@openvod/contracts";
 import { App, Badge, Dropdown, Empty, Spin, Typography } from "antd";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { authClient } from "@/lib/auth-client";
+import { DOCS_HOME, REPO_HOME } from "@/lib/links";
 import { configureUploadManager, uploadManager } from "@/lib/upload-manager";
 
 // 模块骨架（ADR-0004 功能清单；模块路由随 specification 落地）
@@ -38,6 +41,8 @@ const MODULES = [
   { key: "/jobs", label: "转码任务", icon: <ThunderboltOutlined /> },
   { key: "/settings", label: "系统设置", icon: <SettingOutlined /> },
   { key: "/about", label: "关于", icon: <InfoCircleOutlined /> },
+  // 外部链接项（key 为 https URL）：点击新标签打开，不参与路由与占位（见 handleMenuClick）
+  { key: DOCS_HOME, label: "查看文档", icon: <ReadOutlined /> },
 ];
 
 // 媒资管理二级菜单（2026-10-01 用户定，spec.md §9.1）：与系统设置同构，父项仅展开不导航
@@ -50,6 +55,7 @@ const MEDIA_CHILDREN = [
 const SETTINGS_CHILDREN = [
   { key: "/settings/playback", label: "播放设置" },
   { key: "/settings/storage", label: "存储设置" },
+  { key: "/settings/delivery", label: "分发设置" },
   { key: "/settings/login", label: "登录设置" },
   { key: "/settings/security", label: "安全设置" },
   { key: "/settings/worker", label: "任务设置" },
@@ -78,6 +84,7 @@ const ROUTE_PAGES = new Set([
   "/jobs",
   "/settings/playback",
   "/settings/storage",
+  "/settings/delivery",
   "/settings/login",
   "/settings/security",
   "/settings/worker",
@@ -132,8 +139,8 @@ function UploadMenuBadge() {
   return <Badge count={count} size="small" />;
 }
 
-// 进行中转码任务状态（同 JobsManager 的 ACTIVE：未终结即计入，spec.md §5.1 状态机）
-const JOBS_ACTIVE = new Set(["QUEUED", "PROBING", "ENCODING", "PACKAGING"]);
+// 进行中转码任务状态（唯一真相源在 @openvod/contracts：未终结即计入，spec.md §5.1 状态机）
+const JOBS_ACTIVE = new Set<string>(ACTIVE_JOB_STATUSES);
 
 /**
  * 「转码任务」菜单项角标（2026-10-01 用户定）：存在进行中任务时显示数量，无则不渲染。
@@ -249,6 +256,11 @@ export function ConsoleShell({
   // 未实现的模块仅切换内容区为占位（不走路由，ProLayout 高亮由 location 推导）
   const handleMenuClick = (path?: string) => {
     if (!path) return;
+    // 外部链接菜单项（「查看文档」）：新标签打开，不改内容区、不产生路由
+    if (/^https?:\/\//.test(path)) {
+      window.open(path, "_blank", "noopener,noreferrer");
+      return;
+    }
     if (ROUTE_PAGES.has(path)) {
       // 必须先清占位：从占位态点回「当前 URL 对应的页面」时 router.push 是空操作，
       // 组件不重挂载也不会重置状态，界面会卡在占位页（切页失效的根因）
@@ -330,7 +342,10 @@ export function ConsoleShell({
       menuFooterRender={(props) =>
         props?.collapsed ? undefined : (
           <Typography.Text type="secondary" style={{ display: "block", fontSize: 12, paddingInline: 8 }}>
-            OpenVOD v{version}
+            <Typography.Link href={REPO_HOME} target="_blank" rel="noopener noreferrer">
+              OpenVOD
+            </Typography.Link>{" "}
+            v{version}
             <br />
             Powered by Ar-Sr-Na
           </Typography.Text>

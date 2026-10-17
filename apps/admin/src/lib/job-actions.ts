@@ -10,8 +10,10 @@
 //     清错误与租约——不清零 attempts 会被认领逻辑立即判「超过重试上限」而秒失败。
 // 本模块只做判定，不改库；DB 写入与 CAS 见 lib/transcode.ts。
 
-/** 未终结状态（与 spec.md §5.1 状态机一致；与 worker / admin 各自持有的同名常量对齐） */
-const ACTIVE_STATUSES = ["QUEUED", "PROBING", "ENCODING", "PACKAGING"] as const;
+import { ACTIVE_JOB_STATUSES } from "@openvod/contracts";
+
+/** 未终结状态（唯一真相源在 @openvod/contracts，spec.md §5.1 状态机） */
+const ACTIVE_STATUSES: readonly string[] = ACTIVE_JOB_STATUSES;
 
 export interface JobActionInput {
   status: string;

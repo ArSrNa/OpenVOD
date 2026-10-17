@@ -1,15 +1,16 @@
 "use client";
 
 // 转码任务页（/jobs，M2；ADR-0008 队列 + ADR-0014 模板快照）：
-// 列表来自 transcode_jobs，展示状态机（排队 → 探测 → 转码 → 封装上传 → 完成/失败）、
-// 模板名（取任务快照，模板被删也能追溯）与失败原因；
+// 列表来自 transcode_jobs，展示状态机（排队 → 探测 → **拉取源片** → 转码 → 封装上传 → 完成/失败）、
+// 模板名（取任务快照，模板被删也能追溯）、阶段进度与失败原因；
 // 操作：**停止**（取消：排队中的撤下队列；worker 失联的安全终止，spec.md §5.1）与
 // **重启**（失败 / 手动停止的任务清零尝试次数重新入队）。
 // 实时性走 SSE（/api/admin/jobs/stream，spec.md §2.1）：客户端零轮询，服务端仅在快照变化时推全量，
 // 断线由 EventSource 自动重连（重连即拿最新快照）；「耗时」列用本地时钟每秒重算，不产生请求。
 import { ReloadOutlined, StopOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { ProCard } from "@ant-design/pro-components";
-import { App, Button, Empty, Space, Table, Tag, Tooltip, Typography } from "antd";
+import { ACTIVE_JOB_STATUSES } from "@openvod/contracts";
+import { App, Button, Empty, Progress, Space, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { jobActionState } from "@/lib/job-actions";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -23,6 +24,8 @@ interface JobItem {
   template_id: string | null;
   template_name: string | null;
   attempts: number;
+  /** 当前阶段进度（0–100；拉取源片 / 转码阶段有意义，其余为 null） */
+  progress: number | null;
   /** 分发端是否持有有效租约（执行中）；未认领 / worker 失联时为 false */
   lease_active: boolean;
   last_error: string | null;
@@ -34,13 +37,14 @@ interface JobItem {
 const STATUS_META: Record<string, { color: string; label: string }> = {
   QUEUED: { color: "default", label: "排队中" },
   PROBING: { color: "processing", label: "探测中" },
+  DOWNLOADING: { color: "processing", label: "拉取源片中" },
   ENCODING: { color: "processing", label: "转码中" },
   PACKAGING: { color: "processing", label: "封装上传中" },
   DONE: { color: "success", label: "完成" },
   FAILED: { color: "error", label: "失败" },
 };
 
-const ACTIVE = new Set(["QUEUED", "PROBING", "ENCODING", "PACKAGING"]);
+const ACTIVE = new Set<string>(ACTIVE_JOB_STATUSES);
 
 /** SSE 连接状态：网络类断线浏览器自动重连；HTTP 非 200（如会话过期）会永久关闭，需人工刷新 */
 type ConnState = "connecting" | "live" | "error" | "closed";
@@ -173,6 +177,23 @@ export function JobsManager() {
           </Typography.Text>
         </Tooltip>
       ),
+    },
+    {
+      title: "进度",
+      dataIndex: "progress",
+      width: 140,
+      render: (progress: number | null) => {
+        // 进度只在「拉取源片 / 转码」阶段有值（其余阶段为 null，不显示误导性的空条）
+        if (progress == null) return <Typography.Text type="secondary">—</Typography.Text>;
+        return (
+          <Progress
+            percent={progress}
+            size="small"
+            status={progress >= 100 ? "success" : "active"}
+            style={{ marginBottom: 0 }}
+          />
+        );
+      },
     },
     {
       title: "媒资",

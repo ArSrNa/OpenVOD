@@ -54,14 +54,14 @@ OpenVOD：自建云点播系统（媒资 → 转码加密 → 元数据 / 字幕
 共享：MySQL(TDSQL-C)/SQLite + 对象存储（仅 S3 兼容：COS/MinIO，ADR-0005 2026-09-22 修订移除 local 驱动）
 ```
 
-核心播放流程（ADR-0006，全系统最重要）：App `POST /v1/auth/login` 取 ES256 JWT → `POST /v1/media/{id}/play` 创建可吊销 `playback_sessions` 并返回签名主清单 URL → delivery 从存储读原始 m3u8 做行级改写，将分片 / 密钥 / 字幕 URL 全部注入签名 token → 分片经 S3 预签名直出（COS 私有桶，可配 `STORAGE_CDN_BASE_URL` 加速域名替换预签名 origin；2026-09-20 修订关闭 EO TypeA），**视频字节永远不经过函数** → 播放器调 key 接口取 16B CEK 本地解密。
+核心播放流程（ADR-0006，全系统最重要）：App `POST /v1/auth/login` 取 ES256 JWT → `POST /v1/media/{id}/play` 创建可吊销 `playback_sessions` 并返回签名主清单 URL → delivery 从存储读原始 m3u8 做行级改写，将分片 / 密钥 / 字幕 URL 全部注入签名 token → 分片经 S3 预签名直出（COS 私有桶；可配 `STORAGE_CDN_BASE_URL` 加速域名；ADR-0019：签名形态管理端可配——`s3_presign` 默认 / `cdn_url_auth`（CDN 私有回源 + EO Token 鉴权 A/B/C/D/V 全内置）/ `custom`），**视频字节永远不经过函数** → 播放器调 key 接口取 16B CEK 本地解密。
 
 关键原因：Safari 原生 HLS 的分片与密钥请求无法自定义请求头，因此播放资源的鉴权**必须**全部走 URL query 签名 token（`typ=m 清单 / s 分片 / k 密钥 / v 字幕`），JWT 只用于 login / media / play 业务 API。m3u8 与 key 响应必须 `Cache-Control: no-store`（P0 纪律，CI 门禁 `assert-unsigned-403` / `assert-no-store`）。
 
 ### 契约与双语言互通（防漂移）
 
 - `packages/contracts/src/index.ts` 的 zod schema 是 API DTO 唯一真相源；`task contracts` 经 JSON Schema → quicktype 生成 Go struct 到 `apps/delivery/internal/contracts/`，生成物入库 + CI diff 门禁是唯一防漂移手段。
-- URL 签名 token、MK 封装（AES-256-GCM）在 TS（`packages/crypto`）与 Go（`apps/delivery/internal/token`）各有一份实现（`packages/crypto` 中 TypeA 实现为废弃保留，不接入链路），靠 `packages/crypto/fixtures/crypto-v1.json` 共享向量保证互通；改任一侧必须重跑 `task vectors` 与两端测试。
+- URL 签名 token、MK 封装（AES-256-GCM）在 TS（`packages/crypto`）与 Go（`apps/delivery/internal/token`）各有一份实现（`packages/crypto` 的 `typea.ts` / `edgeone.ts` 为资产 URL 鉴权算法，ADR-0019 起已接入 `cdn_url_auth` 链路、A/B/C/D/V 全内置），靠 `packages/crypto/fixtures/` 共享向量（`crypto-v1.json` / `url-sign-v1.json` / `url-sign-eo-methods-v1.json`）保证互通；改任一侧必须重跑 `task vectors` 与两端测试。
 - `packages/shared` 存放错误码、token 类型、存储键布局、TTL 默认值等跨端常量（Go 侧无生成，手工对齐）。
 
 ### 数据层
@@ -100,7 +100,7 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可轮换）
 ### 当前实现状态（scaffold 骨架）
 
 - `apps/delivery` 播放链路（M3）已实现：`internal/{config,contracts,server,token,auth,blob,mk,playback,store}` 与装配包 `app`——login（bcrypt + ES256 JWT）、media 列表/详情、play（会话幂等 / 并发上限）、主 + 子清单改写、`/key`、分片 S3 预签名直出、字幕下发（`play` 附 typ=v 签名 URL；`.vtt` 按 `storage_key` 代理输出 `no-store`，spec.md §7.5）、`custom` 自定义元数据公开白名单（`internal/server/custom.go`：分类 / 描述 / 标签，spec.md §8.4）。未覆盖项见 `docs/vod/spec.md §6.6`。
-- `apps/worker/src/index.ts` 的转码执行链已实现（ADR-0008：认领 → ffprobe → key_info → 转码 → 上传 → 写 `hls_keys`）；**水印烧录已实现**（ADR-0018 / spec.md §10.4：读 `template_snapshot.watermark` → 图片型按 `image_key` 预签名取图 → `packages/transcode` 编译滤镜链，逐档挂在 scale 之后、编码切片之前；启动自检水印字体）。
+- `apps/worker/src/index.ts` 的转码执行链已实现（ADR-0008：认领 → ffprobe → **拉取源片到任务临时目录**（`source-download.ts`，状态 `DOWNLOADING` + `progress`）→ key_info → 转码（本地文件输入）→ 上传 → 写 `hls_keys`）；**水印烧录已实现**（ADR-0018 / spec.md §10.4：读 `template_snapshot.watermark` → 图片型按 `image_key` 预签名取图 → `packages/transcode` 编译滤镜链，逐档挂在 scale 之后、编码切片之前；启动自检水印字体）。
 - `apps/admin` 的 `/api/auth/*`（better-auth）、`/healthz`、登录页与建号脚本可用；`/api/admin/*` 业务端点按里程碑逐条落地——已实现：媒资（上传 / 列表 / 详情 / 重命名 + **自定义元数据字段更新**（描述 / 标签 / 分类）/ 删除 / 预览 / 封面 / 元数据 / 产物 / 转码发起）、`/api/admin/categories`（分类 CRUD，无限层级，spec.md §8）、`/api/admin/templates`（含可选 `watermark_id` 关联 + 两层校验）、`/api/admin/watermarks`（水印模板 CRUD + 图片上传 / 预览 + `referenced_by` + 删除 409，spec.md §10）、`/api/admin/keys`（含 MK 轮换）、`/api/admin/jobs`（列表 + SSE + 停止 / 重启）、`/api/admin/stats`、`/api/admin/users`（播放端用户 CRUD + 重置口令 + 吊销会话，spec.md §2.1.1）、`/api/admin/media/{id}/subtitles`（字幕轨道 CRUD + 覆盖文本，spec.md §7）；其余路径仍由 `/api/admin/[...path]` 会话守卫后返回 501。
 
 ## 仓库约定

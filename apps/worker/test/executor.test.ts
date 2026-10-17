@@ -28,12 +28,17 @@ const prefixOf = (templateId: string) => `proceed/${MEDIA_ID}/${templateId}`;
 
 class FakeJobStore implements TranscodeJobStore {
   statuses: JobStatusName[] = [];
+  /** 阶段进度上报序列（0–100） */
+  progress: number[] = [];
   leaseExtends = 0;
   async claim(): Promise<TranscodeJobRow | null> {
     return null;
   }
   async setStatus(_id: string, status: JobStatusName): Promise<void> {
     this.statuses.push(status);
+  }
+  async setProgress(_id: string, progress: number): Promise<void> {
+    this.progress.push(progress);
   }
   async extendLease(): Promise<void> {
     this.leaseExtends += 1;
@@ -279,7 +284,7 @@ describe("M2 执行器", () => {
       expect(result.keyReused).toBe(false);
       // 产物按「媒资 → 模板」两级落位（spec.md §1.3）
       expect(result.outputPrefix).toBe(prefixOf(TEMPLATE_A));
-      expect(env.jobStore.statuses).toEqual(["ENCODING", "PACKAGING", "DONE"]);
+      expect(env.jobStore.statuses).toEqual(["DOWNLOADING", "ENCODING", "PACKAGING", "DONE"]);
       expect(env.mediaStore.statuses).toEqual(["TRANSCODING", "READY"]);
       expect(result.deletedStaleObjects).toBe(1);
 
@@ -377,7 +382,7 @@ describe("M2 执行器", () => {
       expect(result.variants[0]).toMatchObject({ name: "240p", width: 320, height: 240 });
 
       // 状态机与产物落位（模板子树；兜底档仍按模板加密）
-      expect(env.jobStore.statuses).toEqual(["ENCODING", "PACKAGING", "DONE"]);
+      expect(env.jobStore.statuses).toEqual(["DOWNLOADING", "ENCODING", "PACKAGING", "DONE"]);
       expect(env.mediaStore.statuses).toEqual(["TRANSCODING", "READY"]);
       expect(result.encrypted).toBe(true);
       expect(env.keyStore.rows.size).toBe(1);

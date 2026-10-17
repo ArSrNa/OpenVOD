@@ -1,8 +1,8 @@
 // 播放端用户管理业务规则单测（ADR-0004 `users` 表；ADR-0007 账户域）
 // 覆盖：
-//   - 创建：字段归一（trim / 默认值）、用户名非法 400、口令过短 400、用户名冲突 409、
+//   - 创建：字段归一（trim / 默认值 / display_name 未填默认沿用用户名）、用户名非法 400、口令过短 400、用户名冲突 409、
 //     DTO 不回显 password_hash、新用户会话数恒 0；
-//   - 更新（PATCH 部分语义）：仅改展示名不触碰状态、封禁（ACTIVE→DISABLED）吊销会话且只一次、
+//   - 更新（PATCH 部分语义）：仅改展示名不触碰状态、display_name 传 null / 空串 = 回退沿用用户名、封禁（ACTIVE→DISABLED）吊销会话且只一次、
 //     重复封禁不重复吊销、解封不吊销、用户不存在 404；
 //   - 重置密码：口令哈希后写库 + **同步吊销会话**（凭据变更收敛）、404；
 //   - 吊销会话：404、返回吊销条数、不改变用户状态；
@@ -146,6 +146,24 @@ describe("createUser", () => {
     expect(JSON.stringify(dto)).not.toContain("password_hash");
   });
 
+  it("display_name 缺省 / null / 空串 → 默认沿用用户名", async () => {
+    const { deps, created } = makeDeps();
+    const omitted = await createUser({ username: "bob", password: "supersecret" }, deps);
+    expect(omitted.display_name).toBe("bob");
+    const nulled = await createUser(
+      { username: "carol", password: "supersecret", display_name: null },
+      deps,
+    );
+    expect(nulled.display_name).toBe("carol");
+    const blank = await createUser(
+      { username: "dave", password: "supersecret", display_name: "   " },
+      deps,
+    );
+    expect(blank.display_name).toBe("dave");
+    // 落库的是归一后的展示名（而非 null / 空串）
+    expect(created.map((c) => c.displayName)).toEqual(["bob", "carol", "dave"]);
+  });
+
   it("用户名不符合 3–32 位规则 → 400 且不落库", async () => {
     const { deps, created } = makeDeps();
     const err = await expectUserError(
@@ -183,10 +201,13 @@ describe("updateUser", () => {
     expect(revoked).toHaveLength(0);
   });
 
-  it("display_name 传 null = 清空展示名", async () => {
-    const { deps } = makeDeps();
+  it("display_name 传 null / 空串 = 回退沿用用户名（与创建一致）", async () => {
+    const { deps, updated } = makeDeps();
     const { user } = await updateUser("u1", { display_name: null }, deps);
-    expect(user.display_name).toBeNull();
+    expect(user.display_name).toBe("alice");
+    const blank = await updateUser("u1", { display_name: "   " }, deps);
+    expect(blank.user.display_name).toBe("alice");
+    expect(updated.map((u) => u.data.displayName)).toEqual(["alice", "alice"]);
   });
 
   it("封禁（ACTIVE→DISABLED）→ 吊销全部未过期会话（ADR-0007）", async () => {

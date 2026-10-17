@@ -3,7 +3,10 @@
  * 部署后确认公开域名的请求确实到达 delivery，而非 EdgeOne 静态页或其他服务。
  * 用法：bun --no-env-file scripts/check-delivery-deployment.ts https://delivery.example.com
  *
- * CLI 先等待 healthz 就绪（最多 120s），再逐项检查（单次最多 30s）。
+ * CLI 先等待 healthz 就绪（最多 120s），再逐项检查：单次请求最多 30s，
+ * 发布切换窗口内的暂态失败（平台 5xx / 平台 HTML 404 / 网络重置与超时）在统一窗口
+ * （默认 120s）内重试——2026-10-17 实测新版本实例就绪前，healthz 可先成功而其余路由 500
+ * `INTERNAL_CLOUD_FUNCTION_NOT_READY`（非 JSON），约 20s 内自愈。
  * 不需要账号、现有媒资或播放 token，不读取 .env，也不输出响应正文。
  * unsigned 403 当前不承诺 no-store；本检查不能替代有效签名清单 / 密钥响应的
  * Cache-Control: no-store 门禁（ADR-0006）。
@@ -127,15 +130,42 @@ async function checkProbe(base: string, probe: Probe, fetcher: Fetcher, timeoutM
 
 export async function checkDeliveryDeployment(
   baseURL: string,
-  options: { fetcher?: Fetcher; timeoutMs?: number; onResult?: (result: CheckResult) => void } = {},
+  options: {
+    fetcher?: Fetcher;
+    timeoutMs?: number;
+    retryTimeoutMs?: number;
+    retryDelayMs?: number;
+    onRetry?: (probe: string, attempt: number, result: CheckResult) => void;
+    onResult?: (result: CheckResult) => void;
+  } = {},
 ): Promise<CheckResult[]> {
   const base = parseBaseURL(baseURL);
   const timeoutMs = options.timeoutMs ?? 30_000;
+  const retryTimeoutMs = options.retryTimeoutMs ?? 120_000;
+  const retryDelayMs = options.retryDelayMs ?? 5_000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error("请求超时必须是正整数毫秒");
+  for (const value of [retryTimeoutMs, retryDelayMs]) {
+    if (!Number.isSafeInteger(value) || value <= 0) throw new Error("暂态重试窗口必须是正整数毫秒");
+  }
+  const fetcher = options.fetcher ?? fetch;
   const results: CheckResult[] = [];
+  // 发布切换窗口内平台可能对新版本实例先返回暂态失败；六项探测共享一个总窗口重试，
+  // 避免 healthz 已就绪但其余路由仍 500（INTERNAL_CLOUD_FUNCTION_NOT_READY）时误判失败。
+  // 仅重试 retryable 结果（平台 5xx / HTML 404 / 网络错误）；重定向、错误服务与错误 JSON 立即失败。
+  const deadline = Date.now() + retryTimeoutMs;
   // 顺序检查以复用预热实例，避免瞬时并发引发额外实例冷启动。
   for (const probe of probes) {
-    const result = await checkProbe(base, probe, options.fetcher ?? fetch, timeoutMs);
+    let result = await checkProbe(base, probe, fetcher, timeoutMs);
+    let attempt = 0;
+    while (!result.ok && result.retryable && Date.now() < deadline) {
+      options.onRetry?.(probe.name, ++attempt, result);
+      await new Promise((resolve) => setTimeout(resolve, Math.max(1, Math.min(retryDelayMs, deadline - Date.now()))));
+      if (Date.now() >= deadline) break;
+      result = await checkProbe(base, probe, fetcher, Math.max(1, Math.min(timeoutMs, deadline - Date.now())));
+    }
+    if (!result.ok && result.retryable && Date.now() >= deadline) {
+      result = { ...result, detail: `${result.detail}；暂态重试窗口 ${retryTimeoutMs}ms 已用尽` };
+    }
     results.push(result);
     options.onResult?.(result);
   }
@@ -188,6 +218,7 @@ if (import.meta.main) {
         process.exitCode = 1;
       } else {
         const results = await checkDeliveryDeployment(args[0], {
+          onRetry: (probe, attempt, result) => console.log(`[RETRY ${attempt}] ${probe}: ${result.detail}`),
           onResult: (result) => console.log(`[${result.ok ? "OK" : "FAIL"}] ${result.name}: ${result.detail}`),
         });
         const passed = results.filter((result) => result.ok).length;

@@ -10,6 +10,7 @@ import {
   SETTING_SECRET_KEYS,
   SETTING_TTL_LIMITS,
   STORAGE_SIGN_MODES,
+  CDN_AUTH_TYPES,
   DEFAULTS,
   MEDIA_ID_CONFIG,
   resolveMediaIdLength,
@@ -119,6 +120,17 @@ function enumValidator(label: string, allowed: string[]): Validator {
   };
 }
 
+/** CDN 鉴权参数名形状（EO 控制台「鉴权加密串参数名称」）：1–100 位字母 / 数字 / 下划线；空串回退默认 */
+function cdnAuthParamValidator(label: string): Validator {
+  return (v) => {
+    const raw = v.trim();
+    if (raw && !/^[A-Za-z0-9_]{1,100}$/.test(raw)) {
+      throw new SettingsError("bad_request", `${label}只能包含 1–100 位字母、数字或下划线（与 CDN 控制台一致）`);
+    }
+    return raw;
+  };
+}
+
 /** CORS 来源列表：`*` 或逗号分隔 http(s) origin */
 function corsOriginsValidator(): Validator {
   return (v) => {
@@ -167,6 +179,8 @@ function trustedOriginsValidator(): Validator {
 /** 非密钥键：键名 → { env 兜底, 校验器 }（密钥键见 SECRET_META）。Record 形态便于字符串索引 */
 const PLAIN_META: Record<string, { env?: string; validate: Validator } | undefined> = {
   [SETTING_KEYS.s3Endpoint]: { env: "S3_ENDPOINT", validate: urlValidator("S3 端点") },
+  // 可选：同桶内网 / 本机端点（仅 Worker 取源片与水印图使用，2026-10-17）
+  [SETTING_KEYS.s3EndpointInternal]: { env: "S3_ENDPOINT_INTERNAL", validate: urlValidator("S3 内网端点") },
   [SETTING_KEYS.s3Region]: { env: "S3_REGION", validate: (v) => v.trim() },
   [SETTING_KEYS.s3Bucket]: { env: "S3_BUCKET", validate: (v) => v.trim() },
   [SETTING_KEYS.s3AccessKeyId]: { env: "S3_ACCESS_KEY_ID", validate: (v) => v.trim() },
@@ -189,6 +203,19 @@ const PLAIN_META: Record<string, { env?: string; validate: Validator } | undefin
   [SETTING_KEYS.storageCdnAuthTtlSec]: {
     env: "STORAGE_CDN_AUTH_TTL_SEC",
     validate: intValidator("CDN 鉴权有效期", SETTING_TTL_LIMITS[SETTING_KEYS.storageCdnAuthTtlSec].min, SETTING_TTL_LIMITS[SETTING_KEYS.storageCdnAuthTtlSec].max),
+  },
+  [SETTING_KEYS.storageCdnAuthType]: {
+    env: "STORAGE_CDN_AUTH_TYPE",
+    validate: enumValidator("CDN 鉴权方式", [...CDN_AUTH_TYPES]),
+  },
+  [SETTING_KEYS.storageCdnAuthParam]: { env: "STORAGE_CDN_AUTH_PARAM", validate: cdnAuthParamValidator("鉴权参数名") },
+  [SETTING_KEYS.storageCdnAuthTokenParam]: {
+    env: "STORAGE_CDN_AUTH_TOKEN_PARAM",
+    validate: cdnAuthParamValidator("方式 D 签名参数名"),
+  },
+  [SETTING_KEYS.storageCdnAuthTimeParam]: {
+    env: "STORAGE_CDN_AUTH_TIME_PARAM",
+    validate: cdnAuthParamValidator("方式 D 时间戳参数名"),
   },
   [SETTING_KEYS.storageCustomSigner]: {
     env: "STORAGE_CUSTOM_SIGNER",
@@ -434,6 +461,14 @@ export interface StorageSnapshot {
   /** GET 签名方式（ADR-0019，默认 s3_presign） */
   signMode: string;
   cdnAuthKey: string;
+  /** EO Token 鉴权方式（a | b | c | d | v，默认 a；与 CDN 控制台 Token 鉴权所选方式一致） */
+  cdnAuthType: string;
+  /** 方式 A 的鉴权 query 参数名（storage_cdn_auth_param，默认 sign） */
+  cdnAuthParam: string;
+  /** 方式 D 的签名参数名（storage_cdn_auth_token_param，默认 token） */
+  cdnAuthTokenParam: string;
+  /** 方式 D 的时间戳参数名（storage_cdn_auth_time_param，默认 t） */
+  cdnAuthTimeParam: string;
   cdnAuthTtlSec: number;
   customSigner: string;
   /** 存储四要素（端点 / 桶 / AK / SK）齐全才算配置完成 */
@@ -517,6 +552,10 @@ function buildSettingsSnapshot(rows: Array<{ key: string; value: string }>): Set
       rootPrefix: get(SETTING_KEYS.storageRootPrefix),
       signMode: get(SETTING_KEYS.storageSignMode) || "s3_presign",
       cdnAuthKey: getSecret("storage_cdn_auth_key"),
+      cdnAuthType: get(SETTING_KEYS.storageCdnAuthType) || "a",
+      cdnAuthParam: get(SETTING_KEYS.storageCdnAuthParam) || "sign",
+      cdnAuthTokenParam: get(SETTING_KEYS.storageCdnAuthTokenParam) || "token",
+      cdnAuthTimeParam: get(SETTING_KEYS.storageCdnAuthTimeParam) || "t",
       cdnAuthTtlSec: toInt(get(SETTING_KEYS.storageCdnAuthTtlSec), 3600),
       customSigner: get(SETTING_KEYS.storageCustomSigner) || "custom",
       configured: Boolean(s3Endpoint && s3Bucket && s3Ak && s3Sk),

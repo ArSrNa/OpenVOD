@@ -1,8 +1,13 @@
 import { Button } from "antd";
+import { CnbIcon } from "@/components/CnbIcon";
+import { DOCS_HOME, REPO_HOME } from "@/lib/links";
 import { APP_VERSION } from "@/lib/version";
 import { ReadOutlined } from "@ant-design/icons";
 
-export function Header() {
+export function Header({ showRepoButton = false }: {
+    /** 顶图是否显示「查看仓库」按钮（仅「关于」页传 true） */
+    showRepoButton?: boolean;
+}) {
     return <div className="relative">
         <div className="absolute top-0 left-0 z-10 mt-5 p-12 text-white">
             <div className="font-bold text-4xl">
@@ -10,7 +15,10 @@ export function Header() {
             </div>
             <div className="mt-5 text-lg">版本：{APP_VERSION}｜Powered by Ar-Sr-Na｜Apache 2.0 License.</div>
             <div className="mt-5 flex flex-wrap gap-2">
-                <Button icon={<ReadOutlined />} type="primary" href="https://arsrna-it.feishu.cn/drive/folder/TY3lf4NNIlhgXKd6t2acnItMnAg?from=from_copylink" target="_blank">查看文档</Button>
+                <Button icon={<ReadOutlined />} type="primary" href={DOCS_HOME} target="_blank">查看文档</Button>
+                {showRepoButton && (
+                    <Button icon={<CnbIcon />} type="primary" href={REPO_HOME} target="_blank">查看仓库</Button>
+                )}
             </div>
         </div>
         <div className="w-full h-75">

@@ -9,7 +9,7 @@ export const metadata: Metadata = {
 export default function AboutPage() {
   return (
     <div className="flex flex-col gap-5">
-      <Header />
+      <Header showRepoButton />
       <AboutContent />
     </div>
   );

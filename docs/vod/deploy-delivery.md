@@ -79,6 +79,48 @@ bun --no-env-file scripts/check-delivery-deployment.ts "https://delivery.ovod.sk
 发布统一走 CNB 的 EdgeOne 按钮或上述命令。直接从仓库根运行 `makers deploy`、
 或配置 Makers Git 自动部署，都不会采用这个受检查的暂存项目与产物，不是本仓库的发布入口。
 
+## CDN 加速域名与资产签名配置清单（ADR-0019）
+
+资产 GET URL 的签名形态由 `storage_sign_mode` 决定（管理端「分发设置」或 env `STORAGE_SIGN_MODE`，
+spec.md §6.7）：`s3_presign`（默认，签名在 S3）| `cdn_url_auth`（签名在 CDN 边缘）| `custom`。
+**桶恒为私有**（不变量，ADR-0005）——两种内置模式只改变签名位置。以下控制台配置是**切换前置条件**；
+配置错误会复现 2026-10-05 实测的陈旧缓存 / 无签名命中缓存绕过鉴权（spec §6.5、dev-workflow §8）。
+
+### 通用前置
+
+- CDN 上的加速域名与「存储加速域名」（`storage_cdn_base_url`）填同一值，回源对象存储（COS 源站 / COS 桶域）；
+- **每次切换模式后 CDN 全量刷新一次**，清退旧形态缓存条目（在途旧会话按旧模式有效至过期，无破坏性）。
+
+### 模式一：`s3_presign`（默认；签名在 S3，CDN 透传）
+
+| # | 配置项 | 要求 |
+|---|---|---|
+| 1 | 缓存键 | **含完整 query**（不过滤任何参数），或对带 query 的请求**不缓存**——二者必居其一。忽略 query 会导致①无签名裸打 URL 命中缓存**绕过鉴权**（返回 200）；②产物原位替换后**永远读旧分片**（重转码 / 改水印不生效） |
+| 2 | 回源 Host | 透传 / 改写为桶端点——SigV4 签名覆盖 Host 头，否则 S3 侧验签失败 |
+| 3 | 刷新 | 产物按模板树原位替换（路径不变）：转码完成后目录刷新 `proceed/{id}/` |
+
+### 模式二：`cdn_url_auth`（EdgeOne Token 鉴权方式 A；签名在 CDN 边缘）
+
+| # | 配置项 | 要求 |
+|---|---|---|
+| 1 | 私有回源 | 源站侧配置回源鉴权（EO「源站鉴权」/ COS 私有桶回源授权，以控制台实际入口为准）：存储凭证配在 CDN 控制台，**不入库、不进本仓库、不写日志** |
+| 2 | Token 鉴权 | 站点加速 → 规则引擎 → Token 鉴权：**鉴权方式与「CDN 鉴权方式」（`storage_cdn_auth_type`，A/B/C/D/V）一致**；**主鉴权密钥 = 管理端「CDN 边缘鉴权密钥」（`storage_cdn_auth_key`）双侧一致**；「有效时长」=「CDN 鉴权有效期」（`storage_cdn_auth_ttl_sec`，默认 3600 秒）；方式 A 的「鉴权加密串参数名称」= 管理端「鉴权参数名（方式 A）」（`storage_cdn_auth_param`，默认 `sign`）；方式 D 的两个参数名 = 「签名参数名（方式 D）」/「时间戳参数名（方式 D）」（`storage_cdn_auth_token_param` / `storage_cdn_auth_time_param`，默认 `token` / `t`） |
+| 3 | 缓存 | 缓存键含 query；缓存 TTL ≤ 签名窗口。EO 在鉴权通过后**自动忽略鉴权参数参与缓存**（官方行为）——窗口内 URL 稳定即可跨会话命中；重转码后的陈旧缓存仍靠 TTL / 刷新治理 |
+| 4 | 回源 Host | 私有回源由 CDN 凭据完成，无需再依赖 S3 签名透传 |
+
+方式差异注意（与 `storage_cdn_auth_type` 一一对应，官方算法规格见 spec.md §6.7）：
+
+- **B / C 为路径前缀式**（`/{timestamp}/{md5}/…`、`/{md5}/{timestamp}/…`）：规则引擎的 URL Path **匹配必须用正则把鉴权前缀纳入**，否则请求不命中规则；EO 验签后会剥离前缀回源（回源路径与对象键一致）；不同签名窗口 path 不同、缓存条目按窗口更替（命中率低于 A/D）；
+- **B 的 timestamp 为 UTC+8 分钟**（`YYYYMMDDHHMM`）：窗口末签发的 URL 实际有效期最多少 1 分钟；
+- **V 的 `t` 是过期时刻**（十六进制 Unix 秒，代码按窗口对齐 + 1 窗，EO 另加 300s 容差）：本实现不生成 `us` / `plive`（非 VOD 源站不支持）与 `exper`（试看）等选填参数。
+
+### 验收（切换后逐项执行）
+
+- [ ] 裸打分片 URL（不带签名）→ **403**（CI 门禁 `assert-unsigned-403` 同口径）；
+- [ ] 管理端重新播放取带签名 URL → 200，播放器可正常解密播放；
+- [ ] 重转码一次，对比 CDN 响应头 `last-modified` 与任务完成时间——不一致说明命中陈旧缓存，检查缓存键与刷新；
+- [ ] 需要更新有效期时：同步调整 `storage_cdn_auth_ttl_sec` 与 EO 控制台「有效时长」（两侧不一致会提前 403 或延长暴露窗口）。
+
 ## CNB 一键构建（web_trigger 按钮）
 
 分支详情页共五个按钮，`.cnb/web_trigger.yml` 的 `event` 与 `.cnb.yml` 中 `$` 下的 `web_trigger_*` 键**同名**对应。
@@ -206,3 +248,23 @@ Go Framework 根模块布局下，CLI 生成的响应中间件未自动接入嵌
 `RunEdgeOne()` 现显式包装 HTTP 响应，在首次 `WriteHeader` / `Write` **之前**设置固定 CLI 使用的
 `eo-pages-inner-scf-status`、`eo-pages-inner-status-intercept=false` 和请求 ID，保留业务状态及 JSON / no-store。
 平台响应头只用于 EdgeOne，SCF / Compose 不受影响。适配的最终边缘行为仍需部署后以六项检查验收。
+
+### 发布切换窗口的平台 500（2026-10-17）
+
+实测（流水线 `cnb-7qa-1k5308amo`）：`makers deploy` 上传新版本后，平台滚动新实例期间，
+部分请求会收到平台生成的 **HTTP 500、正文非 JSON** 的错误页：
+
+```text
+500: INTERNAL_SERVER_ERROR
+(Code: INTERNAL_CLOUD_FUNCTION_NOT_READY)
+Cloud Functions not ready.
+```
+
+这不是 delivery 的业务错误，也不能用「业务路由 500 JSON」来判定故障：同一时刻
+`/healthz` 可能已返回成功 JSON（命中仍存活或先就绪的实例），其余路由仍 500；
+实例就绪后自行恢复（本次实测约 20s）。因此发布后的**任何**人工访问都要按此窗口预期——
+先等待重试，持续数分钟以上才需要进 Makers 控制台查函数日志与部署状态。
+
+`scripts/check-delivery-deployment.ts` 已按此修订：六项探测的暂态失败（平台 5xx、平台 HTML 404、
+网络重置与超时）在统一窗口（默认 120s，`retryTimeoutMs`）内逐项重试；重定向、错误服务、
+错误 JSON 等配置类失败仍立即失败，避免把真实故障掩盖成「部署慢」。

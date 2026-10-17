@@ -134,12 +134,14 @@ export async function createUser(body: unknown, deps: UserDeps): Promise<z.infer
   const parsed = CreateUserRequest.safeParse(body);
   if (!parsed.success) throw new UserError("bad_request", firstIssue(parsed.error), 400);
   const input = parsed.data;
+  // 展示名归一：未填（缺省 / null / 空串）= 默认沿用用户名（对应表单提示「留空默认与用户名一致」）
+  const displayName = input.display_name || input.username;
   const passwordHash = await deps.hashPassword(input.password);
   try {
     const row = await deps.createUser({
       username: input.username,
       passwordHash,
-      displayName: input.display_name ?? null,
+      displayName,
       status: input.status,
       maxConcurrentSessions: input.max_concurrent_sessions,
     });
@@ -169,7 +171,10 @@ export async function updateUser(
   if (!current) throw new UserError("not_found", `用户不存在：${id}`, 404);
 
   const data: UserWriteData = {};
-  if (input.display_name !== undefined) data.displayName = input.display_name;
+  // 展示名归一（与创建一致）：null / 空串 = 回退沿用用户名，而非清空
+  if (input.display_name !== undefined) {
+    data.displayName = input.display_name || current.username;
+  }
   if (input.status !== undefined) data.status = input.status;
   if (input.max_concurrent_sessions !== undefined) {
     data.maxConcurrentSessions = input.max_concurrent_sessions;

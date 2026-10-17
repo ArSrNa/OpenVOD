@@ -45,8 +45,10 @@ export {
   type SignMode,
   type UrlSigner,
   type UrlSignerFactoryDeps,
+  type EdgeOneSignerOptions,
   type EdgeOneTypeASignerOptions,
   createUrlSigner,
+  createEdgeOneSigner,
   createEdgeOneTypeASigner,
   typeAWindowTimestamp,
   registerUrlSigner,
@@ -54,6 +56,6 @@ export {
   TYPEA_FIXED_RAND,
   TYPEA_FIXED_UID,
 } from "./signer";
-export { STORAGE_SIGN_MODES } from "@openvod/shared";
+export { STORAGE_SIGN_MODES, CDN_AUTH_TYPES } from "@openvod/shared";
 // 自定义签名提供者注册入口（ADR-0019）：导入即执行用户侧 registerUrlSigner
 import "./custom-signer";

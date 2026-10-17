@@ -83,14 +83,14 @@ bun scripts/dev.ts all --background   # 需要恢复时按原样起回（含 wor
 共享：MySQL(TDSQL-C)/SQLite + 对象存储（local / S3 兼容 COS/MinIO）
 ```
 
-核心播放流程（ADR-0006，全系统最重要）：App `POST /v1/auth/login` 取 ES256 JWT → `POST /v1/media/{id}/play` 创建可吊销 `playback_sessions` 并返回签名主清单 URL → delivery 从存储读原始 m3u8 做行级改写，将分片 / 密钥 / 字幕 URL 全部注入签名 token → 分片经 S3 预签名直出（COS 私有桶，可配 `STORAGE_CDN_BASE_URL` 加速域名替换预签名 origin；2026-09-20 修订关闭 EO TypeA），**视频字节永远不经过函数** → 播放器调 key 接口取 16B CEK 本地解密。
+核心播放流程（ADR-0006，全系统最重要）：App `POST /v1/auth/login` 取 ES256 JWT → `POST /v1/media/{id}/play` 创建可吊销 `playback_sessions` 并返回签名主清单 URL → delivery 从存储读原始 m3u8 做行级改写，将分片 / 密钥 / 字幕 URL 全部注入签名 token → 分片经 S3 预签名直出（COS 私有桶；可配 `STORAGE_CDN_BASE_URL` 加速域名；ADR-0019：签名形态管理端可配——`s3_presign` 默认 / `cdn_url_auth`（CDN 私有回源 + EO Token 鉴权 A/B/C/D/V 全内置）/ `custom`），**视频字节永远不经过函数** → 播放器调 key 接口取 16B CEK 本地解密。
 
 关键原因：Safari 原生 HLS 的分片与密钥请求无法自定义请求头，因此播放资源的鉴权**必须**全部走 URL query 签名 token（`typ=m 清单 / s 分片 / k 密钥 / v 字幕`），JWT 只用于 login / media / play 业务 API。m3u8 与 key 响应必须 `Cache-Control: no-store`（P0 纪律，CI 门禁 `assert-unsigned-403` / `assert-no-store`）。
 
 ### 契约与双语言互通（防漂移）
 
 - `packages/contracts/src/index.ts` 的 zod schema 是 API DTO 唯一真相源；`task contracts` 经 JSON Schema → quicktype 生成 Go struct 到 `apps/delivery/internal/contracts/`，生成物入库 + CI diff 门禁是唯一防漂移手段。
-- URL 签名 token、MK 封装（AES-256-GCM）在 TS（`packages/crypto`）与 Go（`apps/delivery/internal/token`）各有一份实现（`packages/crypto` 中 TypeA 实现为废弃保留，不接入链路），靠 `packages/crypto/fixtures/crypto-v1.json` 共享向量保证互通；改任一侧必须重跑 `task vectors` 与两端测试。
+- URL 签名 token、MK 封装（AES-256-GCM）在 TS（`packages/crypto`）与 Go（`apps/delivery/internal/token`）各有一份实现（`packages/crypto` 的 `typea.ts` / `edgeone.ts` 为资产 URL 鉴权算法，ADR-0019 起已接入 `cdn_url_auth` 链路、EO 方式 A/B/C/D/V 全内置），靠 `packages/crypto/fixtures/` 共享向量（`crypto-v1.json` / `url-sign-v1.json` / `url-sign-eo-methods-v1.json`）保证互通；改任一侧必须重跑 `task vectors` 与两端测试。
 - `packages/shared` 存放错误码、token 类型、存储键布局、TTL 默认值等跨端常量（Go 侧无生成，手工对齐）。
 
 ### 数据层

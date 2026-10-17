@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "source": "腾讯云 EdgeOne Token 鉴权方式 B/C/D/V 官方文档示例（edgeone.ai/zh/document/62476~62479，2026-10 核对）+ 本仓窗口对齐约定（openvod-* 向量用对齐时刻）",
+  "notes": "timestampSec = 传给 URL 组装函数的时间戳（秒）：B/C/D 为签发时刻、V 为过期时刻；base = URL host（hash 与 host 无关）",
+  "methods": {
+    "b": {
+      "spec": "URL = {base}/{timestamp}/{md5hash}/{path}；timestamp = UTC+8 \"YYYYMMDDHHMM\"（分钟精度）；md5hash = MD5(key + timestamp + path)",
+      "vectors": [
+        {
+          "name": "eo-official-example",
+          "base": "https://www.example.com",
+          "path": "/foo.jpg",
+          "timestampSec": 1721028830,
+          "timestamp": "202407151533",
+          "key": "DvYmqE81E1F9R791H6lmht",
+          "md5hash": "d1f0b51c6894231fc12e054fcc7f0b3e",
+          "url": "https://www.example.com/202407151533/d1f0b51c6894231fc12e054fcc7f0b3e/foo.jpg"
+        },
+        {
+          "name": "openvod-window-aligned",
+          "base": "https://cdn.example.com",
+          "path": "/proceed/med00001/tpl00001/seg-000.ts",
+          "timestampSec": 1721030400,
+          "timestamp": "202407151600",
+          "key": "0123456789abcdef0123456789abcdef",
+          "md5hash": "035c0ef7e093b72e495784f80e0f7468",
+          "url": "https://cdn.example.com/202407151600/035c0ef7e093b72e495784f80e0f7468/proceed/med00001/tpl00001/seg-000.ts"
+        }
+      ]
+    },
+    "c": {
+      "spec": "URL = {base}/{md5hash}/{timestamp}/{path}；timestamp = 十六进制 Unix 秒（小写、无 0x）；md5hash = MD5(key + path + timestamp)",
+      "vectors": [
+        {
+          "name": "eo-official-example",
+          "base": "https://www.example.com",
+          "path": "/foo.jpg",
+          "timestampSec": 1721029386,
+          "timestamp": "6694d30a",
+          "key": "DvYmqE81E1F9R791H6lmht",
+          "md5hash": "6688749e8906a726c12fe1be3aacd016",
+          "url": "https://www.example.com/6688749e8906a726c12fe1be3aacd016/6694d30a/foo.jpg"
+        },
+        {
+          "name": "openvod-window-aligned",
+          "base": "https://cdn.example.com",
+          "path": "/proceed/med00001/tpl00001/seg-000.ts",
+          "timestampSec": 1721030400,
+          "timestamp": "6694d700",
+          "key": "0123456789abcdef0123456789abcdef",
+          "md5hash": "ec712d805fa82ba613b90e251d068483",
+          "url": "https://cdn.example.com/ec712d805fa82ba613b90e251d068483/6694d700/proceed/med00001/tpl00001/seg-000.ts"
+        }
+      ]
+    },
+    "d": {
+      "spec": "URL = {base}/{path}?token={md5hash}&t={timestamp}；timestamp = 十进制 Unix 秒；md5hash = MD5(key + path + timestamp)",
+      "vectors": [
+        {
+          "name": "eo-official-example",
+          "base": "https://www.example.com",
+          "path": "/foo.jpg",
+          "timestampSec": 1721029907,
+          "timestamp": "1721029907",
+          "key": "DvYmqE81E1F9R791H6lmht",
+          "md5hash": "cadcec4a04e67b9c2abf4b61c642a0dd",
+          "url": "https://www.example.com/foo.jpg?token=cadcec4a04e67b9c2abf4b61c642a0dd&t=1721029907"
+        },
+        {
+          "name": "openvod-window-aligned",
+          "base": "https://cdn.example.com",
+          "path": "/proceed/med00001/tpl00001/seg-000.ts",
+          "timestampSec": 1721030400,
+          "timestamp": "1721030400",
+          "key": "0123456789abcdef0123456789abcdef",
+          "md5hash": "40794d6f702f1c2e8c549a1d91316058",
+          "url": "https://cdn.example.com/proceed/med00001/tpl00001/seg-000.ts?token=40794d6f702f1c2e8c549a1d91316058&t=1721030400"
+        }
+      ]
+    },
+    "v": {
+      "spec": "URL = {base}/{path}?t={t}&sign={sign}；t = 十六进制 Unix 秒（过期时刻）；sign = sha1(key + path + t + plive + exper + us + whref + bkref + whip + bkip)（顺序固定、选填空串）",
+      "vectors": [
+        {
+          "name": "eo-official-example-1",
+          "base": "http://example.vod2.myqcloud.com",
+          "path": "/dir1/dir2/myVideo.mp4",
+          "timestampSec": 1517400000,
+          "key": "24FEQmTzro4V5u3D5epW",
+          "t": "5a71afc0",
+          "us": "72d4cd1101",
+          "sign": "3ff5ab708b018fce5c3023b6d27ca938d7ab75e3",
+          "url": "http://example.vod2.myqcloud.com/dir1/dir2/myVideo.mp4?t=5a71afc0&us=72d4cd1101&sign=3ff5ab708b018fce5c3023b6d27ca938d7ab75e3"
+        },
+        {
+          "name": "eo-official-example-3-preview",
+          "base": "http://example.vod2.myqcloud.com",
+          "path": "/dir1/dir2/myVideo.mp4",
+          "timestampSec": 1517400000,
+          "key": "24FEQmTzro4V5u3D5epW",
+          "t": "5a71afc0",
+          "exper": "300",
+          "us": "72d4cd1101",
+          "sign": "3a50217aff3e39fbf795b8db40925bc61735fe83",
+          "url": "http://example.vod2.myqcloud.com/dir1/dir2/myVideo.mp4?t=5a71afc0&exper=300&us=72d4cd1101&sign=3a50217aff3e39fbf795b8db40925bc61735fe83"
+        },
+        {
+          "name": "openvod-window-aligned",
+          "base": "https://cdn.example.com",
+          "path": "/proceed/med00001/tpl00001/seg-000.ts",
+          "timestampSec": 1721034000,
+          "key": "0123456789abcdef0123456789abcdef",
+          "t": "6694e510",
+          "sign": "87ba10f5686a8698f5950f37728ca907b57eb1ca",
+          "url": "https://cdn.example.com/proceed/med00001/tpl00001/seg-000.ts?t=6694e510&sign=87ba10f5686a8698f5950f37728ca907b57eb1ca"
+        }
+      ]
+    }
+  }
+}

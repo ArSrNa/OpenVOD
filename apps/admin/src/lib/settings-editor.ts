@@ -67,7 +67,9 @@ function checkEffective(group: SettingsGroup, values: Map<string, string>, env: 
     for (const key of ["s3_endpoint", "s3_bucket", "s3_access_key_id", "s3_secret_access_key"]) {
       if (!get(key)) throw new SettingsError("bad_request", "存储端点、桶、Access Key ID 和 Secret Access Key 不能为空；清除覆盖前请先配置环境变量兜底");
     }
-    // 签名方式组合校验（ADR-0019）：cdn_url_auth 必须配齐加速域名 + 边缘密钥；
+  }
+  if (group === "delivery") {
+    // 签名方式组合校验（ADR-0019，「分发设置」组）：cdn_url_auth 必须配齐加速域名 + 边缘密钥；
     // custom 提示需先注册提供者（分发端启动 / 刷新时会再校验一次，blob.New 报错保留旧配置）
     const signMode = get("storage_sign_mode") || "s3_presign";
     if (signMode === "cdn_url_auth") {
@@ -77,6 +79,12 @@ function checkEffective(group: SettingsGroup, values: Map<string, string>, env: 
       if (!get("storage_cdn_auth_key")) {
         throw new SettingsError("bad_request", "cdn_url_auth 模式必须配置 CDN 边缘鉴权密钥（与 CDN 控制台一致）");
       }
+    }
+    // 方式 D 的两个参数名不能相同（否则生成 URL 出现重复 query 键，CDN 侧行为未定义）
+    const tokenParam = get("storage_cdn_auth_token_param") || "token";
+    const timeParam = get("storage_cdn_auth_time_param") || "t";
+    if (tokenParam === timeParam) {
+      throw new SettingsError("bad_request", "方式 D 的签名参数名与时间戳参数名不能相同");
     }
   }
   if (group === "security") {

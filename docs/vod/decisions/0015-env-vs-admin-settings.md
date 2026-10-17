@@ -16,7 +16,7 @@
 
 ### A 层：必须留在 env（否决入库）
 
-1. **引导依赖（鸡生蛋问题）**：`DATABASE_URL`、`DB_PROVIDER`、`DELIVERY_DATABASE_URL`、`DELIVERY_LISTEN`、`ADMIN_PORT`。从数据库读"数据库地址"在逻辑上不可能；端口 / 监听地址是进程装配期参数，先于任何 I/O。
+1. **引导依赖（鸡生蛋问题）**：`DATABASE_URL`、`DB_PROVIDER`、`DELIVERY_LISTEN`、`ADMIN_PORT`（三端共用 `DATABASE_URL`，2026-10-17 起不再有 `DELIVERY_DATABASE_URL`）。从数据库读"数据库地址"在逻辑上不可能；端口 / 监听地址是进程装配期参数，先于任何 I/O。
 2. **密钥类**：`MASTER_KEYS`、`URL_SIGN_KEY_HEX`、`BETTER_AUTH_SECRET`、`OIDC_CLIENT_SECRET`、`S3_SECRET_ACCESS_KEY`、`DELIVERY_PREVIEW_PASSWORD`。
    - ADR-0006 密钥分层的根基就是 **MK 在 env、DB 内一切密钥（CEK、JWT 私钥）均为 MK 封装产物**：MK 入库 = 分层坍塌，DB 备份 / 注入 / 只读账号泄露即全量失守，且失去"DB 泄露不必重转码"的轮换语义。
    - 部署平台（SCF / EdgeOne / Docker / CNB 密钥仓库）的密钥注入通道就是环境变量；`gen-env.sh` 的 600 权限 + 不入库纪律已覆盖开发侧。
@@ -64,10 +64,11 @@
 | 应用 | 必需 env | 说明 |
 |---|---|---|
 | admin / worker | `DATABASE_URL`、`DB_PROVIDER`、`MASTER_KEYS` | 引导依赖 + MK 根密钥 |
-| delivery | `DELIVERY_DATABASE_URL`、`MASTER_KEYS` | 受限账号接入库 + MK |
+| delivery | `DATABASE_URL`、`MASTER_KEYS` | 三端共用连接串（需要分权时给该进程传受限账号值）+ MK |
 | 全部 | `ADMIN_PORT`、`DELIVERY_LISTEN` | 进程装配期参数（鸡生蛋） |
 
-`REQUIRED_KEYS` 收敛为 `DATABASE_URL DB_PROVIDER MASTER_KEYS DELIVERY_DATABASE_URL`。
+`REQUIRED_KEYS` 收敛为 `DATABASE_URL DB_PROVIDER MASTER_KEYS`。
+（2026-10-17 修订：`DELIVERY_DATABASE_URL` 移除，三端统一 `DATABASE_URL`，见 ADR-0011 修订。）
 
 ### 其余全部迁入 system_settings
 
@@ -96,7 +97,7 @@
 - **密钥封装形态**：与 `signing_keys` 同构（`hex(iv‖ct‖tag)`，无版本前缀，逐版本尝试解封），Go/TS 各一侧实现，靠既有 crypto 向量保证互通；
 - **生效时延（系统设置补全）**：delivery 启动加载并约 60s 刷新（存储 / 签名密钥 / TTL / CORS / kid / 播放域名），整体替换不可变 handler，刷新失败保留最后有效配置；worker 30s 缓存，在下一次空闲 tick 刷新；admin 快照 30s 缓存，保存时清本进程缓存，better-auth 随认证配置变化按需重建；
 - **设置页**：播放 / 存储 / 安全 / 任务四个子页复用现有注册表。保存先整批校验，再在 Serializable 事务中校验分组版本、写值与脱敏审计；密钥在响应中仅提供配置状态。编辑端数据库失败明确报错，消费端保持各自降级行为；
-- **落地位置**：键注册表 `packages/shared`（SETTING_KEYS / SETTING_SECRET_KEYS / SETTING_DEFAULTS / TTL 上限）；admin 侧 `apps/admin/src/lib/settings.ts`（注册表 / 校验 / 封装 / 快照 / `completeSetup`）+ `/setup` 向导 + `/api/setup`；Go 侧 `apps/delivery/internal/settings`（`Load` + `ApplyTo`）；worker 侧 `apps/worker/src/settings.ts`；必需键收敛见 `scripts/gen-env.sh` 的 `REQUIRED_KEYS`（4 个）与 `.env.example`；
+- **落地位置**：键注册表 `packages/shared`（SETTING_KEYS / SETTING_SECRET_KEYS / SETTING_DEFAULTS / TTL 上限）；admin 侧 `apps/admin/src/lib/settings.ts`（注册表 / 校验 / 封装 / 快照 / `completeSetup`）+ `/setup` 向导 + `/api/setup`；Go 侧 `apps/delivery/internal/settings`（`Load` + `ApplyTo`）；worker 侧 `apps/worker/src/settings.ts`；必需键收敛见 `scripts/gen-env.sh` 的 `REQUIRED_KEYS`（2026-10-17 起 3 个，三端共用 `DATABASE_URL`）与 `.env.example`；
 - **安全门禁不变**：设置表白名单外拒绝写入、密钥键明文入库直接拒绝（写入侧强制封装），delivery 受限账号对 `system_settings` 仅 SELECT（ADR-0011 追加授权在部署侧执行）。
 
 

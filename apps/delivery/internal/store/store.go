@@ -1,7 +1,8 @@
-// Package store 分发端 DB 读模型 + 播放会话写入（ADR-0004）：
+// Package store 分发端 DB 读模型 + 播放会话写入（ADR-0004 / ADR-0011 2026-10-17 修订）：
 // 不用 Prisma（Go 侧 database/sql + sqlx），只读 users/media/media_subtitles/hls_keys/
 // signing_keys/transcode_templates/system_settings，读写 playback_sessions。
-// 与 Prisma schema 的对齐靠集成测试（apps/delivery）与列名显式映射。
+// 同时支持 MySQL（生产 / 云函数）与 SQLite（单机同卷自托管）：SQL 只用两种方言的公共子集，
+// 差异集中在驱动选择与时间类型（见 Time / ts）。与 Prisma schema 的对齐靠仓储集成测试。
 package store
 
 import (
@@ -9,27 +10,49 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
 
-	_ "github.com/go-sql-driver/mysql" // MySQL 驱动（v1 云形态；sqlite 自托管为后续）
+	_ "github.com/go-sql-driver/mysql" // MySQL（v1 云形态 / 生产）
+	_ "modernc.org/sqlite"             // SQLite（纯 Go 驱动，CGO_ENABLED=0 的云函数构建可用）
 )
 
 var ErrNotFound = errors.New("store: 未找到")
 
+const (
+	driverMySQL  = "mysql"
+	driverSQLite = "sqlite"
+)
+
 type Store struct {
-	db *sqlx.DB
+	db     *sqlx.DB
+	driver string
 }
 
-func Open(databaseURL string) (*Store, error) {
-	db, err := sqlx.Open("mysql", databaseURL)
+/**
+ * Open 按驱动建立连接池。driver 由连接串 scheme 推导（config.ParseDatabaseURL），
+ * 不接受空值以免静默连错库。
+ * SQLite 连接池固定 1：单文件库的写锁竞争由 busy_timeout 兜底，串行化比多连接更稳，
+ * 且分发端每次查询均为毫秒级点查（trial / 单机形态足够）。
+ */
+func Open(driver, dsn string) (*Store, error) {
+	if driver != driverMySQL && driver != driverSQLite {
+		return nil, fmt.Errorf("不支持的数据库驱动: %q", driver)
+	}
+	db, err := sqlx.Open(driver, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("打开数据库失败: %w", err)
 	}
-	db.SetMaxOpenConns(8)
-	db.SetMaxIdleConns(4)
-	db.SetConnMaxLifetime(time.Hour)
+	if driver == driverSQLite {
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
+	} else {
+		db.SetMaxOpenConns(8)
+		db.SetMaxIdleConns(4)
+		db.SetConnMaxLifetime(time.Hour)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -37,7 +60,32 @@ func Open(databaseURL string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("数据库连接失败: %w", err)
 	}
-	return &Store{db: db}, nil
+	// SQLite 打开不存在的文件会静默新建空库，首个查询才报 no such table——这里提前失败并给出路径，
+	// 避免「相对路径解析错 → 连到另一份空文件」被误判成 schema 问题。
+	if driver == driverSQLite {
+		var n int
+		if err := db.GetContext(ctx, &n, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='users'`); err != nil || n == 0 {
+			_ = db.Close()
+			return nil, fmt.Errorf("SQLite 库未初始化（%s 缺少 users 表）：先执行 task db:push，并确认与 Prisma 使用同一个库文件", sqliteDisplayPath(dsn))
+		}
+	}
+	return &Store{db: db, driver: driver}, nil
+}
+
+func sqliteDisplayPath(dsn string) string {
+	if i := strings.IndexByte(dsn, '?'); i >= 0 {
+		return dsn[:i]
+	}
+	return dsn
+}
+
+// ts 时间参数的方言表示：Prisma 在 SQLite 里把 DateTime 存为整数毫秒，
+// MySQL 存为 DATETIME（parseTime=true 回读 time.Time）。
+func (s *Store) ts(t time.Time) any {
+	if s.driver == driverSQLite {
+		return t.UTC().UnixMilli()
+	}
+	return t.UTC()
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -82,7 +130,7 @@ func (s *Store) UserByID(ctx context.Context, id string) (*User, error) {
 }
 
 func (s *Store) TouchLastLogin(ctx context.Context, userID string, now time.Time) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE users SET last_login_at = ? WHERE id = ?`, now.UTC(), userID)
+	_, err := s.db.ExecContext(ctx, `UPDATE users SET last_login_at = ? WHERE id = ?`, s.ts(now), userID)
 	return err
 }
 
@@ -205,7 +253,7 @@ func (s *Store) JWTSigningKeys(ctx context.Context, now time.Time) ([]SigningKey
 		  WHERE kind = 'JWT' AND state = 'ACTIVE' AND private_enc IS NOT NULL
 		    AND (not_before IS NULL OR not_before <= ?)
 		    AND (not_after IS NULL OR not_after > ?)
-		  ORDER BY created_at DESC`, now.UTC(), now.UTC())
+		  ORDER BY created_at DESC`, s.ts(now), s.ts(now))
 	if err != nil {
 		return nil, err
 	}
@@ -293,10 +341,10 @@ func (s *Store) AllSettings(ctx context.Context) (map[string]string, error) {
 // ---- playback_sessions（分发端写，可吊销；ADR-0006 §6） ----
 
 type PlaybackSession struct {
-	ID        string    `db:"id"`
-	UserID    string    `db:"user_id"`
-	MediaID   string    `db:"media_id"`
-	ExpiresAt time.Time `db:"expires_at"`
+	ID        string `db:"id"`
+	UserID    string `db:"user_id"`
+	MediaID   string `db:"media_id"`
+	ExpiresAt Time   `db:"expires_at"` // 方言无关：SQLite 整数毫秒 / MySQL time.Time
 }
 
 /** ActiveSession 同用户同媒资的可复用会话（未吊销且未过期，取最新） */
@@ -305,7 +353,7 @@ func (s *Store) ActiveSession(ctx context.Context, userID, mediaID string, now t
 	err := s.db.GetContext(ctx, &row,
 		`SELECT id, user_id, media_id, expires_at FROM playback_sessions
 		  WHERE user_id = ? AND media_id = ? AND revoked_at IS NULL AND expires_at > ?
-		  ORDER BY created_at DESC LIMIT 1`, userID, mediaID, now.UTC())
+		  ORDER BY created_at DESC LIMIT 1`, userID, mediaID, s.ts(now))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -319,7 +367,7 @@ func (s *Store) CountActiveSessions(ctx context.Context, userID string, now time
 	var n int
 	err := s.db.GetContext(ctx, &n,
 		`SELECT COUNT(*) FROM playback_sessions
-		  WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ?`, userID, now.UTC())
+		  WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ?`, userID, s.ts(now))
 	return n, err
 }
 
@@ -327,7 +375,7 @@ func (s *Store) CreateSession(ctx context.Context, id, userID, mediaID, ip, user
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO playback_sessions (id, user_id, media_id, ip, user_agent, expires_at, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		id, userID, mediaID, nullIfEmpty(ip), nullIfEmpty(userAgent), expiresAt.UTC(), now.UTC())
+		id, userID, mediaID, nullIfEmpty(ip), nullIfEmpty(userAgent), s.ts(expiresAt), s.ts(now))
 	return err
 }
 
@@ -339,7 +387,7 @@ func (s *Store) SessionAlive(ctx context.Context, sid, mediaID string, now time.
 	var n int
 	err := s.db.GetContext(ctx, &n,
 		`SELECT COUNT(*) FROM playback_sessions
-		  WHERE id = ? AND media_id = ? AND revoked_at IS NULL AND expires_at > ?`, sid, mediaID, now.UTC())
+		  WHERE id = ? AND media_id = ? AND revoked_at IS NULL AND expires_at > ?`, sid, mediaID, s.ts(now))
 	return n > 0, err
 }
 

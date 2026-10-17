@@ -37,7 +37,7 @@
 - m3u8 改写实现：分发端从存储读清单文本 → 行级改写（`EXT-X-KEY` URI、分片行）→ 注入 token 输出；响应体须 ≤6MB（平台 body 上限，极长视频策略见 open-questions #12）。
 - token 传递以 query `t` 为主、header `X-Playback-Token` 兜底（Safari 原生只能走 query）；所有播放资源请求每请求查库校验会话（比 ADR-0006 §6 的 60s 收敛更严格）。
 - 限频：登录与 play 按 IP + 用户维度简单限频（进程内 / DB 计数，v1 无 Redis）——**未实现**（`rate_limited` 为契约保留码）。
-- 运行配置：分发端启动只依赖 `DELIVERY_DATABASE_URL` + `MASTER_KEYS`（env），存储凭据 / 播放签名密钥 / TTL / CORS / 播放域名由 `system_settings` 提供并约 60s 整体热切换（ADR-0015），env 同名键兜底。
+- 运行配置：分发端启动只依赖 `DATABASE_URL` + `MASTER_KEYS`（env；2026-10-17 起与 admin 共用同一变量名，ADR-0011 修订），存储凭据 / 播放签名密钥 / TTL / CORS / 播放域名由 `system_settings` 提供并约 60s 整体热切换（ADR-0015），env 同名键兜底。
 
 ## 后果与风险
 

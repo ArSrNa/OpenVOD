@@ -74,7 +74,7 @@ func LoadEdgeOneEnvironment() error {
 }
 
 func loadEdgeOneEnvironment(path string) error {
-	keys := []string{"DELIVERY_DATABASE_URL", "MASTER_KEYS"}
+	keys := []string{"DATABASE_URL", "MASTER_KEYS"}
 	if os.Getenv(keys[0]) == "" || os.Getenv(keys[1]) == "" {
 		raw, err := os.ReadFile(path)
 		if err != nil {

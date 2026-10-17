@@ -149,13 +149,12 @@ describe("placeholderWarnings", () => {
     const w = placeholderWarnings({
       MASTER_KEYS: `1:${"0".repeat(64)}`,
       DATABASE_URL: "mysql://openvod:changeit@h/openvod",
-      DELIVERY_DATABASE_URL: "mysql://ro:changeit@h/openvod",
       BETTER_AUTH_SECRET: "please-generate-a-random-secret-min-32-chars",
       URL_SIGN_KEY_HEX: "1".repeat(64),
     });
-    expect(w).toHaveLength(5);
+    expect(w).toHaveLength(4);
     expect(w.some((x) => x.includes("MASTER_KEYS"))).toBe(true);
-    expect(w.filter((x) => x.includes("changeit"))).toHaveLength(2);
+    expect(w.filter((x) => x.includes("changeit"))).toHaveLength(1);
     expect(w.some((x) => x.includes("BETTER_AUTH_SECRET"))).toBe(true);
     expect(w.some((x) => x.includes("URL_SIGN_KEY_HEX"))).toBe(true);
   });
@@ -164,7 +163,6 @@ describe("placeholderWarnings", () => {
       placeholderWarnings({
         MASTER_KEYS: MK,
         DATABASE_URL: "file:./dev.db",
-        DELIVERY_DATABASE_URL: "mysql://ro:real@h/openvod",
       }),
     ).toHaveLength(0);
   });

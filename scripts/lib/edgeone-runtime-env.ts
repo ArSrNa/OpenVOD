@@ -5,7 +5,7 @@ const endpoints = {
   global: "https://pages-api.edgeone.ai/v1",
 };
 export const runtimeEnvFilename = "openvod-runtime-env.json";
-const requiredKeys = ["DELIVERY_DATABASE_URL", "MASTER_KEYS"] as const;
+const requiredKeys = ["DATABASE_URL", "MASTER_KEYS"] as const;
 export type RuntimeEnv = Record<(typeof requiredKeys)[number], string>;
 type Fetcher = (url: string, init: RequestInit) => Promise<Response>;
 
@@ -28,7 +28,8 @@ export function selectRuntimeEnv(rows: unknown): RuntimeEnv {
   if (!/^[1-9]\d*:[a-fA-F0-9]{64}(?:\s*,\s*[1-9]\d*:[a-fA-F0-9]{64})*$/.test(selected.MASTER_KEYS!.trim())) {
     throw new Error("Makers 生产环境 MASTER_KEYS 格式非法（应为 版本:64位hex，可用逗号分隔多版本）");
   }
-  // 不把 admin 全权账号、认证密钥、EO_SECRET 等额外变量带入 delivery 函数包。
+  // 只带入函数运行必需的数据库与 MK；其余变量（认证密钥 / EO_SECRET 等）一律不进函数包。
+  // EdgeOne 项目的 DATABASE_URL 应使用分发端受限账号（ADR-0011），它与 admin 的进程环境相互独立。
   return selected as RuntimeEnv;
 }
 

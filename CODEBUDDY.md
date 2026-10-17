@@ -69,7 +69,7 @@ OpenVOD：自建云点播系统（媒资 → 转码加密 → 元数据 / 字幕
 - Prisma 是 schema 唯一真相源：`packages/db/prisma/schema.mysql.prisma` 与 `schema.sqlite.prisma` 的 enum/model 段必须逐字一致。MySQL 为生产准绳（迁移仅由 `packages/db` 执行，必须 expand-contract 向后兼容）；SQLite 仅限本地开发与单机同卷自托管（`db push`），跨机器 / 云函数部署必须 MySQL。
 - `packages/db/src/index.ts` 静态导入两份生成客户端、按 `DB_PROVIDER` 实例化其一——这是两份客户端缺一不可的根因。
 - 媒资分类为独立表 `media_categories`（**无限层级**邻接表，`media.category_id` 外键 `SetNull`，删除分类只把媒资迁入默认分类、不删媒资）；**系统默认分类「其他」**（`is_system`，未设置分类的媒资默认归入：上传即落库 / 留空 =「其他」/ 读取空值回退 / 不可删除）；「分类 / 描述 / 标签」构成 v1 **自定义元数据**：投影进 `media.custom_data`（稀疏，含分类 name/path 快照）+ 导出 `metadata/{id}/custom.json`，分发端 `custom` 按公开白名单下发（ADR-0016 / spec.md §8）。
-- Go 侧不用 Prisma：`database/sql + sqlx` 只读读模型 + 播放会话写入，靠集成测试对齐表结构。
+- Go 侧不用 Prisma：`database/sql + sqlx` 只读读模型 + 播放会话写入，靠集成测试对齐表结构。分发端双驱动（ADR-0011 2026-10-17 修订）：三端共用 `DATABASE_URL`，scheme 决定 MySQL / SQLite（`modernc.org/sqlite` 纯 Go）；SQLite 的 DateTime 是整数毫秒、Boolean 是 0/1，由 `store.Time` + 方言化参数绑定对齐。
 - 任务队列不引入 Redis：MySQL `FOR UPDATE SKIP LOCKED` / SQLite CAS 认领，带 `lease_until` 崩溃重派（ADR-0004/0008）。
 - 水印模板为独立表 `watermark_templates`（图片 / 文字两类，图片资产落 `watermark/{模板id}.{ext}` 第五分区）；`transcode_templates.watermark_id` 可空外键（`SetNull`，应用层引用检查在前）。水印**只经任务快照**进 Worker（`template_snapshot.watermark`），模板 / 图片变更不影响已入队任务；`keep_original`（`-c copy`）与水印互斥（模板保存 + 任务发起两层校验）。烧录由 `packages/transcode/src/watermark.ts` 的纯函数编译为 ffmpeg 滤镜链（ADR-0018 / spec.md §10）。
 
@@ -91,11 +91,11 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可轮换）
 
 - delivery 同一份 Go 业务代码的两个同级目标：EdgeOne Makers Cloud Functions（Go 1.26）或 SCF 容器；无内网依赖，数据库必须公网可达 + 强制 TLS。装配逻辑单点维护在 `apps/delivery/app`：`apps/delivery/main.go` 调用 `Run()`，`cloud-functions/index.go` 调用 `RunEdgeOne()`（适配运行配置及平台响应头，入口必须为 `index.go`），两者共用内部装配。部署细则见 `docs/vod/deploy-delivery.md`。
 - EdgeOne 发布先 `task build:edgeone`，再使用 `bun --no-env-file scripts/edgeone.ts deploy` 上传已检查的 `.edgeone` 产物到 `openvod-delivery` 的生产环境（Token 由密钥注入），最后 `bun --no-env-file scripts/check-delivery-deployment.ts <分发域名>` 验收。**不要把共享源码复制进 `cloud-functions/`**：CLI 递归扫描会把 `internal/server/server.go` 识别成入口，生成 `/server` 前缀而使 `/v1/...` 404；模块与源码副本应放暂存项目根。2026-09-22 修订详见 ADR-0003。
-- EdgeOne Go 上传产物实测未收到控制台引导变量：发布脚本显式读取 Makers Production，仅把 `DELIVERY_DATABASE_URL` / `MASTER_KEYS` 写入私有函数包配置，入口由 `app.LoadEdgeOneEnvironment()` 补齐缺失变量并固定 `:9000`。该敏感文件禁止进入静态 assets、源码、日志或公开归档，发布后清理本地副本；SCF 仍直接读取进程环境。详见 ADR-0003。
+- EdgeOne Go 上传产物实测未收到控制台引导变量：发布脚本显式读取 Makers Production，仅把 `DATABASE_URL` / `MASTER_KEYS` 写入私有函数包配置（该项目 env 与 admin 隔离，`DATABASE_URL` 用受限账号），入口由 `app.LoadEdgeOneEnvironment()` 补齐缺失变量并固定 `:9000`。该敏感文件禁止进入静态 assets、源码、日志或公开归档，发布后清理本地副本；SCF 仍直接读取进程环境。详见 ADR-0003。
 - 部署冒烟先等待健康接口就绪（总窗口 120s、单次 30s），随后顺序验证六项路由。EdgeOne 专用响应适配必须在提交响应前写入 Makers 状态头，防止业务 401/403 被平台替换为 HTML 500；持续故障仍让门禁失败。
 - admin 为一个 Node 22 容器（`next build` + `next start`，UI/API 同源无 CORS）；worker 为 Bun 常驻容器。
 - P0 硬约束：转码禁止上任何函数；分片字节不经过函数；所有响应体 ≤6MB；SCF 镜像仅 x86。
-- 两应用共享一库一桶但独立发版；delivery 使用受限 DB 账号（约定表只读 + `playback_sessions` 读写），绝不能共用管理端全权账号；存储键前缀即隔离（`original/` 仅管理端写，布局见 `docs/vod/spec.md §1`）。
+- 两应用共享一库一桶但独立发版；**MySQL 生产** delivery 必须用受限 DB 账号（约定表只读 + `playback_sessions` 读写），绝不能共用管理端全权账号（单机 SQLite 同一文件即同一信任域，无法分权）；存储键前缀即隔离（`original/` 仅管理端写，布局见 `docs/vod/spec.md §1`）。
 
 ### 当前实现状态（scaffold 骨架）
 

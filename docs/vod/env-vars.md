@@ -6,8 +6,9 @@
 >
 > 解析顺序统一：**DB 设置值 > env 同名键 > 出厂默认**。
 >
-> - **必需 env（仅 4 个）**：`DATABASE_URL`、`DB_PROVIDER`、`MASTER_KEYS`、`DELIVERY_DATABASE_URL`
->   （外加进程装配期的 `ADMIN_PORT` / `DELIVERY_LISTEN`）；
+> - **必需 env（仅 3 个）**：`DATABASE_URL`、`DB_PROVIDER`、`MASTER_KEYS`
+>   （外加进程装配期的 `ADMIN_PORT` / `DELIVERY_LISTEN`）；三端共用 `DATABASE_URL`，
+>   不再有 `DELIVERY_DATABASE_URL`（ADR-0011 2026-10-17 修订）；
 > - **密钥类设置**（S3 SecretAccessKey、播放签名密钥等）以 **MK 封装 hex** 入库（ADR-0006 分层），
 >   `MASTER_KEYS` 永远只存在于 env——它是唯一不可入库的密钥；
 > - 下文表格保留作为「env 兜底清单」与旧部署迁移参考；三端对照速查表中的键凡与
@@ -39,9 +40,8 @@ DELIVERY_LISTEN=":9000"
 # 运行环境标识：dev | prod
 APP_ENV="dev"
 
-# 分发端接入库：仅支持 mysql://（受限账号：约定表只读 + playback_sessions 读写，ADR-0011）
-# 本地调试若为 127.0.0.1/localhost，bun scripts/dev.ts delivery 会自动回退用 DATABASE_URL
-DELIVERY_DATABASE_URL="mysql://openvod_ro:changeit@127.0.0.1:3306/openvod"
+# 数据库连接串三端共用（见顶部 DATABASE_URL）：delivery 不再单独配置
+# 需要最小权限时，给 delivery 进程单独传受限账号的 DATABASE_URL
 
 # 播放 URL 基址（清单 / 密钥 / 字幕）；生产填分发域名
 # 留空 = 回退 http://127.0.0.1:{DELIVERY_LISTEN 端口}；可被 system_settings.playback_base_url 运行时覆盖
@@ -77,7 +77,7 @@ STORAGE_CDN_BASE_URL=""               # 加速域名（仅替换 GET 预签名 U
 
 | 变量 | 必填 | 默认 | 说明 |
 |---|---|---|---|
-| `DELIVERY_DATABASE_URL` | **是** | 无 | 分发端接入库。**仅支持 `mysql://`**（归一为 go-sql-driver DSN，自动补 `parseTime=true&loc=UTC&charset=utf8mb4`）。使用 ADR-0011 受限账号（约定表只读 + `playback_sessions` 读写）。本地调试 `bun scripts/dev.ts delivery` 在该值为空 / 127.0.0.1/localhost 时自动回退用 `DATABASE_URL` |
+| `DATABASE_URL` | **是** | 无 | 三端共用连接串。支持 `mysql://`（归一为 go-sql-driver DSN，自动补 `parseTime=true&loc=UTC&charset=utf8mb4`）、go-sql-driver DSN、`file:./dev.db` / `sqlite:///abs.db`（SQLite 单机同卷；相对路径按 `packages/db/prisma` 解析）。MySQL 生产可给 delivery 进程单独传受限账号（约定表只读 + `playback_sessions` 读写，ADR-0011）；**EdgeOne 发布脚本只注入此键** |
 | `URL_SIGN_KEY_HEX` | **是** | 无 | 播放 token 的 HMAC 密钥，64 位 hex（32B）。非法 / 缺失直接启动失败 |
 | `MASTER_KEYS` | **是** | 无 | `"版本:64位hex"`，逗号分隔多版本。用于解封 CEK 与 JWT 私钥（ADR-0006） |
 | `DELIVERY_LISTEN` | 否 | `:9000` | 监听地址（SCF Web 函数固定 9000） |
@@ -107,7 +107,7 @@ STORAGE_CDN_BASE_URL=""               # 加速域名（仅替换 GET 预签名 U
 | `STORAGE_CDN_AUTH_TTL_SEC` | 否 | `3600` | CDN 鉴权窗口（timestamp 按窗口对齐 = 窗口内 URL 稳定缓存友好；与 CDN 控制台「有效时长」一致） |
 | `STORAGE_CUSTOM_SIGNER` | 否 | `custom` | `custom` 模式的提供者注册名（TS `registerUrlSigner` / Go `RegisterURLSigner`；实现入口 `packages/storage/src/custom-signer.ts` 与 `apps/delivery/internal/blob/custom_signer.go`） |
 
-> delivery **不读** `DATABASE_URL` / `DB_PROVIDER` / `BETTER_AUTH_SECRET`——它走独立的 `DELIVERY_DATABASE_URL`。
+> delivery **不读** `DB_PROVIDER` / `BETTER_AUTH_SECRET`；只读 `DATABASE_URL`（驱动由 scheme 推导）。
 > 部署环境变量清单另见 `docs/vod/deploy-delivery.md`。
 
 ---
@@ -338,9 +338,8 @@ PLAYER_PREVIEW_PASSWORD=""                       # 预览播放账号口令；�
 
 | 变量 | delivery | worker | admin | player |
 |---|:---:|:---:|:---:|:---:|
-| `DATABASE_URL` | — | ✅ | ✅ | — |
+| `DATABASE_URL` | ✅ | ✅ | ✅ | — |
 | `DB_PROVIDER` | — | ✅ | ✅ | — |
-| `DELIVERY_DATABASE_URL` | ✅ | — | — | — |
 | `MASTER_KEYS` | ✅ | ✅（加密任务） | ✅ | — |
 | `URL_SIGN_KEY_HEX` / `URL_SIGN_KEY_KID` | ✅ | — | — | — |
 | `BETTER_AUTH_SECRET` / `ADMIN_*` / `OIDC_*` | — | — | ✅ | — |

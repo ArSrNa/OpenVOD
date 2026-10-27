@@ -90,6 +90,7 @@ CLI 1.6.41 会递归扫描 `cloud-functions/`。旧的源码副本布局
 `DELIVERY_DATABASE_URL`（部署 `dpiljo0vcwwh` 的运行日志），因此不能继续依赖平台隐式注入。
 发布阶段改为使用 `EO_SECRET` 只读查询确切项目的 Production 环境，校验并筛选
 `DELIVERY_DATABASE_URL`、`MASTER_KEYS`，保存为私有函数目录内的 `openvod-runtime-env.json`。
+（2026-10-17：随 ADR-0011 修订，变量名统一为 `DATABASE_URL`；脚本仍只筛选这两项。）
 EdgeOne 入口在共享装配前加载该文件，只补齐缺失变量；监听强制为 `:9000`。
 SCF 入口不加载文件。两种目标仍共用业务装配。
 

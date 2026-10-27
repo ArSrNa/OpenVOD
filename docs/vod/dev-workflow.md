@@ -179,7 +179,7 @@ bun scripts/dev.ts stop                 # 停止（worker → player → deliver
 | 命令 | 服务 | 说明 |
 |---|---|---|
 | `bun scripts/dev.ts admin` | 管理端（`ADMIN_PORT`） | 前台，`next dev`；自动加载根 `.env`、补依赖与生成物。**并会自动后台启动 Worker**（日志 `.run/worker.log`），退出（含 Ctrl-C）时一并停掉；若已有 Worker 在跑则沿用、退出时不动它 |
-| `bun scripts/dev.ts delivery` | 分发端（`DELIVERY_LISTEN`） | 前台；每次增量 `go build` 到 `.run/delivery`；`DELIVERY_DATABASE_URL` 为本地占位时自动回退 `DATABASE_URL` |
+| `bun scripts/dev.ts delivery` | 分发端（`DELIVERY_LISTEN`） | 前台；每次增量 `go build` 到 `.run/delivery`；读取 `DATABASE_URL`（三端共用；SQLite 单机同卷可共用一个 `file:`，ADR-0011 修订） |
 | `bun scripts/dev.ts worker` | Worker | 前台单跑（观察认领 / 转码日志）；无 `--watch`（见 §5.1）；需 `ffmpeg`/`ffprobe` |
 | `bun scripts/dev.ts player` | 播放演示 App（`PLAYER_PORT`） | 前台 `next dev`；免登录播放端 Demo（spec.md §11），播放依赖分发端与预览账号（`PLAYER_PREVIEW_*`，回退 `DELIVERY_PREVIEW_*`） |
 | `task dev:admin` | 管理端（`ADMIN_PORT`） | `next dev` + `.env` 注入；**注意：此路径不自动起 Worker**，转码需另开 `task dev:worker` |
@@ -192,8 +192,8 @@ bun scripts/dev.ts stop                 # 停止（worker → player → deliver
 # 1) 引导（幂等）：生成 JWT 签名密钥（入 signing_keys）+ 创建/重置播放端用户
 bun apps/admin/scripts/bootstrap-playback.ts demo <密码≥8位>
 
-# 2) 分发端：本地调试需把 DELIVERY_DATABASE_URL 指向可达库（.env 里是 127.0.0.1 占位，见 §8）
-bun scripts/dev.ts delivery    # 启动器在该值为空/127.0.0.1/localhost 时自动回退用 DATABASE_URL（亦可直接改 .env）
+# 2) 分发端：读取 DATABASE_URL；需要最小权限时给该进程传受限账号的值
+bun scripts/dev.ts delivery
 
 # 3) login 取 JWT → play 取签名主清单 URL
 TOKEN=$(curl -s -X POST localhost:9000/v1/auth/login -H 'content-type: application/json' \
@@ -252,12 +252,13 @@ task contracts            # 契约生成物变更后需入库（契约门禁）
 | 分发端启动即退出，提示 `URL_SIGN_KEY_HEX 未配置` / `MASTER_KEYS 未配置` | 未加载 `.env`；改用 `bun scripts/dev.ts delivery` 或 `task dev:delivery` |
 | 管理端向导页报 `MASTER_KEYS 未配置/非法`，但部署环境明明配了 | 该判定同时覆盖两种情况：①**运行进程 env 里没有**——配在构建期（CI/镜像构建参数）、只配了 worker 没配 admin、或改了 `.env` 后没重建容器（compose 必须 `up -d --force-recreate admin worker`，`restart` 不重读 env_file）；②**值格式非法**——带引号 / 含空白或换行 / 全角冒号「：」/ hex 不足 64 位（`openssl rand -hex 32`）。自查：启动日志 `[admin] MASTER_KEYS 自检失败：<原因>`（`bun scripts/dev.ts logs admin`）或 `docker compose exec admin printenv MASTER_KEYS \| cut -c1-12`（**只看前缀，别把密钥贴进聊天/日志**）；向导页也会直接显示原因。`.env` 侧另有 `sh scripts/gen-env.sh --check`，但它只查存在性与占位值，不校验格式 |
 | 点「密钥管理」被弹回 `/setup`（即使已登录） | 服务端守卫先判向导再判会话（`apps/admin/src/lib/console.ts`）：`system_settings.setup_completed` 非 `1` → 跳 `/setup`（**说明该 admin 进程连的库里没有初始化标记**：向导没走完，或 `DATABASE_URL`/`DB_PROVIDER` 指到了另一个库）；读库抛错反而按“已完成”处理 → 跳 `/login` 而非 `/setup`。已在库中的初始化状态可用 `curl -s <admin>/api/setup` 判定：403「系统已完成初始化」= 正常 |
-| 分发端启动报 `数据库连接失败: dial tcp 127.0.0.1:3306` | `.env` 的 `DELIVERY_DATABASE_URL` 是本地占位；`bun scripts/dev.ts delivery` 会自动回退用 `DATABASE_URL`（亦可手动 `DELIVERY_DATABASE_URL="$DATABASE_URL" bun scripts/dev.ts delivery`；生产必须用受限账号，ADR-0011） |
+| 分发端启动报 `数据库连接失败: dial tcp 127.0.0.1:3306` | `.env` 的 `DATABASE_URL` 还是 `.env.example` 的 127.0.0.1 占位；改成可达库（旧 `.env` 里的 `DELIVERY_DATABASE_URL` 已不再读取，可删除该行） |
+| 分发端启动报 `SQLite 库未初始化（... 缺少 users 表）`（sqlite 模式） | 相对路径按 Prisma schema 目录解析（`file:./dev.db` → `packages/db/prisma/dev.db`），先 `task db:push` 建表；独立部署不在 repo 内时用绝对路径 `file:/abs/path/dev.db`。启动日志 `sqlite_path` 字段是实际打开的文件 |
 | `login` 返回 503「未配置 JWT 签名密钥」 | `signing_keys` 无 ACTIVE 的 JWT 行：`bun apps/admin/scripts/bootstrap-playback.ts <用户> <密码≥8位>` 后重启分发端 |
 | player 报「无法连接分发端（"http://..."）」（值带引号）| `docker run --env-file` 不剥 .env 引号（compose 会剥）——player 已对 URL / 账号做剥离防御，仍报错说明是未覆盖的键；用不带引号的 `-e KEY=value` 覆盖或改用 compose。同类：`next start` 报 `'-p' ... not a non-negative number` = `PLAYER_PORT` 带引号（镜像 CMD 已清洗，自建命令需自行处理） |
 | `play` 返回 409 `not_playable` | 媒资非 `READY`（转码中 / 失败）、该媒资无转码产物，或多套产物未指定 `template_id`（响应消息会列出可选值；模板 ID 亦可在管理端媒资详情查看） |
 | EdgeOne 部署后管理端预览 404，`/healthz` 也返回 Makers HTML `NOT_FOUND` / `The site does not exist` | 请求未到达 delivery。旧构建把共享 Go 源码放入 `cloud-functions/`，CLI 将 `server.go` 识别为 Framework 入口并生成 `/server` 前缀；改用 `task build:edgeone` 构建独立暂存项目并校验根 catch-all，`bun --no-env-file scripts/edgeone.ts deploy` 上传受检查产物到生产环境。再用 `bun --no-env-file scripts/check-delivery-deployment.ts <分发域名>` 验收健康 JSON 与无签名 403；若仍是平台 HTML 404，核对 Makers 域名绑定和生产部署。验收通过后在管理端重新生成播放 URL，完整步骤见 [deploy-delivery.md](./deploy-delivery.md) |
-| Makers 控制台已配置变量，但 Go 函数仍 502、日志报 `DELIVERY_DATABASE_URL 未配置` | Go Framework 上传产物未收到引导变量。使用更新后的 `scripts/edgeone.ts build` / `deploy`：发布前从控制台 Production 读取两项引导配置，写入私有函数包，由 EdgeOne 入口补齐进程环境。检查 `EO_API_REGION` 是否与账号站点一致；不要把 admin 的整份 `.env` 放进公开产物。控制台变量必须在发布前保存。详见 [deploy-delivery.md](./deploy-delivery.md) |
+| Makers 控制台已配置变量，但 Go 函数仍 502、日志报 `DATABASE_URL 未配置` | Go Framework 上传产物未收到引导变量。使用更新后的 `scripts/edgeone.ts build` / `deploy`：发布前从控制台 Production 读取两项引导配置，写入私有函数包，由 EdgeOne 入口补齐进程环境。检查 `EO_API_REGION` 是否与账号站点一致；不要把 admin 的整份 `.env` 放进公开产物。控制台变量必须在发布前保存。详见 [deploy-delivery.md](./deploy-delivery.md) |
 | EdgeOne 部署后部分请求 500 `INTERNAL_CLOUD_FUNCTION_NOT_READY`（"Cloud Functions not ready."，正文非 JSON） | 平台滚动新版本实例的发布切换窗口：`/healthz` 可能已成功而其余路由暂时 500，实测约 20s 自愈，**不是 delivery 业务错误**。先等待重试：`bun --no-env-file scripts/check-delivery-deployment.ts <分发域名>`（六项探测的暂态 5xx / HTML 404 / 网络错误在 120s 窗口内自动重试）；持续数分钟不恢复再查 Makers 控制台函数日志与部署状态。背景见 [deploy-delivery.md](./deploy-delivery.md) |
 | 管理端「产物 → 播放」有总时长但一直转圈 | **对象桶 CORS 未放行管理端源站**（浏览器直连 COS 拉分片被拦；`curl -H "Origin: http://localhost:8787" <预签名分片 URL>` 可复现「200 但没有 `Access-Control-Allow-Origin`」）。到 COS 控制台加 CORS 规则：Origin 含管理端访问源站（本地 `http://localhost:8787`、CNB 预览 `https://*.cnb.run` 或 `*`）、Method `GET/HEAD`、Header `*`、ExposeHeader `ETag, Content-Length, Content-Range, Accept-Ranges` |
 | `[worker] 缺少必需工具：ffmpeg, ffprobe` | 装 ffmpeg（`.ide/Dockerfile` 镜像已含） |

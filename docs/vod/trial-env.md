@@ -27,10 +27,11 @@ sh scripts/compose-infra.sh up
 
 脚本自动完成：生成 `.run/infra.env`（随机口令 + RustFS AK/SK，600 权限，已 gitignore）→
 起 `openvod-infra` 编排（与根编排 `openvod` 互不影响）→ 等 mysql 健康 →
-幂等创建分发端受限账号 `openvod_ro`（ADR-0011：约定表只读 + `playback_sessions` 读写）。
+幂等创建可选受限账号 `openvod_ro`（ADR-0011：约定表只读 + `playback_sessions` 读写；体验环境三端共用
+`openvod` 账号，需要分权部署时再把该账号的 DSN 单独传给 delivery）。
 
 验证：`sh scripts/compose-infra.sh ps` 两个容器均 Up；
-`sh scripts/compose-infra.sh env` 能打印三条连接串。
+`sh scripts/compose-infra.sh env` 能打印连接串（含可选受限账号）。
 
 ## 2. 生成 `.env.trial`（全程不碰根 `.env`）
 
@@ -38,7 +39,7 @@ sh scripts/compose-infra.sh up
 sh scripts/compose-infra.sh init-env
 ```
 
-- 根 `.env` 存在 → 以它为底，仅覆盖 `DB_PROVIDER` / `DATABASE_URL` / `DELIVERY_DATABASE_URL` 三个键，其余键原样继承
+- 根 `.env` 存在 → 以它为底，仅覆盖 `DB_PROVIDER` / `DATABASE_URL` 两个键，其余键原样继承
   （player 键如 `PLAYER_PORT` / `PLAYER_PREVIEW_*` 一并继承；没有则走默认：端口 3100、预览账号回退 `DELIVERY_PREVIEW_*`）；
 - 根 `.env` 不存在 → 生成必需最小集（ADR-0015），`MASTER_KEYS` 随机生成；
 - 产出 `.env.trial`（权限 600，已被 `.gitignore` 的 `.env.*` 规则忽略）；**重复执行会整体重新生成，勿手改**。

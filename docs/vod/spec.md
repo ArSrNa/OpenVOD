@@ -422,11 +422,11 @@ http 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_s
 
 ### 6.5 相关环境变量
 
-> 启动最小集（ADR-0015）：进程最早只要求 `DELIVERY_DATABASE_URL` + `MASTER_KEYS`；下表其余项均可由 `system_settings` 提供并约 60s 整体热切换（失败保留上一版完整配置），env 同名键兜底。
+> 启动最小集（ADR-0015 / ADR-0011 2026-10-17 修订）：进程最早只要求 `DATABASE_URL` + `MASTER_KEYS`；下表其余项均可由 `system_settings` 提供并约 60s 整体热切换（失败保留上一版完整配置），env 同名键兜底。
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `DELIVERY_DATABASE_URL` | 无（必填） | 分发端受限账号（ADR-0011：只读约定表 + `playback_sessions` 读写）。支持 `mysql://user:pw@host:port/db` 或 go-sql-driver DSN；**本地调试需指向可达库**（仓库 `.env` 里的 127.0.0.1 是占位） |
+| `DATABASE_URL` | 无（必填） | 三端共用连接串。支持 `mysql://user:pw@host:port/db`、go-sql-driver DSN、`file:./dev.db` / `sqlite:///abs.db`（SQLite 单机同卷）。需要最小权限时给 delivery 进程单独传受限账号的值（ADR-0011：只读约定表 + `playback_sessions` 读写） |
 | `MASTER_KEYS` | 无（必填） | 主密钥 `版本:64位hex`（逗号分隔多版本，ADR-0006）：解封 CEK（按 `hls_keys.mk_ver`）与 JWT 私钥（逐版本尝试）。**轮换后必须保留旧版本**，否则旧产物密钥接口 500 |
 | `DELIVERY_LISTEN` | `:9000` | 监听地址；SCF Web 函数 / EdgeOne 平台固定 `:9000` |
 | `APP_ENV` | `dev` | 运行环境标识（仅日志，不改变行为） |
@@ -527,7 +527,7 @@ t = ⌊(now + ttl) / ttl⌋ · ttl + ttl           # V：过期时刻；不论�
 - **CDN URL 鉴权（EO Token 鉴权 A/B/C/D/V 全内置）** —— **已实现（2026-10-09；2026-10-17 补齐 B/C/D/V，ADR-0019 / §6.7）**：签名方式升级为管理端可配置（`s3_presign` 现状默认 / `cdn_url_auth` 私有回源 + CDN 签名 / `custom` 编译期自定义提供者 + Agent 提示词生成）；`s3_presign` + CDN 透传仍为默认形态（~~2026-09-20 曾关闭~~：当时否决的是「EO 强绑定」，本次以可插拔 + admin 驱动的方式重新纳入，厂商中立性不回退）；**非 EO 的 CDN 鉴权算法暂不内置**（走 `custom`）；
 - 登录 / play **限频**（ADR-0010）；严格模式（key 一次性 nonce、IP / UA 绑定、并发上限的踢下线，ADR-0006 §7 默认关）；
 - 会话吊销的进程内 60s 缓存（当前每请求查库，语义更严格、量级可接受）；
-- SQLite 自托管驱动（当前 Go 侧仅 MySQL；ADR-0004 的单机同卷形态待补）；
+- ~~SQLite 自托管驱动~~ —— **已实现（2026-10-17，ADR-0011 修订）**：`modernc.org/sqlite` 纯 Go 驱动，单机同卷形态与 admin / worker 共用 `DATABASE_URL`（`file:` 连接串），时间 / 布尔按 Prisma 物理存储对齐；跨机 / 云函数仍必须 MySQL；
 - ~~`custom_data` **公开白名单**~~ —— **已实现（2026-09-24，ADR-0016 / §8.4）**：`custom` 按白名单输出 `category` / `description` / `tags`（管理端写入投影，分发端做类型校验后下发），其余键一律丢弃；`poster_url` 已随仅-S3 决策全量预签名直出；
 - **cursor 分页**（ADR-0010 契约）：`GET /v1/media` 当前只支持 `limit`（缺省 50 / 上限 200）、`next_cursor` 恒为 `null`，媒资规模需要时再实现；
 - 字幕链路（M4）**已实现（2026-09-20）**：规范见 §7.5；字幕进 CDN 缓存（ADR-0009 原始设想）仍为演进项，前置条件是引入内容版本号 / 共享 token 形态。

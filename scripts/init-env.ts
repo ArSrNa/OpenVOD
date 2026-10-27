@@ -7,7 +7,7 @@
  *   bun scripts/init-env.ts  逐项问答引导生成 .env（无密钥仓库的本地开发 / 自托管初始化）
  *
  * 生成范围（ADR-0015 最小集 + 进程装配期参数）：
- *   必需：DATABASE_URL / DB_PROVIDER / MASTER_KEYS / DELIVERY_DATABASE_URL
+ *   必需：DATABASE_URL / DB_PROVIDER / MASTER_KEYS（三端共用 DATABASE_URL）
  *   装配：ADMIN_PORT / DELIVERY_LISTEN（默认 8787 / :9000，可整体跳过）
  *   兜底：推荐留空——管理台 /setup 首次启动向导写入 system_settings（DB 值优先，env 兜底），
  *         密钥类设置由向导自动生成并以 MK 封装入库（ADR-0006 分层）。
@@ -45,8 +45,9 @@ const ROOT = resolve(import.meta.dir, "..");
 const DEFAULT_ENV = resolve(ROOT, ".env");
 const TEMPLATE = resolve(ROOT, ".env.example");
 
-/** ADR-0015：必需键收敛为最小集（DB 引导 + MK 根密钥），与 gen-env.sh --check 一致 */
-const REQUIRED_KEYS = ["DATABASE_URL", "DB_PROVIDER", "MASTER_KEYS", "DELIVERY_DATABASE_URL"] as const;
+/** ADR-0015：必需键收敛为最小集（DB 引导 + MK 根密钥），与 gen-env.sh --check 一致；
+ *  三端共用 DATABASE_URL（ADR-0011 2026-10-17 修订） */
+const REQUIRED_KEYS = ["DATABASE_URL", "DB_PROVIDER", "MASTER_KEYS"] as const;
 
 const rel = (p: string) => (p.startsWith(ROOT) ? p.slice(ROOT.length + 1) : p);
 
@@ -205,10 +206,8 @@ export function placeholderWarnings(values: Record<string, string>): string[] {
   if ((values.BETTER_AUTH_SECRET ?? "").includes("please-generate")) {
     warnings.push("BETTER_AUTH_SECRET 仍是 .env.example 占位值");
   }
-  for (const k of ["DATABASE_URL", "DELIVERY_DATABASE_URL"] as const) {
-    if ((values[k] ?? "").includes("changeit")) {
-      warnings.push(`${k} 仍是 .env.example 占位密码（changeit）`);
-    }
+  if ((values.DATABASE_URL ?? "").includes("changeit")) {
+    warnings.push("DATABASE_URL 仍是 .env.example 占位密码（changeit）");
   }
   return warnings;
 }
@@ -219,7 +218,6 @@ function displayValue(key: string, value: string): string {
     return maskSecret(value);
   }
   if (key === "DATABASE_URL" && value.startsWith("mysql://")) return maskURL(value);
-  if (key === "DELIVERY_DATABASE_URL") return maskURL(value);
   if (key === "DELIVERY_PREVIEW_PASSWORD") return "****";
   return value;
 }
@@ -307,11 +305,11 @@ async function askDatabase(values: Record<string, string>, defaults: Record<stri
 
   if (provider === "sqlite") {
     values.DATABASE_URL = "file:./dev.db";
-    log.info('DATABASE_URL 固定为 "file:./dev.db"（相对 packages/db/prisma/），建表用 task db:push');
+    log.info('DATABASE_URL 固定为 "file:./dev.db"（三端共用；相对 packages/db/prisma/），建表用 task db:push');
   } else {
     values.DATABASE_URL = unwrap(
       await text({
-        message: "DATABASE_URL（Prisma 连接串，admin / worker 使用）",
+        message: "DATABASE_URL（三端共用：admin / worker / delivery）",
         defaultValue: defaults.DATABASE_URL,
         placeholder: "mysql://用户:密码@主机:3306/openvod",
         validate: withDefault((v) => {
@@ -320,18 +318,6 @@ async function askDatabase(values: Record<string, string>, defaults: Record<stri
         }, defaults.DATABASE_URL ?? ""),
       }),
     ).trim();
-  }
-
-  values.DELIVERY_DATABASE_URL = unwrap(
-    await text({
-      message: "DELIVERY_DATABASE_URL（分发端只读库；ADR-0011 建议受限账号：约定表只读 + playback_sessions 读写）",
-      defaultValue: defaults.DELIVERY_DATABASE_URL,
-      placeholder: "mysql://openvod_ro:密码@主机:3306/openvod",
-      validate: withDefault(validateMysqlURL, defaults.DELIVERY_DATABASE_URL ?? ""),
-    }),
-  ).trim();
-  if (provider === "sqlite" && (values.DELIVERY_DATABASE_URL ?? "").includes("changeit")) {
-    log.warn("本地仅跑 admin / worker（不起 delivery）时可沿用占位 DSN；播放链路届时不可用");
   }
 }
 
@@ -531,7 +517,7 @@ async function main(): Promise<void> {
   }
 
   intro("OpenVOD 环境变量向导");
-  log.info("生成范围遵循 ADR-0015 最小集：必需 4 键 + 进程装配期参数；其余配置推荐留空，由管理台 /setup 首次启动向导写入 system_settings。");
+  log.info("生成范围遵循 ADR-0015 最小集：必需 3 键 + 进程装配期参数；其余配置推荐留空，由管理台 /setup 首次启动向导写入 system_settings。");
 
   const values: Record<string, string> = {};
   await askDatabase(values, defaults);

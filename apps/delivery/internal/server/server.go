@@ -298,7 +298,7 @@ func (a *api) handlePlay(w http.ResponseWriter, r *http.Request) {
 	var expiresAt time.Time
 	if !forceNew {
 		if existing, err := a.o.DB.ActiveSession(ctx, uid, mediaID, now); err == nil {
-			sid, expiresAt = existing.ID, existing.ExpiresAt // play 幂等：复用未过期会话（ADR-0010）
+			sid, expiresAt = existing.ID, existing.ExpiresAt.Time // play 幂等：复用未过期会话（ADR-0010）
 		} else if !errors.Is(err, store.ErrNotFound) {
 			a.o.Logger.Error("查询播放会话失败", "err", err)
 			writeError(w, http.StatusInternalServerError, contracts.Internal, "查询播放会话失败")

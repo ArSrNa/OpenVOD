@@ -173,20 +173,6 @@ const serviceUrl = (name: "admin" | "delivery" | "player", env: Env) =>
 const serviceBase = (name: "admin" | "delivery" | "player", env: Env) =>
   serviceUrl(name, env).replace(/\/healthz$/, "");
 
-let deliveryDbFallbackDone = false;
-function applyDeliveryDbFallback(env: Env): void {
-  if (deliveryDbFallbackDone) return;
-  deliveryDbFallbackDone = true;
-  const current = env.DELIVERY_DATABASE_URL ?? "";
-  const isLocal = current === "" || current.includes("127.0.0.1") || current.includes("localhost");
-  if (!isLocal || !env.DATABASE_URL) return;
-  println(
-    `[env] DELIVERY_DATABASE_URL=${current || "未设置"} → 本地调试回退用 DATABASE_URL（生产请配置受限账号 DSN，ADR-0011）`,
-  );
-  env.DELIVERY_DATABASE_URL = env.DATABASE_URL;
-  process.env.DELIVERY_DATABASE_URL = env.DATABASE_URL;
-}
-
 // ---------------------------------------------------------------------------
 // 进程 / 探测工具
 // ---------------------------------------------------------------------------
@@ -365,7 +351,6 @@ async function startBackground(name: ServiceName, env: Env): Promise<boolean> {
     return true;
   }
   if (name === "delivery") {
-    applyDeliveryDbFallback(env);
     buildDelivery(env);
   }
   if (name === "worker") warnFfmpeg();
@@ -562,7 +547,6 @@ async function runForegroundFlow(name: ServiceName, env: Env): Promise<number> {
   }
 
   if (name === "delivery") {
-    applyDeliveryDbFallback(env);
     if (await probeHttp(serviceUrl("delivery", env))) {
       println(`[delivery] 已在运行，无需重复启动（${serviceUrl("delivery", env)}）`);
       if (pidAlive(readPid("delivery"))) {

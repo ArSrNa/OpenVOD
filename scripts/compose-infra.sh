@@ -30,7 +30,7 @@
 #   scripts/compose-infra.sh url               打印 RustFS 控制台 CNB 预览地址
 #
 # .env.trial 机制（全程不改根 .env）：
-#   init-env 以根 .env（若有）为底、仅覆盖 DB_PROVIDER / DATABASE_URL / DELIVERY_DATABASE_URL
+#   init-env 以根 .env（若有）为底、仅覆盖 DB_PROVIDER / DATABASE_URL
 #   三个键（其余键原样继承；无根 .env 则生成必需最小集，MASTER_KEYS 随机生成），
 #   输出 .env.trial（600，已被 .gitignore 的 .env.* 规则忽略，重复执行整体重新生成）。
 #   三端启动用：bun scripts/dev.ts --env-file .env.trial ...（dev.ts 指定后不再读根 .env）；
@@ -84,7 +84,7 @@ init_env_file() {
   command -v openssl >/dev/null 2>&1 || { echo "[infra] 需要 openssl" >&2; exit 1; }
   body="$ENV_TRIAL_FILE.body"
   if [ -f "$ROOT/.env" ]; then
-    # 其余键（MASTER_KEYS / 端口 / 兜底等）原样继承根 .env，仅去掉三个 DB 引导键
+    # 其余键（MASTER_KEYS / 端口 / 兜底等）原样继承根 .env，去掉两个 DB 引导键与已废弃的 DELIVERY_DATABASE_URL
     grep -vE '^(DB_PROVIDER|DATABASE_URL|DELIVERY_DATABASE_URL)=' "$ROOT/.env" > "$body" || true
     # MASTER_KEYS 缺失或仍是 .env.example 全零占位时，替换为随机值（三端必须一致的真实密钥）
     if ! grep -q '^MASTER_KEYS=' "$body" || grep -qE '^MASTER_KEYS=.*0{64}' "$body"; then
@@ -92,7 +92,7 @@ init_env_file() {
       mv "$body.x" "$body"
       printf 'MASTER_KEYS="1:%s"\n' "$(openssl rand -hex 32)" >> "$body"
     fi
-    desc="根 .env 为底，覆盖三个 DB 键"
+    desc="根 .env 为底，覆盖两个 DB 键"
   else
     {
       echo "APP_ENV=\"dev\""
@@ -107,7 +107,6 @@ init_env_file() {
     echo "# ---- 体验底座（openvod-infra 编排的本地 MySQL；凭据源 .run/infra.env）----"
     echo "DB_PROVIDER=\"mysql\""
     echo "DATABASE_URL=\"mysql://openvod:$INFRA_MYSQL_PASSWORD@127.0.0.1:$MYSQL_PORT/openvod\""
-    echo "DELIVERY_DATABASE_URL=\"mysql://openvod_ro:$INFRA_MYSQL_RO_PASSWORD@127.0.0.1:$MYSQL_PORT/openvod\""
   } >> "$body"
   {
     printf '# scripts/compose-infra.sh init-env 生成于 %s（%s）\n' "$(date '+%F %T')" "$desc"
@@ -203,7 +202,8 @@ case "$cmd" in
     load_env_file
     echo 'DB_PROVIDER="mysql"'
     echo "DATABASE_URL=\"mysql://openvod:$INFRA_MYSQL_PASSWORD@127.0.0.1:$MYSQL_PORT/openvod\""
-    echo "DELIVERY_DATABASE_URL=\"mysql://openvod_ro:$INFRA_MYSQL_RO_PASSWORD@127.0.0.1:$MYSQL_PORT/openvod\""
+    echo "# 需要分权部署时，delivery 进程可单独使用受限账号："
+    echo "# mysql://openvod_ro:$INFRA_MYSQL_RO_PASSWORD@127.0.0.1:$MYSQL_PORT/openvod（口令见 .run/infra.env）"
     echo "# 空库首建表（prisma migrate dev 影子库）可用 root："
     echo "# mysql://root:$INFRA_MYSQL_ROOT_PASSWORD@127.0.0.1:$MYSQL_PORT/openvod"
     echo "# RustFS S3（/setup 向导）：endpoint=http://127.0.0.1:$RUSTFS_API_PORT  AK=$INFRA_RUSTFS_ACCESS_KEY  SK=$INFRA_RUSTFS_SECRET_KEY"

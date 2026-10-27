@@ -262,7 +262,7 @@ MK 轮换语义：新版本加进 `MASTER_KEYS` 且**保留旧版本**，`hls_ke
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `DELIVERY_LISTEN` | `:9000` | 监听地址（SCF Web 函数固定 9000） |
-| `DELIVERY_DATABASE_URL` | 必填 | 仅 `mysql://`（归一为 go-sql-driver DSN：`parseTime=true&loc=UTC&charset=utf8mb4`） |
+| `DATABASE_URL` | 无（必填） | 三端共用。MySQL（归一为 go-sql-driver DSN：`parseTime=true&loc=UTC&charset=utf8mb4`）或 SQLite（`file:` / `sqlite:`，单机同卷） |
 | `DELIVERY_PUBLIC_BASE_URL` | `http://127.0.0.1:{port}` | 清单/密钥/字幕 URL 基址 |
 | `URL_SIGN_KEY_HEX` / `URL_SIGN_KEY_KID` | 必填 / `urlsign-v1` | 播放 token HMAC 密钥 |
 | `MASTER_KEYS` | 必填 | `版本:64位hex`，每版必须 32B，多版本逗号分隔 |

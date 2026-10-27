@@ -119,7 +119,7 @@ CNB 云原生开发环境实测要点（2026-09-22）：
   而 `apps/admin/src/lib/auth.ts` 据它推导 better-auth 的 baseURL 与 trustedOrigins——不传会出现登录
   403 `Invalid origin`（见 dev-workflow §8 对应排查条目）。
 - **数据库**：容器直连 `.env` 的 `DATABASE_URL`（CNB 环境为公网 TDSQL-C，容器内 DNS/TCP 已实测可达）。
-  注意容器内 `127.0.0.1` 指容器自身——`DELIVERY_BASE_URL` / `DELIVERY_DATABASE_URL` 等指向宿主机服务的地址
+  注意容器内 `127.0.0.1` 指容器自身——`DELIVERY_BASE_URL` / `DATABASE_URL` 等指向宿主机服务的地址
   必须改成实际可达地址。
 - **worker 大磁盘**：容器 `/tmp` 挂到 `.run/worker-tmp`（默认；可用 `OPENVOD_WORKER_TMP` 改路径）。
 - 云原生开发环境重启后 rootless docker 的容器 / 镜像不保证保留：重开环境执行一次 `scripts/compose.sh up`

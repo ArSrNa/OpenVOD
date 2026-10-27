@@ -1,7 +1,7 @@
 # ADR-0011：部署拓扑——两应用共享数据面
 
-- 状态：已接受（用户确认，2026-09-17）
-- 日期：2026-09-17
+- 状态：已接受（用户确认，2026-09-17）；**2026-10-17 修订：连接串统一 `DATABASE_URL` + 分发端支持 SQLite（单机同卷），见文末修订**
+- 日期：2026-09-17（修订 2026-10-17）
 - 关联：ADR-0003、ADR-0004、ADR-0005、ADR-0007
 
 ## 背景
@@ -62,3 +62,16 @@
 
 - 发布流水线两套并存（ADR-0003 已定），CI 需覆盖「delivery 旧版本 × 新 schema」的兼容性测试。
 - 交付物清单：delivery 二进制 / 镜像、admin + worker 镜像、compose 示例、部署文档（含 DB 账号授权清单）—— specification 落实。
+
+## 修订（2026-10-17）：数据库接入统一 `DATABASE_URL`，分发端支持 SQLite
+
+**背景**：原约束把 `DELIVERY_DATABASE_URL` 定为必填且仅接受 `mysql://`，导致三端维护两套连接串。单机同卷自托管（SQLite）下这纯属负担：同一个库文件既没有第二个地址，也没有「受限账号」的概念。
+
+**决定**：
+
+1. **单变量**：三端统一只读 `DATABASE_URL`，`DELIVERY_DATABASE_URL` 移除。delivery 的驱动由 scheme 推导（`mysql://` / `file:` / `sqlite:` / 裸 `*.db` 路径），不依赖 `DB_PROVIDER`；admin / worker 仍按 `DB_PROVIDER` 选 Prisma 客户端。
+2. **SQLite 支持**：Go 侧用 `modernc.org/sqlite`（纯 Go，`CGO_ENABLED=0` 的 SCF / EdgeOne 构建可编译）。对齐 Prisma 的物理存储：`DateTime` = 整数毫秒、`Boolean` = 0/1（`store.Time` + 按方言绑定时间参数）；连接池固定 1 并设 `busy_timeout=5000` / `foreign_keys=1`；相对路径按 Prisma schema 目录 `packages/db/prisma` 解析（`file:./dev.db` 三端指向同一文件）。
+3. **最小权限实现方式**：约束 2 仍是部署要求，但不再靠第二个变量名——需要分权时，给 **delivery 进程单独传受限账号的 `DATABASE_URL`**（Compose / SCF 各进程 env 独立）。三端取同一值时即同一账号。
+4. **EdgeOne 发布**：脚本仍只把 `DATABASE_URL` / `MASTER_KEYS` 写入私有函数包；Makers 项目自身的 `DATABASE_URL` 必须是 delivery 受限账号，与 admin 的进程环境相互隔离。
+5. **迁移**：旧部署把 `DELIVERY_DATABASE_URL` 的值改名到对应进程的 `DATABASE_URL` 即可；若 admin 与 delivery 同环境跑，则按进程分别注入账号。
+6. **风险**：SQLite 单文件同一时间只允许一个写事务。分发端已用单连接 + `busy_timeout=5000` 收敛自身写入，但 admin / worker 并发写仍可能遇到 `database is locked`；单机体验 / 小规模自托管可接受，高并发播放应使用 MySQL。

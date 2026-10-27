@@ -39,7 +39,7 @@ task image:delivery     # docker buildx build --platform linux/amd64（SCF 仅 x
 
 | 变量 | 说明 |
 |---|---|
-| `DELIVERY_DATABASE_URL` | **必须公网可达 + TLS**：Cloud Functions 无 VPC（ADR-0003 P0 结论）。`ParseDatabaseURL` 不做 TLS 兜底，公网库要自带 `?tls=true`（或自签场景 `tls=skip-verify`）。账号用 ADR-0011 的受限只读账号 |
+| `DATABASE_URL` | **必须公网可达 + TLS**：Cloud Functions 无 VPC（ADR-0003 P0 结论）。`ParseDatabaseURL` 不做 TLS 兜底，公网库要自带 `?tls=true`（或自签场景 `tls=skip-verify`）。账号用 ADR-0011 的受限只读账号——EdgeOne 项目 env 与 admin 进程隔离，直接给该项目配受限 DSN 即可。SQLite 文件库不适用于跨机 / 函数部署 |
 | `DELIVERY_PUBLIC_BASE_URL` | 最终分发域名（清单 / 密钥 / 字幕 URL 基址）；运行时可被 `system_settings.playback_base_url` 覆盖 |
 | `MASTER_KEYS` | 必填，与 admin / worker 的现有主密钥一致，格式为 `版本:64位hex`，多个版本用逗号分隔 |
 | `URL_SIGN_KEY_HEX` / `S3_*` 等 | ADR-0015：通过管理台完成初始化后从共享数据库的 `system_settings` 加载；不属于 Makers 上传包的引导变量 |
@@ -215,7 +215,7 @@ CLI 1.6.41 支持从项目根读取 Go 模块并带上同模块源码构建，�
 
 ### Go Framework 上传产物的运行变量修订（2026-09-22）
 
-实测：控制台已在部署前保存 `DELIVERY_DATABASE_URL`、`MASTER_KEYS` 且范围为全部环境，
+实测：控制台已在部署前保存 `DELIVERY_DATABASE_URL`（2026-10-17 起统一为 `DATABASE_URL`）、`MASTER_KEYS` 且范围为全部环境，
 部署 `dpiljo0vcwwh` 的 Go 进程仍报 `DELIVERY_DATABASE_URL 未配置`，外部返回 502。
 因此撤回“控制台配置会自动注入本项目上传的 Go 进程”的保证。CLI 的显式产物上传跳过自动拉取环境变量，
 其 Go Framework 构建器也不为业务变量生成初始化逻辑；不能以发布成功代替启动验收。
@@ -224,8 +224,10 @@ CLI 1.6.41 支持从项目根读取 Go 模块并带上同模块源码构建，�
 
 1. 以同一个 `EO_SECRET` 查询确切项目，再读取 **Production** 生效的环境变量。接口格式依据官方
    [`@edgeone/makers-sdk`](https://www.npmjs.com/package/@edgeone/makers-sdk)，环境过滤与固定 CLI 一致。
-2. 只取 `DELIVERY_DATABASE_URL`、`MASTER_KEYS`，缺失 / 为空 / 重复配置即停止发布，不回退到 admin 的 `DATABASE_URL`。
-   不复制整份 `.env`，不携带 admin 密钥或部署 Token。
+2. 只取**该项目自己的** `DATABASE_URL`、`MASTER_KEYS`，缺失 / 为空 / 重复配置即停止发布。
+   该 `DATABASE_URL` 必须是 delivery 受限账号（ADR-0011），与 admin 进程的环境变量互不相干；
+   不复制整份 `.env`，不携带 admin 认证密钥或部署 Token。
+   > 升级提示：2026-10-17 前项目里配置的是 `DELIVERY_DATABASE_URL`，需改名为 `DATABASE_URL`（值不变）。
 3. 以 JSON 原值写入 `.edgeone/cloud-functions/api-go/openvod-runtime-env.json`，本地权限 `0600`。
    **这是包含明文引导密钥的私有函数配置，仅随函数包上传，禁止进入 assets、Git、日志或公开构建附件。**
    正常结束或失败时由 `finally` 删除本地文件；CI 工作区也不得对外归档该目录。

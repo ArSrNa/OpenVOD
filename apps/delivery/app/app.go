@@ -45,13 +45,19 @@ func run(wrap func(http.Handler) http.Handler) error {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	db, err := store.Open(base.DatabaseURL)
+	db, err := store.Open(base.DatabaseDriver, base.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("数据库不可用: %w", err)
 	}
 	defer func() { _ = db.Close() }()
+	// 只报驱动，不打印连接串（MySQL DSN 含口令）
+	attrs := []any{"driver", base.DatabaseDriver}
+	if base.DatabasePath != "" {
+		attrs = append(attrs, "sqlite_path", base.DatabasePath)
+	}
+	logger.Info("数据库已连接", attrs...)
 
-	// ADR-0015：启动只依赖 DELIVERY_DATABASE_URL + MASTER_KEYS；存储凭据 / 播放签名密钥 /
+	// ADR-0015：启动只依赖数据库连接串 + MASTER_KEYS；存储凭据 / 播放签名密钥 /
 	// TTL / CORS 从 system_settings 加载（首次启动向导写入，MK 封装的密钥在此解封），env 兜底。
 	cfg, err := settingsConfig(context.Background(), db, base)
 	if err != nil {

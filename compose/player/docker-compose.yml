@@ -1,0 +1,53 @@
+# 播放演示 App player 单独编排（spec.md §11：Next.js 全栈单容器，免登录播放 Demo，:3100）
+#
+# 定位：给「每端一台机器 / 每端单独起」用。一次性拉起 admin + worker + player 的
+#       常驻编排见根 docker-compose.yml；本文件只起 player。
+#
+# 用法（在本文件所在目录执行）：
+#   docker compose up -d --build     # 构建镜像（等价 task image:player）并启动
+#   docker compose logs -f
+#   docker compose down
+# 已用 `task image:player` 或从制品库拉过同名镜像时，可注释掉 build 段直接 `up -d`。
+#
+# 变量：全部直接写在本文件里（.dockerignore 已排除 .env*，镜像不携带任何密钥）。
+# 最小集 = 分发端地址（容器视角 + 浏览器视角）+ 预览播放账号：
+#   账号用 `bun apps/admin/scripts/bootstrap-playback.ts <用户名> <口令≥8位>` 创建。
+#
+# 注意：player 免登录 —— 任何能打开页面的人都能用该账号播放全部 READY 媒资，
+#       定位本地 / 内网体验，不建议公网暴露。
+name: openvod-player
+
+services:
+  player:
+    build:
+      # player 经 workspace 依赖 @openvod/contracts（TS 源码直引），上下文必须是仓库根
+      context: ../..
+      dockerfile: apps/player/Dockerfile
+    image: openvod-player:latest
+    environment:
+      # ===== 必须改 =====
+      # 容器内（服务端）调分发端 login 的地址；容器内 127.0.0.1 指容器自身
+      DELIVERY_BASE_URL: "http://host.docker.internal:9000"
+      # 浏览器直连分发端的地址（经 /api/session 运行时下发给前端）——与上面视角不同，必须分别填
+      PLAYER_PUBLIC_DELIVERY_BASE_URL: "http://localhost:9000"
+      # 预览播放账号（服务端专用，凭据不下发浏览器）
+      PLAYER_PREVIEW_USERNAME: "demo"
+      PLAYER_PREVIEW_PASSWORD: "change-me-please"
+
+      # ===== 端口 =====
+      # 容器内外同端口；改了这里也要同步改下面 ports 的左右两侧
+      PLAYER_PORT: "3100"
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    ports:
+      - "3100:3100"
+
+    init: true
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

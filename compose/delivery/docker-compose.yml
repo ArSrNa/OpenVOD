@@ -1,0 +1,63 @@
+# 分发端 delivery 单独编排（ADR-0003：Go 1.26 单容器，监听 :9000）
+#
+# 定位：给「每端一台机器 / 每端单独起」用。根 docker-compose.yml 是一次性拉起
+#       admin + worker + player 的常驻编排，且**不含** delivery（它按 ADR-0003 部署到
+#       EdgeOne Cloud Functions / SCF）；本文件让 delivery 也能以自托管容器形态单独跑。
+#
+# 用法（在本文件所在目录执行）：
+#   docker compose up -d --build     # 构建镜像（等价 task image:delivery）并启动
+#   docker compose logs -f           # 跟日志
+#   docker compose down
+# 已用 `task image:delivery` 或从制品库拉过同名镜像时，可注释掉 build 段直接 `up -d`。
+#
+# 变量：全部直接写在本文件里（.dockerignore 已排除 .env*，镜像不携带任何密钥）。
+# 最小集只有 DATABASE_URL + MASTER_KEYS：
+#   - 对象存储凭据 / 播放签名密钥 / 播放域名 / TTL 由管理台首次启动向导（/setup）写入
+#     system_settings，delivery 启动时按 DATABASE_URL 读取（env 仅兜底）；
+#   - 所以务必先让 admin 完成向导，或在此补 S3_* / URL_SIGN_KEY_HEX 兜底（见文末注释）。
+name: openvod-delivery
+
+services:
+  delivery:
+    build:
+      context: ../../apps/delivery
+    image: openvod-delivery:latest
+    environment:
+      # ===== 必须改 =====
+      # 三端共用同一连接串（admin / worker / delivery 必须指向同一个库）。
+      # 容器内 127.0.0.1 指容器自身；连宿主 MySQL 用 host.docker.internal（见 extra_hosts）。
+      DATABASE_URL: "mysql://openvod:changeit@host.docker.internal:3306/openvod"
+      # 主密钥：格式 "版本:64位hex"（生成 openssl rand -hex 32）。
+      # 必须与 admin / worker 完全一致，否则 CEK 无法解封（ADR-0006）。
+      MASTER_KEYS: "1:0000000000000000000000000000000000000000000000000000000000000000"
+
+      # ===== 进程装配参数 =====
+      DELIVERY_LISTEN: ":9000"
+      # 播放 URL 基址（清单 / 密钥 / 字幕的对外地址）：留空回退 http://127.0.0.1:9000，
+      # 生产必须改成浏览器可达的分发域名（也可由管理台 system_settings.playback_base_url 覆盖）。
+      # DELIVERY_PUBLIC_BASE_URL: "https://vod.example.com"
+
+    # Linux 上让 host.docker.internal 指向宿主机（Docker Desktop 已内置，Linux 需这条）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    ports:
+      - "9000:9000"
+
+    # 未跑管理台 /setup 向导时，用下面几行临时兜底对象存储与签名密钥：
+    # 环境变量：
+    #   S3_ENDPOINT: "https://cos.ap-guangzhou.myqcloud.com"
+    #   S3_REGION: "ap-guangzhou"
+    #   S3_BUCKET: "openvod-1300000000"
+    #   S3_ACCESS_KEY_ID: "AKIDxxxxxxxx"
+    #   S3_SECRET_ACCESS_KEY: "xxxxxxxx"
+    #   S3_FORCE_PATH_STYLE: "false"          # COS 必须 false；MinIO 保持 true
+    #   URL_SIGN_KEY_HEX: "<64位hex>"          # openssl rand -hex 32
+    #   DELIVERY_CORS_ORIGINS: "*"
+    init: true
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

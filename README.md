@@ -211,7 +211,11 @@ bun scripts/dev.ts
 
 ## 容器形态（docker compose）
 
-除源码直跑外，也可用预构建镜像以容器常驻运行（CNB云原生开发环境/CVM/轻量服务器）：
+除源码直跑外，容器有两种跑法：**一次性全起**（根编排，镜像预构建）或**每端单独起**（`compose/<服务>/`，变量直接写在编排文件里）。
+
+### 一次性运行（admin + worker + player）
+
+CNB云原生开发环境/CVM/轻量服务器上，一条命令拉起全部常驻服务：
 
 ```bash
 bun start   # 等价 sh scripts/compose.sh up：docker compose pull + up -d
@@ -223,6 +227,35 @@ bun start   # 等价 sh scripts/compose.sh up：docker compose pull + up -d
 - 镜像由流水线预构建（`task image:admin` / `task image:worker` / `task image:player`，或 CNB 页面「构建admin/worker/player（Docker）」按钮）；
   本地已有同名镜像时，拉取失败不阻断，直接用本地镜像启动。
 - 停止：`docker compose down`；其余操作：`sh scripts/compose.sh {down|ps|logs [服务]|restart [服务]|url}`。
+
+### 分别运行（每端一个 compose）
+
+`compose/` 下每个服务一份独立编排，变量直接写死在文件里（不读 `.env`），适合分机部署或只调某一端：
+
+| 目录 | 服务 | 端口 | 最小变量 |
+|---|---|---|---|
+| `compose/admin/` | 管理端 admin | `8787` | `DATABASE_URL`、`DB_PROVIDER`、`MASTER_KEYS` |
+| `compose/worker/` | 转码 Worker | —（resident 无端口） | `DATABASE_URL`、`DB_PROVIDER`、`MASTER_KEYS` |
+| `compose/delivery/` | 分发端 delivery | `9000` | `DATABASE_URL`、`MASTER_KEYS` |
+| `compose/player/` | 播放演示 player | `3100` | `DELIVERY_BASE_URL`、`PLAYER_PUBLIC_DELIVERY_BASE_URL`、`PLAYER_PREVIEW_USERNAME` / `PLAYER_PREVIEW_PASSWORD` |
+
+```bash
+(cd compose/admin    && docker compose up -d --build)   # 构建并启动（等价 task image:admin）
+(cd compose/worker   && docker compose up -d --build)
+(cd compose/delivery && docker compose up -d --build)
+(cd compose/player   && docker compose up -d --build)
+```
+
+- **构建**：admin / worker / player 的构建上下文是仓库根（`context: ../..`），delivery 是 `apps/delivery`；
+  已用 `task image:*` 或从制品库拉过同名镜像时，注释掉 `build` 段直接 `up -d` 即可。
+- **只改必要的几个变量**：`DATABASE_URL` 指向容器可达的 MySQL（容器内 `127.0.0.1` 是容器自身，故文件里用
+  `host.docker.internal`，并通过 `extra_hosts: host-gateway` 兼容 Linux），`MASTER_KEYS` 四端必须完全一致。
+- **其余配置不用写**：对象存储凭据、播放签名密钥、播放域名、TTL 等在管理台首次启动向导（`/setup`）时写入
+  `system_settings`，只要各端连同一个库就能读到；未跑向导时，各文件末尾保留了 `S3_*` / `URL_SIGN_KEY_HEX` 兜底注释。
+- **播放端视角**：服务端调分发端用 `DELIVERY_BASE_URL`（容器网络），浏览器直连用 `PLAYER_PUBLIC_DELIVERY_BASE_URL`
+  （一般是宿主 / 域名地址）；预览账号用 `bun apps/admin/scripts/bootstrap-playback.ts <用户名> <口令≥8位>` 创建。
+- 与一次性编排的关系：`compose/` 可与根 `docker-compose.yml` 混用（例如 delivery 单独起、其余用根编排），
+  但同一服务不要两处同时启动（端口冲突；worker 更是硬约束单实例）。
 
 数据库选择（SQLite / MySQL）、管理员建号、常见报错处理见
 [docs/vod/dev-workflow.md](./docs/vod/dev-workflow.md)；

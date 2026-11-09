@@ -1,0 +1,65 @@
+# 管理端 admin 单独编排（ADR-0013：Next.js 全栈单容器，UI + API 同源，:8787）
+#
+# 定位：给「每端一台机器 / 每端单独起」用。一次性拉起 admin + worker + player 的
+#       常驻编排见根 docker-compose.yml（镜像预构建）；本文件只起 admin。
+#
+# 用法（在本文件所在目录执行）：
+#   docker compose up -d --build     # 构建镜像（等价 task image:admin）并启动
+#   docker compose logs -f
+#   docker compose down
+# 已用 `task image:admin` 或从制品库拉过同名镜像时，可注释掉 build 段直接 `up -d`。
+#
+# 变量：全部直接写在本文件里（.dockerignore 已排除 .env*，镜像不携带任何密钥）。
+# 最小集只有 DATABASE_URL + DB_PROVIDER + MASTER_KEYS：
+#   - 对象存储凭据、better-auth 会话密钥、播放签名密钥等由首次启动向导（/setup）
+#     生成并以 MK 封装写入 system_settings，不需要在这里配；
+#   - 容器启动后打开 http://localhost:8787 走一遍向导即可。
+name: openvod-admin
+
+services:
+  admin:
+    build:
+      # admin 依赖 workspace 源码包 + 镜像内重建两份 Prisma 客户端，上下文必须是仓库根
+      context: ../..
+      dockerfile: apps/admin/Dockerfile
+    image: openvod-admin:latest
+    environment:
+      # ===== 必须改 =====
+      # 三端共用同一连接串；容器内 127.0.0.1 指容器自身，连宿主 MySQL 用 host.docker.internal
+      DATABASE_URL: "mysql://openvod:changeit@host.docker.internal:3306/openvod"
+      # Prisma 方言：mysql | sqlite（容器形态建议 mysql；sqlite 需额外挂共享卷）
+      DB_PROVIDER: "mysql"
+      # 主密钥：格式 "版本:64位hex"（生成 openssl rand -hex 32）。
+      # 必须与 delivery / worker 完全一致，否则 CEK / 签名私钥无法解封（ADR-0006）。
+      MASTER_KEYS: "1:0000000000000000000000000000000000000000000000000000000000000000"
+
+      # ===== 服务与鉴权 =====
+      # 容器内外同端口；改了这里也要同步改下面 ports 的左右两侧
+      ADMIN_PORT: "8787"
+      # 对外基址（better-auth baseURL）：反代 / 域名访问时改成实际地址，填错登录会 403 Invalid origin
+      ADMIN_BASE_URL: "http://localhost:8787"
+      # CNB 云原生开发环境：容器不继承宿主环境变量，需手工透传平台注入的预览地址，
+      # 否则登录 403 Invalid origin。非 CNB 宿主保持注释即可。
+      # CNB_VSCODE_PROXY_URI: "https://xxxx-{{port}}.cnb.run"
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    ports:
+      - "8787:8787"
+
+    healthcheck:
+      # /healthz 进程存活即 200（db 字段仅观测）
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:'+(process.env.ADMIN_PORT||8787)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+    init: true
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

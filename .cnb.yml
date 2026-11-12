@@ -135,6 +135,43 @@
       script:
         - docker build -f apps/worker/Dockerfile -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/worker:latest . --push
 
+# 转码 worker → 腾讯云 CCR（与上面 admin 同一条口径，仓库 tcb-${CCR_UIN}-iydy/openvod，标签 :worker）
+# 用途：云托管 / TCB 侧取 worker 镜像；凭据同样来自密钥仓库 ccr.yaml，只在本 stage 注入。
+# OCI → docker 的原因见 .push-admin-ccr 上方注释（CCR 只收 docker v2 schema2 manifest）。
+.push-worker-ccr: &push-worker-ccr
+  name: 构建 worker 并推送腾讯云 CCR
+  runner:
+    cpus: 32
+  services:
+    - docker
+  stages:
+    - name: 登录 CCR → 构建（docker 媒体类型）→ 推送
+      imports:
+        - https://cnb.cool/arsrna/env/-/blob/main/ccr.yaml # CCR_UIN / CCR_PASSWORD
+      script: |
+        set -e
+        : "${CCR_UIN:?密钥仓库 ccr.yaml 未提供 CCR_UIN}"
+        : "${CCR_PASSWORD:?密钥仓库 ccr.yaml 未提供 CCR_PASSWORD}"
+        IMAGE="ccr.ccs.tencentyun.com/tcb-${CCR_UIN}-iydy/openvod:worker"
+        echo "目标镜像：$IMAGE"
+
+        # 1) 登录：密码走 --password-stdin（用 -p 会把口令整条回显在流水线日志里）
+        printf '%s' "$CCR_PASSWORD" | docker login ccr.ccs.tencentyun.com --username "$CCR_UIN" --password-stdin
+
+        # 2) 构建：上下文为仓库根（worker 经 workspace 依赖直引 packages/* 源码）。
+        #    --provenance=false + --output type=docker 把结果落成 docker 媒体类型再进本地 daemon，
+        #    否则 buildx 产物是带证明的 OCI index，CCR 拒收；随后 docker push 出去才是 schema2。
+        docker buildx build \
+          -f apps/worker/Dockerfile \
+          --platform linux/amd64 \
+          --provenance=false \
+          --output type=docker \
+          -t "$IMAGE" .
+
+        # 3) 推送（worker 镜像含 ffmpeg 与 fonts-noto-cjk，层较大，首次推送耗时会明显长于 admin）
+        docker push "$IMAGE"
+        echo "已推送到腾讯云 CCR：$IMAGE"
+
 # 播放演示 App player 镜像（spec.md §11.8：Next.js 全栈单容器，免登录播放端 Demo）
 # 构建上下文同为仓库根（workspace 源码直引）；不依赖 Prisma，构建期无需生成客户端与 env——
 # 浏览器直连分发端地址由运行时 env 下发（/api/session 的 delivery_base），镜像可跨环境复用。
@@ -282,6 +319,8 @@ $:
     - <<: *push-admin-ccr
   web_trigger_worker_docker:
     - <<: *build-worker-image
+  web_trigger_worker_ccr:
+    - <<: *push-worker-ccr
   web_trigger_player_docker:
     - <<: *build-player-image
   # 手动发布播放器 SDK（补发 / 首次发版前演练：`--registry npm` 可先只发 npm 官方）

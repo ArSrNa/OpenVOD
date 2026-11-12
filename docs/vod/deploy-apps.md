@@ -161,6 +161,7 @@ CNB 云原生开发环境实测要点（2026-09-22）：
 | 构建admin（Docker） | `web_trigger_admin_docker` | `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/admin:latest` |
 | 构建admin（腾讯云CCR） | `web_trigger_admin_ccr` | `ccr.ccs.tencentyun.com/tcb-${CCR_UIN}-iydy/openvod:admin`（凭据取密钥仓库 `ccr.yaml`，见下） |
 | 构建worker（Docker） | `web_trigger_worker_docker` | `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/worker:latest` |
+| 构建worker（腾讯云CCR） | `web_trigger_worker_ccr` | `ccr.ccs.tencentyun.com/tcb-${CCR_UIN}-iydy/openvod:worker`（凭据取密钥仓库 `ccr.yaml`，见下） |
 | 构建player（Docker） | `web_trigger_player_docker` | `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/player:latest` |
 | 发布播放器SDK | `web_trigger_publish_sdk` | `openvod-jssdk` → npm 官方 + CNB npm 制品库（单测覆盖率上报 CNB 洞察） |
 | 打 tag 发版（worker + admin + delivery + player 一次构建） | `tag_push` | 四个镜像均推 `:latest` 与 `:<tag名>` 双标签（delivery 构建见 deploy-delivery.md）；**同批发布播放器 SDK** |
@@ -168,11 +169,11 @@ CNB 云原生开发环境实测要点（2026-09-22）：
 `tag_push` 流水线（`$` 兜底分支）单流水线串行构建四个运行镜像，任一 stage 失败即中断、
 不留「半个版本」；产物同时保留 `:latest` 与本次 tag 两个标签，制品库可直接按 tag 回滚。
 
-### 同步到腾讯云 CCR（`web_trigger_admin_ccr`）
+### 同步到腾讯云 CCR（`web_trigger_admin_ccr` / `web_trigger_worker_ccr`）
 
-除 CNB 制品库外，admin 镜像还可另推一份到腾讯云**容器镜像服务 CCR**（`ccr.ccs.tencentyun.com`），
-仓库地址 `tcb-${CCR_UIN}-iydy/openvod`，标签按应用名区分（admin → `:admin`）。
-实现见 `.cnb.yml` 的 `.push-admin-ccr` 锚点，一个 stage 内「登录 → 构建 → 推送」：
+除 CNB 制品库外，admin 与 worker 镜像还可另推一份到腾讯云**容器镜像服务 CCR**（`ccr.ccs.tencentyun.com`），
+仓库地址 `tcb-${CCR_UIN}-iydy/openvod`，**标签按应用名区分**（admin → `:admin`，worker → `:worker`）。
+实现见 `.cnb.yml` 的 `.push-admin-ccr` / `.push-worker-ccr` 两个锚点，各自一个 stage 内「登录 → 构建 → 推送」：
 
 ```bash
 # 凭据：密钥仓库 https://cnb.cool/arsrna/env/-/blob/main/ccr.yaml（CCR_UIN / CCR_PASSWORD）
@@ -183,9 +184,16 @@ printf '%s' "$CCR_PASSWORD" | docker login ccr.ccs.tencentyun.com --username "$C
 docker buildx build -f apps/admin/Dockerfile --platform linux/amd64 \
   --provenance=false --output type=docker \
   -t ccr.ccs.tencentyun.com/tcb-${CCR_UIN}-iydy/openvod:admin .
+docker buildx build -f apps/worker/Dockerfile --platform linux/amd64 \
+  --provenance=false --output type=docker \
+  -t ccr.ccs.tencentyun.com/tcb-${CCR_UIN}-iydy/openvod:worker .
 
 docker push ccr.ccs.tencentyun.com/tcb-${CCR_UIN}-iydy/openvod:admin
+docker push ccr.ccs.tencentyun.com/tcb-${CCR_UIN}-iydy/openvod:worker
 ```
+
+worker 镜像含 `ffmpeg` 与 `fonts-noto-cjk`（层明显大于 admin），首次推送耗时会比 admin 长；
+两条流水线**互相独立**——一侧失败（如 CCR 凭据过期）不牵连另一侧，也各自重试。
 
 要点：
 

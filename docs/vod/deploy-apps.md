@@ -159,6 +159,7 @@ CNB 云原生开发环境实测要点（2026-09-22）：
 | 按钮 | 事件键 | 产物 |
 |---|---|---|
 | 构建admin（Docker） | `web_trigger_admin_docker` | `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/admin:latest` |
+| 构建admin（腾讯云CCR） | `web_trigger_admin_ccr` | `ccr.ccs.tencentyun.com/tcb-${CCR_UIN}-iydy/openvod:admin`（凭据取密钥仓库 `ccr.yaml`，见下） |
 | 构建worker（Docker） | `web_trigger_worker_docker` | `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/worker:latest` |
 | 构建player（Docker） | `web_trigger_player_docker` | `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/player:latest` |
 | 发布播放器SDK | `web_trigger_publish_sdk` | `openvod-jssdk` → npm 官方 + CNB npm 制品库（单测覆盖率上报 CNB 洞察） |
@@ -166,6 +167,37 @@ CNB 云原生开发环境实测要点（2026-09-22）：
 
 `tag_push` 流水线（`$` 兜底分支）单流水线串行构建四个运行镜像，任一 stage 失败即中断、
 不留「半个版本」；产物同时保留 `:latest` 与本次 tag 两个标签，制品库可直接按 tag 回滚。
+
+### 同步到腾讯云 CCR（`web_trigger_admin_ccr`）
+
+除 CNB 制品库外，admin 镜像还可另推一份到腾讯云**容器镜像服务 CCR**（`ccr.ccs.tencentyun.com`），
+仓库地址 `tcb-${CCR_UIN}-iydy/openvod`，标签按应用名区分（admin → `:admin`）。
+实现见 `.cnb.yml` 的 `.push-admin-ccr` 锚点，一个 stage 内「登录 → 构建 → 推送」：
+
+```bash
+# 凭据：密钥仓库 https://cnb.cool/arsrna/env/-/blob/main/ccr.yaml（CCR_UIN / CCR_PASSWORD）
+# 登录：密码走 stdin，避免 -p 明文回显进流水线日志
+printf '%s' "$CCR_PASSWORD" | docker login ccr.ccs.tencentyun.com --username "$CCR_UIN" --password-stdin
+
+# 构建（仓库根上下文）：必须是 docker 媒体类型，否则 CCR 拒收
+docker buildx build -f apps/admin/Dockerfile --platform linux/amd64 \
+  --provenance=false --output type=docker \
+  -t ccr.ccs.tencentyun.com/tcb-${CCR_UIN}-iydy/openvod:admin .
+
+docker push ccr.ccs.tencentyun.com/tcb-${CCR_UIN}-iydy/openvod:admin
+```
+
+要点：
+
+- **必须落成 docker v2 schema2**：`docker buildx build --push`（或 `--output type=image`）默认附带 provenance
+  证明，产物是 OCI index（`application/vnd.oci.image.index.v1+json`），**CCR 只接受 schema2 manifest**，
+  直推会 400 / `manifest invalid`。`--provenance=false` 关证明 + `--output type=docker` 把镜像转成 docker
+  媒体类型载入本地 daemon，此后的 `docker push` 出去才是 schema2。
+- **架构对齐腾讯云**：显式 `--platform linux/amd64`（TKE / SCF 均为 x86）；构建机若为 arm64 需 buildx + QEMU，
+  否则直接报 `no match for platform`（宁可构建失败，也不要把 arm64 镜像推上去）。
+- **命名空间 / 仓库要先存在**：CCR 控制台里没有 `tcb-<UIN>-iydy` 命名空间或 `openvod` 仓库时，
+  `docker push` 会因无写权限失败；凭据用该账号的 UIN + 镜像仓库密码（不是 API 密钥）。
+- 换仓库 / 项目名只改 `.cnb.yml` 里的 `IMAGE` 一行；凭据改动只改密钥仓库 `ccr.yaml`，不进仓库。
 
 ### 发版链路（2026-10-16 起：含播放器 SDK）
 

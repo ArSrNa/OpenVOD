@@ -69,6 +69,11 @@ export interface JobExecutorDeps {
   cancelPollMs?: number;
   hlsTimeSec?: number;
   log?: (msg: string) => void;
+  /**
+   * 实时日志回调（ADR-0017 修订）：worker 阶段日志与 ffmpeg stderr 逐行送出，
+   * Worker 侧接 job-log 环形缓冲落库；不传则只进进程日志（resident 模式行为不变）。
+   */
+  onLog?: (line: string) => void;
 }
 
 export interface ExecutedVariant {
@@ -287,6 +292,11 @@ export async function executeClaimedJob(
   deps: JobExecutorDeps,
 ): Promise<ExecuteJobResult> {
   const log = deps.log ?? ((msg: string) => console.log(`[worker] ${msg}`));
+  /** 汇聚点：进程日志 + 可选实时通道（管理端「日志」抽屉的数据来源） */
+  const emitLog = (msg: string) => {
+    log(msg);
+    deps.onLog?.(msg);
+  };
   const leaseMs = deps.leaseMs ?? 60_000;
   const hlsTimeSec = deps.hlsTimeSec ?? DEFAULTS.hlsTimeSec;
 
@@ -333,7 +343,7 @@ export async function executeClaimedJob(
       .then((requested) => {
         if (!requested || cancelled) return;
         cancelled = true;
-        log(`任务 ${job.id}：收到取消请求，正在中断执行`);
+        emitLog(`任务 ${job.id}：收到取消请求，正在中断执行`);
         cancelSignal.abort();
       })
       .catch(() => {
@@ -370,7 +380,7 @@ export async function executeClaimedJob(
     if (!templateId) {
       throw new JobExecutionError("任务缺少模板 ID（快照与任务记录都没有），无法确定产物目录 proceed/{id}/{模板id}/");
     }
-    log(
+    emitLog(
       `任务 ${job.id}：源 ${source.width}×${source.height}${source.fps ? `@${source.fps}` : ""}，模板「${snapshot.name}」（${templateId}）`,
     );
 
@@ -387,7 +397,7 @@ export async function executeClaimedJob(
       signal: cancelSignal.signal,
     });
     throwIfCancelled();
-    log(
+    emitLog(
       `任务 ${job.id}：源片已就绪（${(fetched.bytes / 1048576).toFixed(1)} MB${fetched.downloaded ? "，已落盘" : "，本地复用"}）`,
     );
 
@@ -404,7 +414,7 @@ export async function executeClaimedJob(
     // 4) 编译计划（三维度均不低于源的档位在此被跳过；全档跳过则按源规格兜底出一档）
     const watermark = await resolveWatermark(resolveUrl, snapshot);
     if (watermark) {
-      log(`任务 ${job.id}：烧录水印 ${describeWatermark(watermark.snapshot)}`);
+      emitLog(`任务 ${job.id}：烧录水印 ${describeWatermark(watermark.snapshot)}`);
     }
     const { plans, entries, sourceFallback } = buildPlans(snapshot, source, {
       // 远端来源已落盘（本地复用则原样返回），转码阶段读本地文件
@@ -420,9 +430,9 @@ export async function executeClaimedJob(
       // 防御性兜底：keep_original 与 compileSourceMatched 都必产一档，正常不会走到这里
       throw new JobExecutionError(`所有档位均被跳过，无可用输出（${skipped.join("；") || "模板未产出任何档位"}）`);
     }
-    for (const reason of skipped) log(`任务 ${job.id}：跳过 ${reason}`);
+    for (const reason of skipped) emitLog(`任务 ${job.id}：跳过 ${reason}`);
     if (sourceFallback) {
-      log(`任务 ${job.id}：模板档位均无降级维度（分辨率 / 帧率 / 码率 ≥ 源），已按源规格兜底产出一档`);
+      emitLog(`任务 ${job.id}：模板档位均无降级维度（分辨率 / 帧率 / 码率 ≥ 源），已按源规格兜底产出一档`);
     }
 
     // 5) 逐档转码（顺序执行：转码是 CPU 密集，v1 不做并行以免打满容器）
@@ -433,9 +443,11 @@ export async function executeClaimedJob(
       throwIfCancelled(); // 档位边界：取消后不再起下一档
       const outDir = `${outRoot}/${plan.name}`;
       await mkdir(outDir, { recursive: true });
-      log(`任务 ${job.id}：转码 ${plan.name}（${plan.width}×${plan.height}${snapshot.encrypt ? "，AES-128" : ""}）`);
+      emitLog(`任务 ${job.id}：转码 ${plan.name}（${plan.width}×${plan.height}${snapshot.encrypt ? "，AES-128" : ""}）`);
       await runFFmpeg(plan.argv!, {
         signal: cancelSignal.signal,
+        // ffmpeg stderr 逐行进实时日志（进度统计行以 \r 刷新，runFFmpeg 内已切行）
+        onStderrLine: (line) => deps.onLog?.(line),
         onProgress: ({ outTimeUs }) => {
           if (!summary.durationMs) return;
           const fraction = Math.min(1, outTimeUs / 1000 / summary.durationMs);
@@ -457,9 +469,9 @@ export async function executeClaimedJob(
     let replacedKey: boolean | null = null;
     if (key && !key.reused) {
       replacedKey = (await persistMediaKey(deps.keyStore, media.id, key)).replaced;
-      log(`任务 ${job.id}：密钥已落库（kid=${key.kid.slice(0, 8)}…，${replacedKey ? "替换旧密钥" : "首次生成"}）`);
+      emitLog(`任务 ${job.id}：密钥已落库（kid=${key.kid.slice(0, 8)}…，${replacedKey ? "替换旧密钥" : "首次生成"}）`);
     } else if (key) {
-      log(`任务 ${job.id}：复用该媒资已有密钥（kid=${key.kid.slice(0, 8)}…，多模板产物共用一份 CEK）`);
+      emitLog(`任务 ${job.id}：复用该媒资已有密钥（kid=${key.kid.slice(0, 8)}…，多模板产物共用一份 CEK）`);
     }
 
     // 8) 收尾：媒资就绪 + 任务完成

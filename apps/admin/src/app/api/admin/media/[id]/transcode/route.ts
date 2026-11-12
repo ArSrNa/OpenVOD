@@ -19,7 +19,8 @@ export async function POST(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
     const body = await req.json().catch(() => null);
     const result = await submitTranscode(id, body);
     jobsHub.poke(); // 有写入：让「转码任务」页的 SSE 立即推新任务，不必等下一轮观察
-    void notifyWorkerWake(); // ADR-0017 门铃：唤醒 http 模式 worker 加速认领；可丢，失败仅告警
+    // ADR-0017 门铃：可丢，失败仅告警。job_ids 供 invoked 模式（异步云函数）定向认领，http 模式忽略
+    void notifyWorkerWake(result.jobs.map((j) => j.job_id));
     await auditAction(req, session, "media.transcode_submit", id, {
       job_ids: result.jobs.map((j) => j.job_id),
       template_ids: result.jobs.map((j) => j.template_id),

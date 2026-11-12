@@ -3,29 +3,22 @@
 // 归一化摘要回写 `media.probe` + `media.duration_ms`。
 // ffprobe 在管理端运行环境就地执行（s3 预签名 GET URL 供流，字节不经管理端内存）；
 // 与 Worker 转码链路探测共用 @openvod/transcode 的 ffprobe 封装。
+// 运行环境可用性判定（缺安装 / 动态库遮蔽 / 超时的原因区分）见 ./ffprobe-env。
 // 2026-09-30：上传接口在上传完毕后自动调用（best-effort 降级不阻塞上传，见 ./probe-auto 与 tryGenerateMetadata）。
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { getDb } from "@openvod/db";
 import { ffprobeJSON, summarizeProbe, type ProbeSummary } from "@openvod/transcode";
 import { STORAGE_KEYS } from "@openvod/shared";
 import { getStorage } from "./storage";
 import { MediaError, assertMediaId, resolveOriginalKey } from "./media";
 import { runAutoMetadata, type AutoMetadataOutcome } from "./probe-auto";
-
-const execFileP = promisify(execFile);
+import { FFPROBE_HINT, probeFFprobeAvailability } from "./ffprobe-env";
 
 const db = getDb<any>();
 
 async function requireFFprobe(): Promise<void> {
-  try {
-    await execFileP("ffprobe", ["-version"], { timeout: 10_000 });
-  } catch {
-    throw new MediaError(
-      "internal",
-      "运行环境缺少 ffprobe，无法生成元数据（需安装 ffmpeg / ffprobe，见 .ide/Dockerfile）",
-      500,
-    );
+  const reason = await probeFFprobeAvailability();
+  if (reason) {
+    throw new MediaError("internal", `运行环境无法执行 ffprobe，无法生成元数据：${reason}（${FFPROBE_HINT}）`, 500);
   }
 }
 

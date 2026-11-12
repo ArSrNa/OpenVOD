@@ -12,9 +12,9 @@ spec.md §11：独立第三镜像——免登录、只消费分发端 `/v1` API�
 | `player` | `apps/player/Dockerfile` | Node 22（`next start`） | `:3100` · `GET /healthz` |
 
 worker 端口取决于 `WORKER_MODE`（ADR-0017）：`resident`（默认）无端口，轮询认领 `transcode_jobs`；
-`http`（serverless 门铃）监听 `WORKER_HTTP_PORT`（默认 `9001`）：`POST /wake` 触发认领
-（Bearer `WORKER_NOTIFY_SECRET`），`GET /healthz` 供平台探活。镜像与 compose 均已内置
-模式感知 HEALTHCHECK（http 探 /healthz；resident 看进程）。
+`http`（serverless 门铃）/ `invoked`（异步云函数，ADR-0017 §6）监听 `WORKER_HTTP_PORT`（默认 `9001`）：
+`POST /wake` 触发认领（Bearer `WORKER_NOTIFY_SECRET`；载荷 `{job_ids}` 只被 `invoked` 消费，定向认领不扫队列），
+`GET /healthz` 供平台探活。镜像与 compose 均已内置模式感知 HEALTHCHECK（http / invoked 探 /healthz；resident 看进程）。
 
 ## 构建上下文必须是仓库根
 
@@ -41,17 +41,23 @@ task image:player     # docker build -f apps/player/Dockerfile -t openvod-player
    bun 只用于安装与跑构建脚本；admin 运行时仍是 Node 22（ADR-0013）。
 3. **worker 必须带 ffmpeg/ffprobe**：worker 启动即自检，缺任一直接 `exit 1`。
    `shaka-packager` / `bento4` 是 CENC 演进项，镜像不装（自检里显示 MISSING 但不阻断）。
+   **admin 同样需要 ffprobe**（元数据 / 水印图片探测，见下方第 6 条），但只告警不阻断启动。
 4. **worker 必须带水印字体 `fonts-noto-cjk`**（2026-10-05，spec.md §10.6）：文字水印的
    `drawtext fontfile` 取镜像内 `/usr/share/fonts/opentype/noto/NotoSans{,Bold}-CJK-Regular.ttc`
    与 `NotoSerifCJK-Regular.ttc`（键 → 文件映射见 `@openvod/transcode` 的 `WATERMARK_FONT_FILES`）。
    Dockerfile 在**构建期** `test -f` 三份字体（缺则构建失败），Worker 启动时再自检一次并**告警不退出**——
    因为 `drawtext` 的 `fontfile` 不存在时 ffmpeg 不报错而是静默回退系统默认字体，中文会渲染成豆腐块而任务仍报成功。
    自建镜像若裁掉了字体，必须同步改 `WATERMARK_FONT_DIR`（`@openvod/shared`）与映射。
-4. **admin 镜像的构建与运行阶段都必须装 openssl**（2026-09-22 实测踩坑）：Prisma 生成客户端时按检测到的
+5. **admin 镜像的构建与运行阶段都必须装 openssl**（2026-09-22 实测踩坑）：Prisma 生成客户端时按检测到的
    libssl 选择查询引擎——构建阶段缺 openssl 会退化为 `debian-openssl-1.1.x`，与运行阶段（bookworm libssl3）
    不匹配，启动报 `generated for "debian-openssl-1.1.x", but the actual deployment required "debian-openssl-3.0.x"`，
    `/healthz` 变 `db:false`。两阶段都装 openssl 即对齐（worker 基于 Debian 全量环境，无此问题）。
-5. **player 镜像不需要 Prisma / openssl，也不接受构建期地址内联**（2026-10-13，spec.md §11.8）：
+6. **admin 运行时必须带 ffmpeg（ffprobe）**（2026-11-13）：管理端「生成元数据」（spec.md §2.1）与
+   「水印图片宽高探测」（spec.md §10.2）都在 **admin 进程内**就地跑 `ffprobe`，镜像里没有就整条功能 500
+   「运行环境无法执行 ffprobe」。`apps/admin/Dockerfile` 在 **runtime 阶段** `apt-get install ffmpeg`，
+   并在构建期 `ffprobe -version` 自检（缺则构建失败）；构建阶段不需要——`next build` 不探测。
+   自建 / 裁剪镜像时要保留 ffprobe，否则上传水印图会退化为「无法解析图片尺寸」。
+7. **player 镜像不需要 Prisma / openssl，也不接受构建期地址内联**（2026-10-13，spec.md §11.8）：
    player 不 import `packages/db` → Dockerfile 省去两份客户端生成（对比第 1 条）；**2026-11-12 起**浏览器不再直连分发端
    （spec.md §11.9：`/api/delivery/**` 同源代理），只需在服务端配 `DELIVERY_BASE_URL`（容器网络视角）——
    镜像一次构建跨环境部署、改 env 即生效，且不必再对齐「浏览器视角地址」
@@ -74,13 +80,22 @@ docker run -d --name openvod-worker -p 9001:9001 --env-file .env \
   -e WORKER_MODE=http -e WORKER_NOTIFY_SECRET=<至少16字符> \
   -v /data/openvod-tmp:/tmp openvod-worker:latest
 
+# worker（invoked 异步云函数模式，ADR-0017 §6）：仅当平台异步执行能覆盖整个任务时长时使用。
+# 两条硬要求：① WORKER_JOBS_ROOT 指向挂载的文件系统（大内存 ≠ 大磁盘，/tmp 装不下产物峰值）；
+# ② WORKER_IDLE_EXIT_MINUTES 设 1~5，任务跑完后进程主动退出，避免平台按进程存活继续计费。
+docker run -d --name openvod-worker -p 9001:9001 --env-file .env \
+  -e WORKER_MODE=invoked -e WORKER_NOTIFY_SECRET=<至少16字符> \
+  -e WORKER_JOBS_ROOT=/mnt/openvod-jobs -e WORKER_IDLE_EXIT_MINUTES=3 \
+  -v /mnt/cfs/openvod-jobs:/mnt/openvod-jobs openvod-worker:latest
+
 # player（播放演示 App，spec.md §11）：免登录；依赖分发端可达 + 预览账号（PLAYER_PREVIEW_* / 回退 DELIVERY_PREVIEW_*）
 # 只需服务端的 DELIVERY_BASE_URL（容器内可达）；浏览器请求经 /api/delivery 同源代理，无需浏览器视角地址（spec.md §11.9）
 docker run -d --name openvod-player -p 3100:3100 --env-file .env \
   -e DELIVERY_BASE_URL=http://<容器内可达的分发端地址> openvod-player:latest
 ```
 
-接通验证：admin `curl -fsS localhost:8787/healthz` 返回 `{"ok":true,"db":true}`；
+接通验证：admin `curl -fsS localhost:8787/healthz` 返回 `{"ok":true,"db":true}`，
+且容器内 `docker compose exec admin ffprobe -version` 有版本输出（缺则「生成元数据」500，见要点第 6 条）；
 resident worker 日志出现 `[worker] ffmpeg ok` / `[worker] ffprobe ok` / `[worker] 字体 ok` 与 `polling every ...`；
 （`字体 MISSING` 不阻断启动，但用到文字水印的模板会渲染成豆腐块，见上文第 4 条）
 http 模式为 `http 门铃模式 listening :9001`，且 `curl -fsS localhost:9001/healthz` 返回 200。

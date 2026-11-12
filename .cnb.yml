@@ -66,6 +66,7 @@
 
 # 管理端 admin 镜像（ADR-0003 / ADR-0013：Next.js 全栈单容器，UI + API 同源）
 # 构建上下文是**仓库根**：admin 经 transpilePackages 直接消费 workspace 的 TS 源码包。
+# 镜像 runtime 阶段含 ffmpeg/ffprobe（管理端「生成元数据」与「水印图片宽高」就地探测，spec.md §2.1 / §10.2）。
 .build-admin-image: &build-admin-image
   name: 构建并推送 admin 镜像
   runner:

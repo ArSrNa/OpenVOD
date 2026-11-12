@@ -111,8 +111,9 @@ export const SETTINGS_GROUPS = {
         options: [
           { value: "resident", label: "常驻轮询（服务器常开）" },
           { value: "http", label: "HTTP 唤醒（Serverless 按需启动）" },
+          { value: "invoked", label: "异步函数（按任务触发，不扫队列）" },
         ],
-        help: "常驻轮询：Worker 一直在线，按间隔不断问数据库有没有新任务，适合自己有机房或服务器常开的情况。HTTP 发起：平时可以缩到零，管理端提交任务后再去唤醒 Worker，适合 serverless。",
+        help: "常驻轮询：Worker 一直在线，按间隔不断问数据库有没有新任务，适合自己有机房或服务器常开的情况。HTTP 发起：平时可以缩到零，管理端提交任务后再去唤醒 Worker，适合 serverless。异步函数：云函数收到唤醒请求后只执行请求里指定的任务，不扫描队列——要求平台支持异步执行且执行时长覆盖整个任务，实例需挂载文件系统（WORKER_JOBS_ROOT）。",
       },
       { key: "worker_notify_url", label: "Worker 唤醒地址", type: "text", placeholder: "https://worker.example.com", help: "HTTP 模式必填：发起转码等任务后，管理端会向这个地址发请求唤醒 Worker。" },
       { key: "worker_notify_secret", label: "Worker 唤醒密钥", type: "secret", help: "唤醒请求的签名密钥，至少 16 个字符，必须和 Worker 环境里的 WORKER_NOTIFY_SECRET 一致，否则唤醒会被拒绝。" },

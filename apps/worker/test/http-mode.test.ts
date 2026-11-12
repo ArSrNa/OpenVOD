@@ -64,6 +64,80 @@ test("合法 /wake 立即 202 且异步触发 drain；并发唤醒合并为一�
   }
 });
 
+test("载荷 job_ids 去重后定向传递（invoked 模式），无载荷传空数组", async () => {
+  const seen: string[][] = [];
+  const worker = createHttpWorker({
+    port: 0,
+    notifySecret: SECRET,
+    onWake: (ids) => {
+      seen.push(ids);
+    },
+  });
+  await worker.start();
+  try {
+    const url = `http://127.0.0.1:${worker.port()}`;
+    const res = await fetch(`${url}/wake`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${SECRET}`, "content-type": "application/json" },
+      body: JSON.stringify({ job_ids: ["job-a", "job-a", "job-b"] }),
+    });
+    expect(res.status).toBe(202);
+    expect(await res.json()).toMatchObject({ accepted: true, job_ids: 2 });
+    await Bun.sleep(10);
+    expect(seen).toEqual([["job-a", "job-b"]]);
+
+    // 非法 JSON / 无 body：按空数组处理（http 模式照常扫队列），不能 500
+    const bad = await fetch(`${url}/wake`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${SECRET}`, "content-type": "application/json" },
+      body: "{not-json",
+    });
+    expect(bad.status).toBe(202);
+    await Bun.sleep(10);
+    expect(seen.at(-1)).toEqual([]);
+  } finally {
+    await worker.stop();
+  }
+});
+
+test("drain 期间到达的 job_ids 不丢：合并到下一轮", async () => {
+  const calls: string[][] = [];
+  let release = () => {};
+  const gate = new Promise<void>((r) => (release = r));
+  const worker = createHttpWorker({
+    port: 0,
+    notifySecret: SECRET,
+    onWake: async (ids) => {
+      calls.push(ids);
+      await gate;
+    },
+  });
+  await worker.start();
+  try {
+    const url = `http://127.0.0.1:${worker.port()}`;
+    const post = (body?: string) =>
+      fetch(`${url}/wake`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${SECRET}`,
+          ...(body ? { "content-type": "application/json" } : {}),
+        },
+        ...(body ? { body } : {}),
+      });
+
+    await post();
+    await Bun.sleep(10);
+    expect(worker.isDraining()).toBe(true);
+    await post(JSON.stringify({ job_ids: ["late"] })); // drain 未结束
+    release();
+    await Bun.sleep(20);
+    expect(calls).toEqual([[], ["late"]]);
+  } finally {
+    release();
+    await worker.stop();
+  }
+});
+
 test("healthz 与未知路径", async () => {
   const h = await start();
   try {

@@ -78,10 +78,14 @@ function pick(values: Map<string, string>, key: string, env: string): string {
   return ev?.trim() ?? "";
 }
 
-/** 运行模式（ADR-0017）：DB > env > resident。http 模式在启动时读一次，运行期不改。 */
-export async function loadWorkerMode(): Promise<"resident" | "http"> {
+/** 运行模式（ADR-0017）：DB > env > resident。启动时读一次，运行期不改。 */
+export type WorkerMode = "resident" | "http" | "invoked";
+
+export async function loadWorkerMode(): Promise<WorkerMode> {
   const { values } = await loadRaw();
-  return pick(values, "worker_mode", "WORKER_MODE") === "http" ? "http" : "resident";
+  const mode = pick(values, "worker_mode", "WORKER_MODE").toLowerCase();
+  // invoked = 异步云函数单任务触发（/wake 载荷带 jobId，不扫队列）；未知值一律回落 resident
+  return mode === "http" || mode === "invoked" ? mode : "resident";
 }
 
 /**

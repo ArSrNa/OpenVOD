@@ -7,13 +7,14 @@
 // **重启**（失败 / 已取消的任务清零尝试次数重新入队）。
 // 实时性走 SSE（/api/admin/jobs/stream，spec.md §2.1）：客户端零轮询，服务端仅在快照变化时推全量，
 // 断线由 EventSource 自动重连（重连即拿最新快照）；「耗时」列用本地时钟每秒重算，不产生请求。
-import { ReloadOutlined, StopOutlined, ThunderboltOutlined } from "@ant-design/icons";
+import { FileTextOutlined, ReloadOutlined, StopOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { ProCard } from "@ant-design/pro-components";
 import { ACTIVE_JOB_STATUSES } from "@openvod/contracts";
 import { App, Button, Empty, Progress, Space, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { jobActionState } from "@/lib/job-actions";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { JobLogDrawer } from "./JobLogDrawer";
 import { useTableBodyHeight } from "./tableScroll";
 
 interface JobItem {
@@ -84,6 +85,7 @@ export function JobsManager() {
   const [conn, setConn] = useState<ConnState>("connecting");
   const [reconnect, setReconnect] = useState(0); // 手动刷新 = 重建 SSE 连接（服务端随即回放最新快照）
   const [now, setNow] = useState(() => Date.now()); // 仅驱动「耗时」列重算，不发请求
+  const [logJob, setLogJob] = useState<JobItem | null>(null); // 日志抽屉当前任务（null = 关闭）
 
   // SSE：连上即收到全量快照（event: jobs），之后仅在服务端观察到变化时收帧；断线自动重连
   useEffect(() => {
@@ -288,22 +290,18 @@ export function JobsManager() {
     {
       title: "操作",
       key: "ops",
-      width: 150,
+      width: 200,
       render: (_, row) => {
         const st = jobActionState({
           status: row.status,
           leaseActive: row.lease_active,
           cancelRequested: row.cancel_requested_at != null,
         });
-        if (!st.canStop && !st.canRestart) {
-          return (
-            <Tooltip title={st.stopBlocked ?? st.restartBlocked ?? "—"}>
-              <Typography.Text type="secondary">—</Typography.Text>
-            </Tooltip>
-          );
-        }
         return (
           <Space size={0}>
+            <Button type="link" size="small" icon={<FileTextOutlined />} onClick={() => setLogJob(row)}>
+              日志
+            </Button>
             {st.canStop && (
               <Button danger type="link" size="small" icon={<StopOutlined />} onClick={() => handleStop(row)}>
                 取消
@@ -319,6 +317,9 @@ export function JobsManager() {
       },
     },
   ];
+
+  // 抽屉跟随 SSE 快照的最新状态（任务在抽屉打开期间终结 → 自动停止轮询）
+  const logItem = logJob ? (items.find((i) => i.id === logJob.id) ?? logJob) : null;
 
   return (
     <ProCard bordered={false}>
@@ -340,12 +341,19 @@ export function JobsManager() {
           loading={loading}
           pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 个任务` }}
           size="middle"
-          scroll={{ x: 1330, y: bodyHeight }}
+          scroll={{ x: 1380, y: bodyHeight }}
           locale={{
             emptyText: <Empty description="暂无转码任务（在「媒资管理 → 更多 → 转码」发起）" />,
           }}
         />
       </div>
+
+      <JobLogDrawer
+        jobId={logItem?.id ?? null}
+        open={logItem != null}
+        active={logItem ? ACTIVE.has(logItem.status) : false}
+        onClose={() => setLogJob(null)}
+      />
     </ProCard>
   );
 }

@@ -59,9 +59,10 @@ type Options struct {
 }
 
 type api struct {
-	o       Options
-	signer  *auth.Signer
-	urlKeys []token.SigningKey
+	o         Options
+	signer    *auth.Signer
+	urlKeys   []token.SigningKey
+	startedAt time.Time // GET /v1/meta 的 started_at / uptime_sec
 }
 
 // publicBase 使用当前 handler 的配置快照；app 每 60 秒整体刷新配置与存储，避免混用不同版本。
@@ -72,8 +73,9 @@ func New(o Options) http.Handler {
 		o.Now = time.Now
 	}
 	a := &api{
-		o:       o,
-		urlKeys: []token.SigningKey{{Kid: o.Cfg.URLSignKeyKid, Key: o.Cfg.URLSignKey}},
+		o:         o,
+		urlKeys:   []token.SigningKey{{Kid: o.Cfg.URLSignKeyKid, Key: o.Cfg.URLSignKey}},
+		startedAt: o.Now(),
 	}
 	if len(o.JWTKeys) > 0 {
 		a.signer = o.JWTKeys[0]
@@ -92,6 +94,9 @@ func New(o Options) http.Handler {
 	})
 
 	r.Route("/v1", func(r chi.Router) {
+		// 运行信息（公开，无鉴权）：版本 / 提交 / 驱动 / 发布基址，运维排障用
+		r.Get("/meta", a.handleMeta)
+
 		// ---- 业务 API（JWT，ADR-0007/0010） ----
 		r.Post("/auth/login", a.handleLogin)
 

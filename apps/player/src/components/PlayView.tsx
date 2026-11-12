@@ -90,7 +90,7 @@ export function PlayView({ mediaId }: { mediaId: string }) {
     handleRef.current?.dispose();
     handleRef.current = null;
     try {
-      const sdk = await getSdk();
+      const sdk = getSdk();
       const d = await sdk.getMedia(mediaId);
       setDetail(d);
       // play 缺省自动选择模板产物；幂等复用未过期会话（spec.md §6.3）
@@ -344,7 +344,7 @@ function PlayError({ error, onRetry }: { error: DeliveryError; onRetry: () => vo
       : error.status === 409
         ? error.hint
         : error.status === 0
-          ? "请确认分发端已启动、浏览器可直连分发端（DELIVERY_CORS_ORIGINS 放行播放器源站）"
+          ? "请确认分发端已启动，且 player 服务端的 DELIVERY_BASE_URL 可达（浏览器请求经 /api/delivery 同源代理，无需浏览器直连分发端）"
           : error.hint;
   return (
     <Space direction="vertical" size={12} style={{ width: "100%" }}>

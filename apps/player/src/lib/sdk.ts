@@ -2,22 +2,23 @@
 
 // 播放器 SDK 宿主接线（S2，player-sdk-spec.md §12.3）：以 **tokenProvider** 模式接入——
 // getToken 调 Next 路由 /api/session（服务端读预览账号调分发端 login，**凭据不下发浏览器**，spec.md §11.3）。
-// delivery 浏览器直连地址由 /api/session **运行时下发**（`delivery_base`，spec.md §11.8）：页面加载后
-// 首次请求先取一次 session，用其中的地址创建 SDK —— 镜像一次构建跨环境部署，不依赖构建期 NEXT_PUBLIC_* 内联。
+//
+// 2026-11-12（spec.md §11.9）：SDK baseUrl 固定为**同源**代理前缀 `/api/delivery`——浏览器的所有分发端
+// 请求都由 player 服务端转发 `DELIVERY_BASE_URL`。浏览器不再需要知道分发端地址，也就不会出现
+// 「浏览器访问 127.0.0.1:9000」这类跨视角失败（容器内 / 端口预览场景的通病）。
 import { createPlayerSdk, DeliveryError, type DeliveryErrorCode, type PlayerSdk } from "openvod-jssdk";
 
-import { envValue } from "./env";
+/** 同源代理前缀（服务端 route handler 见 app/api/delivery/[...path]/route.ts） */
+const PROXY_BASE_URL = "/api/delivery";
 
-/** 兜底默认（session 响应未带 delivery_base 时；口径与 /api/session 一致） */
-const FALLBACK_BASE_URL = (envValue(process.env.NEXT_PUBLIC_DELIVERY_BASE_URL) || "http://127.0.0.1:9000").replace(
-  /\/+$/,
-  "",
-);
+/** SDK 要求绝对 http(s) URL：以当前页面源站补全（仅在浏览器侧调用） */
+function proxyBaseUrl(): string {
+  return new URL(PROXY_BASE_URL, window.location.origin).toString().replace(/\/+$/, "");
+}
 
 interface SessionPayload {
   access_token: string;
   expires_at?: string;
-  delivery_base?: string;
 }
 
 let bootstrap: Promise<SessionPayload> | null = null;
@@ -42,7 +43,7 @@ async function fetchSession(): Promise<SessionPayload> {
       res.status,
     );
   }
-  return { access_token: body.access_token, expires_at: body.expires_at, delivery_base: body.delivery_base };
+  return { access_token: body.access_token, expires_at: body.expires_at };
 }
 
 /** 页面加载内首次取会话（失败允许下次重试） */
@@ -65,21 +66,13 @@ async function getToken(): Promise<{ access_token: string; expires_at?: string }
   return { access_token: session.access_token, expires_at: session.expires_at };
 }
 
-let sdkCache: { baseUrl: string; sdk: PlayerSdk } | null = null;
+let sdkCache: PlayerSdk | null = null;
 
-/** 取（按 delivery_base 缓存的）SDK 实例：列表页 / 播放页共享同一实例与会话缓存 */
-export async function getSdk(): Promise<PlayerSdk> {
-  const session = await loadSessionOnce();
-  const baseUrl = (session.delivery_base || FALLBACK_BASE_URL).replace(/\/+$/, "");
-  if (!sdkCache || sdkCache.baseUrl !== baseUrl) {
-    sdkCache?.sdk.dispose();
-    sdkCache = {
-      baseUrl,
-      sdk: createPlayerSdk({
-        baseUrl,
-        credential: { mode: "tokenProvider", getToken },
-      }),
-    };
-  }
-  return sdkCache.sdk;
+/** 取 SDK 实例：列表页 / 播放页共享同一实例与会话缓存（代理地址与页面同源，无需按环境重建） */
+export function getSdk(): PlayerSdk {
+  sdkCache ??= createPlayerSdk({
+    baseUrl: proxyBaseUrl(),
+    credential: { mode: "tokenProvider", getToken },
+  });
+  return sdkCache;
 }

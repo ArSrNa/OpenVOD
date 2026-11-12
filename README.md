@@ -33,7 +33,7 @@
 - 技术栈与管理端同一条播放器路线：Next.js 16 + antd + Video.js v10（`@videojs/react`）；只消费分发端 `/v1` API——不连数据库、不需要管理端登录；
 - 接入逻辑收敛在**播放器 SDK**（`packages/player-sdk`，零运行时依赖、播放器无关）：登录 / 会话复用 / token 自动续签 / 清晰度切换由 SDK 治理，页面只保留 UI 与换源；已发布为 npm 包 [`openvod-jssdk`](https://www.npmjs.com/package/openvod-jssdk)（同步发 CNB 制品库），第三方接入见 [packages/player-sdk/README.md](./packages/player-sdk/README.md)（设计权威：docs/vod/player-sdk-spec.md）；
 - **免登录**：服务端用「预览播放账号」自动向分发端换 JWT（凭据不下发浏览器），账号用 `bun apps/admin/scripts/bootstrap-playback.ts <用户名> <口令≥8位>` 创建；已配置 `DELIVERY_PREVIEW_*` 时会自动复用；
-- **CORS 前置**：浏览器直连分发端与对象存储——`DELIVERY_CORS_ORIGINS` 与对象桶 CORS 需放行播放端源站（本地默认 `*` 已满足；对象桶放行同管理端预览的前提），未放行时页面会给出提示；
+- **同源代理**：浏览器的分发端请求（API / 清单 / 密钥 / 字幕）全部经 player 服务端 `/api/delivery/**` 转发，只需服务端配 `DELIVERY_BASE_URL`（不再需要浏览器视角地址与 `DELIVERY_CORS_ORIGINS`）；仅**分片直连对象存储**需对象桶 CORS 放行播放端源站（同管理端预览的前提），未放行时页面会给出提示；
 - 定位本地 / 内网体验，**不建议公网暴露**（任何能打开页面的人都能用预览账号播放全部 READY 媒资）。
 
 启动（源码直跑；读取根 `.env`，端口 `PLAYER_PORT` 默认 `3100`）：
@@ -111,7 +111,7 @@ bun scripts/dev.ts --env-file .env.trial player           # 播放端 Demo（免
 - 凭据统一落在 `.run/infra.env`（权限 600，已被 gitignore）；`reset` 子命令会**删除数据卷清空数据**，`down` 保留。
 - `up` 幂等可重复执行，且**全程不改根 `.env`**：连接串由 `init-env` 写进独立的 `.env.trial`（以根 `.env` 为底，仅覆盖三个 DB 键）。后续所有 `dev.ts` 命令记得带 `--env-file .env.trial`；Prisma 类命令（`task db:migrate`）不认识该文件，先 `set -a && . ./.env.trial && set +a` 导出再跑。
 - 端口默认绑 `127.0.0.1`，且刻意避开了本机常驻服务（delivery `:9000`、worker http `:9001`），所以 RustFS 映射到 `9002/9003`；端口 / 镜像 / 绑定地址可用 `INFRA_*` 环境变量覆盖（见脚本头注释）。
-- `.env.trial` 里的 `127.0.0.1` 连接串只对**源码直跑**（`bun scripts/dev.ts`）成立；若改用「容器形态」的 admin/worker/player 镜像，容器内的 `127.0.0.1` 不是宿主机，需要调整地址（播放端另有浏览器视角的 `PLAYER_PUBLIC_DELIVERY_BASE_URL`）。
+- `.env.trial` 里的 `127.0.0.1` 连接串只对**源码直跑**（`bun scripts/dev.ts`）成立；若改用「容器形态」的 admin/worker/player 镜像，容器内的 `127.0.0.1` 不是宿主机，需要调整地址（player 只读服务端 `DELIVERY_BASE_URL`，浏览器侧无地址配置）。
 - 空库首次建表遇到 `P3014`（影子库无 `CREATE DATABASE` 权限）时，用 `env` 子命令打印的 root 连接串，或走 dev-workflow §4.3 的 baseline 流程。
 - 这套编排只是**开发底座**（数据为本地 named volume）：生产请使用 TDSQL-C / 云 MySQL 与 COS 等对象存储，账号分权约定见 ADR-0011 / ADR-0015。
 
@@ -237,23 +237,23 @@ bun start   # 等价 sh scripts/compose.sh up：docker compose pull + up -d
 | `compose/admin/` | 管理端 admin | `8787` | `DATABASE_URL`、`DB_PROVIDER`、`MASTER_KEYS` |
 | `compose/worker/` | 转码 Worker | —（resident 无端口） | `DATABASE_URL`、`DB_PROVIDER`、`MASTER_KEYS` |
 | `compose/delivery/` | 分发端 delivery | `9000` | `DATABASE_URL`、`MASTER_KEYS` |
-| `compose/player/` | 播放演示 player | `3100` | `DELIVERY_BASE_URL`、`PLAYER_PUBLIC_DELIVERY_BASE_URL`、`PLAYER_PREVIEW_USERNAME` / `PLAYER_PREVIEW_PASSWORD` |
+| `compose/player/` | 播放演示 player | `3100` | `DELIVERY_BASE_URL`、`PLAYER_PREVIEW_USERNAME` / `PLAYER_PREVIEW_PASSWORD` |
 
 ```bash
-(cd compose/admin    && docker compose up -d --build)   # 构建并启动（等价 task image:admin）
-(cd compose/worker   && docker compose up -d --build)
-(cd compose/delivery && docker compose up -d --build)
-(cd compose/player   && docker compose up -d --build)
+(cd compose/admin    && docker compose pull && docker compose up -d)   # 拉制品库镜像并启动
+(cd compose/worker   && docker compose pull && docker compose up -d)
+(cd compose/delivery && docker compose pull && docker compose up -d)
+(cd compose/player   && docker compose pull && docker compose up -d)
 ```
 
-- **构建**：admin / worker / player 的构建上下文是仓库根（`context: ../..`），delivery 是 `apps/delivery`；
-  已用 `task image:*` 或从制品库拉过同名镜像时，注释掉 `build` 段直接 `up -d` 即可。
+- **镜像**：四个文件统一使用制品库 `docker.cnb.cool/arsrna/media/openvod/{admin,worker,delivery,player}:latest`，
+  **不含 `build` 段**；改了源码需要新镜像时走流水线（CNB 页面按钮）或本地 `task image:*` 构建后推送。
 - **只改必要的几个变量**：`DATABASE_URL` 指向容器可达的 MySQL（容器内 `127.0.0.1` 是容器自身，故文件里用
   `host.docker.internal`，并通过 `extra_hosts: host-gateway` 兼容 Linux），`MASTER_KEYS` 四端必须完全一致。
 - **其余配置不用写**：对象存储凭据、播放签名密钥、播放域名、TTL 等在管理台首次启动向导（`/setup`）时写入
   `system_settings`，只要各端连同一个库就能读到；未跑向导时，各文件末尾保留了 `S3_*` / `URL_SIGN_KEY_HEX` 兜底注释。
-- **播放端视角**：服务端调分发端用 `DELIVERY_BASE_URL`（容器网络），浏览器直连用 `PLAYER_PUBLIC_DELIVERY_BASE_URL`
-  （一般是宿主 / 域名地址）；预览账号用 `bun apps/admin/scripts/bootstrap-playback.ts <用户名> <口令≥8位>` 创建。
+- **播放端视角**：只需要 `DELIVERY_BASE_URL`（容器网络可达的分发端地址）——浏览器请求经 `/api/delivery` 同源代理，
+  不再有独立的浏览器视角地址；预览账号用 `bun apps/admin/scripts/bootstrap-playback.ts <用户名> <口令≥8位>` 创建。
 - 与一次性编排的关系：`compose/` 可与根 `docker-compose.yml` 混用（例如 delivery 单独起、其余用根编排），
   但同一服务不要两处同时启动（端口冲突；worker 更是硬约束单实例）。
 

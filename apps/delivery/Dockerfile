@@ -5,7 +5,14 @@ WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download || true
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/delivery .
+# 版本信息（GET /v1/meta）：版本号唯一真源是仓库根 package.json，构建上下文只有
+# apps/delivery，故由 Taskfile / CNB 流水线以 --build-arg 传入；缺省 dev 表示未注入。
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_TIME=
+RUN CGO_ENABLED=0 go build -trimpath \
+      -ldflags="-s -w -X openvod/apps/delivery/internal/version.Version=${VERSION} -X openvod/apps/delivery/internal/version.Commit=${COMMIT} -X openvod/apps/delivery/internal/version.BuildTime=${BUILD_TIME}" \
+      -o /out/delivery .
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/delivery /delivery

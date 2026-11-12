@@ -338,6 +338,7 @@ better_auth_secret`）、`worker`（`worker_poll_interval_ms, worker_lease_ms, w
 | 端点 | 鉴权 | 请求 | 成功响应 | 主要错误 |
 |---|---|---|---|---|
 | `GET /healthz` | 无 | — | `200 {"status":"ok","app":"delivery"}` | — |
+| `GET /v1/meta` | 无 | — | `200 {app, version, commit, build_time, go_version, platform, started_at, uptime_sec, database_driver, public_base_url}`（`Cache-Control: no-store`） | — |
 | `POST /v1/auth/login` | 无 | `{username, password}` | `200 {access_token, token_type:"Bearer", expires_in, kid}`（`expires_in` = `DELIVERY_JWT_TTL_SEC`，默认 86400） | `400` body 非法/为空；`401 invalid_credentials`「用户名或密码错误」（用户不存在 / 密码错 / 已禁用统一提示）；`503` 未配置 JWT 签名密钥 |
 
 ```bash
@@ -347,6 +348,37 @@ TOKEN=$(curl -s -X POST $D/v1/auth/login -H 'content-type: application/json' \
 
 JWT 为 ES256（P-256）compact JWS，header `{alg,typ,kid}`，claims `{iss,sub,iat,exp,jti,kid}`；
 `sub` = 播放端用户 id；无 refresh（v1）。
+
+#### `GET /v1/meta`：运行信息（排障用，无需鉴权）
+
+用来确认「这个进程跑的是哪个构建、连的哪种驱动、对外基址是什么」——典型用途是区分
+「容器拉了旧镜像」和「配置不对」。只输出非敏感信息：不含数据库连接串、`MASTER_KEYS`、
+签名密钥或任何 env 原值。
+
+```json
+{
+  "app": "delivery",
+  "version": "1.2.1",
+  "commit": "3f46fdb",
+  "build_time": "2026-11-12T07:00:00Z",
+  "go_version": "go1.26.1",
+  "platform": "linux/amd64",
+  "started_at": "2026-11-12T07:45:35Z",
+  "uptime_sec": 92,
+  "database_driver": "mysql",
+  "public_base_url": "https://delivery.ovod.skirk.cn"
+}
+```
+
+| 字段 | 来源 |
+|---|---|
+| `version` / `commit` / `build_time` | 构建期 `-ldflags -X openvod/apps/delivery/internal/version.{Version,Commit,BuildTime}`；`task build:delivery`、`task image:delivery`、CNB 流水线与 `bun scripts/dev.ts delivery` 都会注入，版本号取根 `package.json`（唯一真源） |
+| 同上（覆盖） | 运行时 env `APP_VERSION` / `APP_COMMIT` 优先于注入值；EdgeOne Makers 构建器不接受 ldflags，需要精确版本时在部署环境配这两个变量（非密钥，可明文） |
+| `go_version` / `platform` | 构建产物记录的工具链版本 + `GOOS/GOARCH` |
+| `database_driver` / `public_base_url` | 当前生效配置（`system_settings` 优先、env 兜底；每 60s 刷新后随之变化） |
+
+未注入时 `version=dev`、`commit=unknown`，`build_time` 省略（`go run .` / 裸 `go build`）。
+与 `/healthz` 一样，本端点不进 `packages/contracts`（纯运维探针、无请求体）。
 
 ### 2.1 🆕 媒资（含自定义元数据）
 

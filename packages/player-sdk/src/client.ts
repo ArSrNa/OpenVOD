@@ -68,8 +68,17 @@ export class HttpClient {
 
   // ---- 内部 ----
 
+  /**
+   * 组装请求 URL：
+   *   - 绝对 http(s)（分发端直连形态）原样使用；
+   *   - **根相对路径**（`/api/...`，宿主自建同源代理时 play 响应会这样下发，如 `apps/player` 的
+   *     `/api/delivery`）按 `baseUrl` 的**源站**解析，而不是与 baseUrl 的路径段拼接；
+   *   - 其余相对路径（`v1/...`，SDK 内部端点）沿用 baseUrl 拼接语义。
+   */
   private absoluteUrl(url: string): string {
-    return /^https?:\/\//i.test(url) ? url : `${this.cfg.baseUrl}${url}`;
+    if (/^https?:\/\//i.test(url)) return url;
+    if (url.startsWith("/")) return new URL(url, this.cfg.baseUrl).toString();
+    return `${this.cfg.baseUrl}${url}`;
   }
 
   private async send(req: {

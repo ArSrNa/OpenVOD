@@ -97,6 +97,11 @@ func Load() (*Config, error) {
 
 	db, err := ParseDatabaseURL(os.Getenv("DATABASE_URL"))
 	if err != nil {
+		// ADR-0011 修订（2026-10-17）：旧名 DELIVERY_DATABASE_URL 已移除，只读 DATABASE_URL。
+		// 旧部署还留着旧名时给出改名提示，避免把「env 没改名」误判成「代码没迁移」。
+		if strings.TrimSpace(os.Getenv("DELIVERY_DATABASE_URL")) != "" {
+			return nil, fmt.Errorf("%w（检测到已废弃的 DELIVERY_DATABASE_URL：请改名为 DATABASE_URL，值不变）", err)
+		}
 		return nil, err
 	}
 	cfg.DatabaseDriver = db.Driver

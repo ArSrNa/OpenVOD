@@ -221,7 +221,7 @@ async function recoverPlayback(errorCode?: number) {
 
 | 现象 | 排查顺序 |
 |---|---|
-| 列表页报 `internal / status 0` | ① 分发端是否启动：`curl <baseUrl>/healthz`；② 宿主源站是否在 `DELIVERY_CORS_ORIGINS`；③ 浏览器直连地址是否可达（运行时 `delivery_base` 是否正确） |
+| 列表页报 `internal / status 0` | ① 分发端是否启动：`curl <baseUrl>/healthz`；② 宿主源站是否在 `DELIVERY_CORS_ORIGINS`（宿主自建同源代理时可免，如 `apps/player` 的 `/api/delivery`）；③ `baseUrl` 从浏览器是否可达 |
 | 列表能出、点进播放黑屏 | ① token 是否过期（`handle.expires_at`）；② 桶（COS / RustFS）是否放行宿主源站 CORS（分片直连对象存储）；③ 产物是否完整（管理端产物列表） |
 | 播到一半 403 / 后段失败 | token 与分片预签名过期：调大 `refreshLeewaySec` 观察自动重签，或按上文「播放器内 403 处置」手动重签 |
 | `session_limit`（409） | 同账号并发会话达上限（`forceNew` **不绕过**）：等 TTL 过期或管理端调大 `max_concurrent_sessions` |

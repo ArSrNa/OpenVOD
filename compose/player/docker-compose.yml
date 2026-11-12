@@ -4,13 +4,13 @@
 #       常驻编排见根 docker-compose.yml；本文件只起 player。
 #
 # 用法（在本文件所在目录执行）：
-#   docker compose up -d --build     # 构建镜像（等价 task image:player）并启动
+#   docker compose pull && docker compose up -d   # 直接拉制品库镜像启动（本文件不含 build 环节）
 #   docker compose logs -f
 #   docker compose down
-# 已用 `task image:player` 或从制品库拉过同名镜像时，可注释掉 build 段直接 `up -d`。
+# 镜像由流水线构建并推送到制品库；需本地改源码构建时用 `task image:player`。
 #
 # 变量：全部直接写在本文件里（.dockerignore 已排除 .env*，镜像不携带任何密钥）。
-# 最小集 = 分发端地址（容器视角 + 浏览器视角）+ 预览播放账号：
+# 最小集 = 分发端地址（容器内可达）+ 预览播放账号（浏览器请求经 /api/delivery 同源代理，无需浏览器视角地址）：
 #   账号用 `bun apps/admin/scripts/bootstrap-playback.ts <用户名> <口令≥8位>` 创建。
 #
 # 注意：player 免登录 —— 任何能打开页面的人都能用该账号播放全部 READY 媒资，
@@ -19,17 +19,11 @@ name: openvod-player
 
 services:
   player:
-    build:
-      # player 经 workspace 依赖 @openvod/contracts（TS 源码直引），上下文必须是仓库根
-      context: ../..
-      dockerfile: apps/player/Dockerfile
-    image: openvod-player:latest
+    image: docker.cnb.cool/arsrna/media/openvod/player:latest
     environment:
       # ===== 必须改 =====
-      # 容器内（服务端）调分发端 login 的地址；容器内 127.0.0.1 指容器自身
+      # 容器内（服务端）调分发端的地址；容器内 127.0.0.1 指容器自身
       DELIVERY_BASE_URL: "http://host.docker.internal:9000"
-      # 浏览器直连分发端的地址（经 /api/session 运行时下发给前端）——与上面视角不同，必须分别填
-      PLAYER_PUBLIC_DELIVERY_BASE_URL: "http://localhost:9000"
       # 预览播放账号（服务端专用，凭据不下发浏览器）
       PLAYER_PREVIEW_USERNAME: "demo"
       PLAYER_PREVIEW_PASSWORD: "change-me-please"

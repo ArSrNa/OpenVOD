@@ -1,36 +1,12 @@
-// 会话端点（服务端专用，spec.md §11.3）：读预览账号调分发端 login，返回 {access_token, expires_at, delivery_base}。
+// 会话端点（服务端专用，spec.md §11.3）：读预览账号调分发端 login，返回 {access_token, expires_at}。
 // 凭据（PLAYER_PREVIEW_*，回退 DELIVERY_PREVIEW_*）**不下发浏览器**；服务端进程内缓存 JWT（过期前 60s 复用）。
-// `delivery_base` 为**浏览器**直连分发端的地址（运行时下发，spec.md §11.2）：镜像一次构建跨环境部署，
-// 不依赖构建期 NEXT_PUBLIC_* 内联；容器内服务端地址（DELIVERY_BASE_URL）常与浏览器视角地址不同。
+// 自 2026-11-12（spec.md §11.9）起不再下发 `delivery_base`：浏览器的分发端请求一律经 /api/delivery 同源代理，
+// 分发端真实地址只在服务端 env（DELIVERY_BASE_URL）——镜像一次构建跨环境部署的语义不变，且更彻底。
 import { NextResponse } from "next/server";
-import { envValue, stripQuotes } from "@/lib/env";
+
+import { deliveryBaseUrl, previewCredentials } from "@/lib/delivery-server";
 
 export const dynamic = "force-dynamic";
-
-const DEFAULT_DELIVERY_BASE_URL = "http://127.0.0.1:9000";
-
-function deliveryBaseUrl(): string {
-  return (envValue(process.env.DELIVERY_BASE_URL) || DEFAULT_DELIVERY_BASE_URL).replace(/\/+$/, "");
-}
-
-/** 浏览器直连地址：PLAYER_PUBLIC_DELIVERY_BASE_URL → NEXT_PUBLIC_DELIVERY_BASE_URL → 服务端地址 */
-function browserDeliveryBaseUrl(): string {
-  return (
-    envValue(process.env.PLAYER_PUBLIC_DELIVERY_BASE_URL) ||
-    envValue(process.env.NEXT_PUBLIC_DELIVERY_BASE_URL) ||
-    deliveryBaseUrl()
-  ).replace(/\/+$/, "");
-}
-
-/** 预览账号：优先 PLAYER_PREVIEW_*，缺省回退管理端预览账号 DELIVERY_PREVIEW_*（spec.md §11.2） */
-function previewCredentials(): { username: string; password: string } | null {
-  const username = envValue(process.env.PLAYER_PREVIEW_USERNAME) || envValue(process.env.DELIVERY_PREVIEW_USERNAME);
-  const password =
-    stripQuotes(process.env.PLAYER_PREVIEW_PASSWORD ?? "") ||
-    stripQuotes(process.env.DELIVERY_PREVIEW_PASSWORD ?? "");
-  if (!username || !password) return null;
-  return { username, password };
-}
 
 interface CacheEntry {
   accessToken: string;
@@ -65,14 +41,7 @@ export async function GET() {
   const key = JSON.stringify([base, creds.username, creds.password]);
   const nowSec = Math.floor(Date.now() / 1000);
   if (cached && cached.key === key && cached.expiresAtSec - 60 > nowSec) {
-    return noStoreJson(
-      {
-        access_token: cached.accessToken,
-        expires_at: new Date(cached.expiresAtSec * 1000).toISOString(),
-        delivery_base: browserDeliveryBaseUrl(),
-      },
-      200,
-    );
+    return noStoreJson({ access_token: cached.accessToken, expires_at: new Date(cached.expiresAtSec * 1000).toISOString() }, 200);
   }
 
   let res: Response;
@@ -111,11 +80,7 @@ export async function GET() {
     key,
   };
   return noStoreJson(
-    {
-      access_token: cached.accessToken,
-      expires_at: new Date(cached.expiresAtSec * 1000).toISOString(),
-      delivery_base: browserDeliveryBaseUrl(),
-    },
+    { access_token: cached.accessToken, expires_at: new Date(cached.expiresAtSec * 1000).toISOString() },
     200,
   );
 }

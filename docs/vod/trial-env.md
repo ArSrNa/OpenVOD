@@ -108,4 +108,4 @@ bun scripts/dev.ts --env-file .env.trial status             # 四行 running（w
 | 登录 403 Invalid origin | CNB 预览网关会改写 Origin，见 dev-workflow §8 对应条目 |
 | 分发端 login 返回 503 未配置 JWT 签名密钥 | 向导完成后跑 `bun apps/admin/scripts/bootstrap-playback.ts <用户> <密码≥8位>` 引导播放链路（含签名密钥 + 播放端用户） |
 | player 打开提示「未配置预览播放账号」（501） | 在 `.env.trial` 配置 `PLAYER_PREVIEW_USERNAME` / `PLAYER_PREVIEW_PASSWORD`（或复用 `DELIVERY_PREVIEW_*`），账号用上述 `bootstrap-playback.ts` 创建，再重启 player |
-| player 列表加载失败 / 播放一直转圈 | 浏览器直连的两条 CORS 链路：①业务 API 与清单——`DELIVERY_CORS_ORIGINS` 放行 player 源站（默认 `*` 已满足）；②分片直连对象存储——RustFS 对象桶 CORS 放行 player 源站。另确认分发端在跑（`curl http://127.0.0.1:9000/healthz`）；CNB 预览场景 `NEXT_PUBLIC_DELIVERY_BASE_URL` 需填网关地址（**构建期内联，改后要重启 player**） |
+| player 列表加载失败 / 播放一直转圈 | ①业务 API / 清单 / 密钥 / 字幕经 `/api/delivery` **同源代理**（spec.md §11.9）：先确认分发端在跑（`curl http://127.0.0.1:9000/healthz`）且 player 服务端能访问 `DELIVERY_BASE_URL`（浏览器无需直连分发端，也不再需要 `DELIVERY_CORS_ORIGINS`）；②分片仍由浏览器直连对象存储——RustFS 对象桶 CORS 放行 player 源站，且该端点对浏览器可达（CNB 预览需在 PORTS 面板暴露 `INFRA_S3_PORT`） |

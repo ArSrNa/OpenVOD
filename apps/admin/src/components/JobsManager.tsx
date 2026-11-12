@@ -1,19 +1,20 @@
 "use client";
 
 // 转码任务页（/jobs，M2；ADR-0008 队列 + ADR-0014 模板快照）：
-// 列表来自 transcode_jobs，展示状态机（排队 → 探测 → **拉取源片** → 转码 → 封装上传 → 完成/失败）、
+// 列表来自 transcode_jobs，展示状态机（排队 → 探测 → **拉取源片** → 转码 → 封装上传 → 完成/失败/取消）、
 // 模板名（取任务快照，模板被删也能追溯）、阶段进度与失败原因；
-// 操作：**停止**（取消：排队中的撤下队列；worker 失联的安全终止，spec.md §5.1）与
-// **重启**（失败 / 手动停止的任务清零尝试次数重新入队）。
+// 操作：**取消**（立即打断：执行中的任务由 worker 收到取消请求后杀掉 ffmpeg，spec.md §5.1）与
+// **重启**（失败 / 已取消的任务清零尝试次数重新入队）。
 // 实时性走 SSE（/api/admin/jobs/stream，spec.md §2.1）：客户端零轮询，服务端仅在快照变化时推全量，
 // 断线由 EventSource 自动重连（重连即拿最新快照）；「耗时」列用本地时钟每秒重算，不产生请求。
-import { ReloadOutlined, StopOutlined, ThunderboltOutlined } from "@ant-design/icons";
+import { FileTextOutlined, ReloadOutlined, StopOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { ProCard } from "@ant-design/pro-components";
 import { ACTIVE_JOB_STATUSES } from "@openvod/contracts";
 import { App, Button, Empty, Progress, Space, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { jobActionState } from "@/lib/job-actions";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { JobLogDrawer } from "./JobLogDrawer";
 import { useTableBodyHeight } from "./tableScroll";
 
 interface JobItem {
@@ -28,6 +29,8 @@ interface JobItem {
   progress: number | null;
   /** 分发端是否持有有效租约（执行中）；未认领 / worker 失联时为 false */
   lease_active: boolean;
+  /** 取消请求时间（有值 = 已提交取消，等待 worker 中断） */
+  cancel_requested_at: string | null;
   last_error: string | null;
   created_at: string;
   started_at: string | null;
@@ -42,6 +45,7 @@ const STATUS_META: Record<string, { color: string; label: string }> = {
   PACKAGING: { color: "processing", label: "封装上传中" },
   DONE: { color: "success", label: "完成" },
   FAILED: { color: "error", label: "失败" },
+  CANCELLED: { color: "default", label: "已取消" },
 };
 
 const ACTIVE = new Set<string>(ACTIVE_JOB_STATUSES);
@@ -81,6 +85,7 @@ export function JobsManager() {
   const [conn, setConn] = useState<ConnState>("connecting");
   const [reconnect, setReconnect] = useState(0); // 手动刷新 = 重建 SSE 连接（服务端随即回放最新快照）
   const [now, setNow] = useState(() => Date.now()); // 仅驱动「耗时」列重算，不发请求
+  const [logJob, setLogJob] = useState<JobItem | null>(null); // 日志抽屉当前任务（null = 关闭）
 
   // SSE：连上即收到全量快照（event: jobs），之后仅在服务端观察到变化时收帧；断线自动重连
   useEffect(() => {
@@ -128,21 +133,22 @@ export function JobsManager() {
 
   const handleStop = (row: JobItem) => {
     modal.confirm({
-      title: `确认停止任务 ${row.id.slice(0, 12)}…？`,
+      title: `确认取消任务 ${row.id.slice(0, 12)}…？`,
       content: (
         <Typography.Text type="danger">
-          停止后任务标记为失败：排队中的不再执行；执行中（worker 失联）的安全终止。之后可用「重启」重新入队。
+          排队中的任务立即撤下队列；执行中的任务会通知 worker 立即中断（杀掉 ffmpeg 进程、中止拉取）。
+          取消后任务显示「已取消」，可用「重启」重新入队。
         </Typography.Text>
       ),
-      okText: "停止",
+      okText: "取消任务",
       okButtonProps: { danger: true },
-      cancelText: "取消",
+      cancelText: "返回",
       onOk: async () => {
         try {
           await callAction(row.id, "stop");
-          message.success("任务已停止");
+          message.success("取消请求已提交");
         } catch (e) {
-          message.error(e instanceof Error ? e.message : "停止失败");
+          message.error(e instanceof Error ? e.message : "取消失败");
         }
       },
     });
@@ -216,12 +222,23 @@ export function JobsManager() {
       width: 130,
       render: (status: string, row) => {
         const meta = STATUS_META[status] ?? { color: "default", label: status };
-        const st = jobActionState({ status: row.status, leaseActive: row.lease_active });
+        const st = jobActionState({
+          status: row.status,
+          leaseActive: row.lease_active,
+          cancelRequested: row.cancel_requested_at != null,
+        });
         return (
           <Space size={4}>
             <Tag color={meta.color}>{meta.label}</Tag>
+            {st.cancelling && (
+              <Tooltip title="取消请求已提交，正在中断执行（worker 每 2 秒轮询一次，通常数秒内完成）">
+                <Tag color="warning" style={{ marginInlineEnd: 0 }}>
+                  取消中
+                </Tag>
+              </Tooltip>
+            )}
             {st.leaseExpired && (
-              <Tooltip title="worker 失联：租约已过期，任务不会再被继续执行；可停止，或重启 worker 后等待重派">
+              <Tooltip title="worker 失联：租约已过期，任务不会再被继续执行；可取消，或重启 worker 后等待重派">
                 <Tag color="warning" style={{ marginInlineEnd: 0 }}>
                   中断
                 </Tag>
@@ -273,21 +290,21 @@ export function JobsManager() {
     {
       title: "操作",
       key: "ops",
-      width: 150,
+      width: 200,
       render: (_, row) => {
-        const st = jobActionState({ status: row.status, leaseActive: row.lease_active });
-        if (!st.canStop && !st.canRestart) {
-          return (
-            <Tooltip title={st.stopBlocked ?? st.restartBlocked ?? "—"}>
-              <Typography.Text type="secondary">—</Typography.Text>
-            </Tooltip>
-          );
-        }
+        const st = jobActionState({
+          status: row.status,
+          leaseActive: row.lease_active,
+          cancelRequested: row.cancel_requested_at != null,
+        });
         return (
           <Space size={0}>
+            <Button type="link" size="small" icon={<FileTextOutlined />} onClick={() => setLogJob(row)}>
+              日志
+            </Button>
             {st.canStop && (
               <Button danger type="link" size="small" icon={<StopOutlined />} onClick={() => handleStop(row)}>
-                停止
+                取消
               </Button>
             )}
             {st.canRestart && (
@@ -300,6 +317,9 @@ export function JobsManager() {
       },
     },
   ];
+
+  // 抽屉跟随 SSE 快照的最新状态（任务在抽屉打开期间终结 → 自动停止轮询）
+  const logItem = logJob ? (items.find((i) => i.id === logJob.id) ?? logJob) : null;
 
   return (
     <ProCard bordered={false}>
@@ -321,12 +341,19 @@ export function JobsManager() {
           loading={loading}
           pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 个任务` }}
           size="middle"
-          scroll={{ x: 1330, y: bodyHeight }}
+          scroll={{ x: 1380, y: bodyHeight }}
           locale={{
             emptyText: <Empty description="暂无转码任务（在「媒资管理 → 更多 → 转码」发起）" />,
           }}
         />
       </div>
+
+      <JobLogDrawer
+        jobId={logItem?.id ?? null}
+        open={logItem != null}
+        active={logItem ? ACTIVE.has(logItem.status) : false}
+        onClose={() => setLogJob(null)}
+      />
     </ProCard>
   );
 }

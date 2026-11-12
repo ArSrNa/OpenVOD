@@ -112,8 +112,9 @@ root 下按资产类别分四个分区，互不嵌套：
 | `/api/admin/jobs/stream` | GET | 转码任务实时推送（SSE，`text/event-stream`）：连接即回放全量快照（`event: jobs`），此后**仅当任务快照变化时**推送全量（幂等覆盖，避免空转）；15s `event: ping` 保活心跳；断线由浏览器按 `retry` 提示自动重连（重连即重新校验会话）、连接 10 min 到期主动断开重连。**客户端不轮询**；服务端由进程内 hub（`lib/jobs-stream`）观察 DB 变化——Worker 是独立进程且 MySQL/SQLite 无跨进程通知，管理端只能观察自己的库；全部连接共享同一观察循环，订阅者归零即停机；响应 `no-store` / `X-Accel-Buffering: no` |
 | `/api/admin/media/{id}/preview-play` | POST | 「产物解密播放」预览：请求体 `template_id`（可选；**空串 = 显式请求旧布局产物**，缺省由分发端自动选择，§6.3）。服务端以**预览账号**（`DELIVERY_PREVIEW_USERNAME/PASSWORD`）调分发端 login + play，返回 `{sid, manifest_url, expires_at, template_id, encrypted}`；浏览器用 hls.js / Safari 原生直接播该签名清单——清单 / 密钥 / 分片直达浏览器，**管理端不接触密钥材料**（P0，§4.3）。未配置预览账号返回 501 |
 | `/api/admin/media/{id}/products/{templateId}` | DELETE | 删除一套转码产物：`templateId` 为模板 cuid（删 `proceed/{id}/{templateId}/` 子树）或 `legacy`（旧布局：删 `proceed/{id}/` 顶层非保留段对象）。**只删存储对象**：`hls_keys`（可能被其它模板产物共用）与 `transcode_jobs` 历史保留；同模板存在未终结任务 → 409；不存在 → 404；落 `audit_logs`（`media.product_delete`，detail 含 template_id / objects / bytes） |
-| `/api/admin/jobs/{id}/stop` | POST | 停止（取消）任务：置 FAILED（`last_error=已手动停止（管理端）`）+ 清租约。仅对 **QUEUED**（撤下队列，不再被认领）或**租约已过期**的执行中任务（worker 失联，安全终止）开放；租约有效（worker 正在执行）→ 409。写入用 CAS（状态未变才生效）。落 `audit_logs`（`transcode.stop`） |
+| `/api/admin/jobs/{id}/stop` | POST | 取消任务（**立即打断**）：QUEUED / 租约已过期 → 直接置 `CANCELLED` + 清租约；租约有效（worker 正在执行）→ 只写 `cancel_requested_at`，worker 2s 内杀掉 ffmpeg / 中止拉源并落 `CANCELLED`。返回 `{id, status, cancelling}`。写入用 CAS（状态未变才生效）。落 `audit_logs`（`transcode.stop`） |
 | `/api/admin/jobs/{id}/restart` | POST | 重启（重新入队）：仅 **FAILED**（失败或手动停止）——`attempts` 清零（否则认领逻辑会立即判「超过重试上限」）+ 清错误 / 租约 / 时间戳 → QUEUED，由 worker 重新认领。落 `audit_logs`（`transcode.restart`） |
+| `/api/admin/jobs/{id}/logs` | GET | 任务日志尾部（ADR-0017 §6，2026-11-13）：查询参数 `after=<上次 seq>`，返回 `{seq, tail}`；`seq` 未变时 `tail: null`（不重传文本）。数据源是 Worker 每 2s 覆盖写的 `transcode_jobs.log_tail`（最近 48KB），任务不存在 404；`no-store` |
 | `/api/admin/stats` | GET | 控制台总览七项真实统计：`media`（`total` 为 `original/` 下去重媒资 ID 数、`ready` 为已入库且 READY、`not_ingested` 为无 DB 行）、`jobs`（QUEUED / PROBING / ENCODING / PACKAGING + `active`）、`users`（`total/active/disabled`）；`storage.used_bytes` 为当前 root 五分区（`original/proceed/cover/metadata/watermark`）对象大小总和（含分片 / 字幕 / 封面 / 水印图片 / 未入库文件，不含桶内其它业务前缀；`watermark/` 为 2026-10-02 水印管理新增）；`subtitles`（实际 VTT 文件 `total` / 覆盖 `media_count`）；`products`（按媒资 × 模板归组的 `total` / 覆盖 `media_count`，兼容旧布局并排除字幕）；`metadata`（数字媒资目录下对象 `total/probe/custom/other`，`probe.json` / `custom.json` 单独计数）。五分区各列举一次、自动遍历 S3 分页，目录占位不计文件；媒资复用原视频列表 + 两次 DB COUNT，任务四次 COUNT，用户两次 COUNT。契约为 `DashboardStatsResponse`（仅管理端，不生成 Go）；列举失败返回错误，不返回部分用量。首页只显示已用空间，不展示配额 / 百分比 / 分区进度条 / 活跃播放会话 |
 | `/api/admin/users` | GET | 播放端用户列表（ADR-0004 `users` 表；ADR-0007 账户域，创建时间倒序）：用户名 / 展示名 / 状态 / 并发上限 / 进行中会话数 / 最近登录 / 注册时间。**响应不含 `password_hash`**（契约层不定义该字段，管理端无查看口令哈希的入口）。「进行中会话数」= `playback_sessions` 中未吊销且未过期的条数（批量 groupBy 一次统计） |
 | `/api/admin/users` | POST | 新建播放端用户：`username` + `password`（后者 bcrypt cost 12 摘要后入库，ADR-0007）→ 默认 `ACTIVE`；可选 `display_name` / `max_concurrent_sessions`（`display_name` 缺省 / 空 = 沿用用户名）。用户名重复 409；用户名或口令不合法 400。落 `audit_logs`（`user.create`） |
@@ -201,7 +202,7 @@ root 下按资产类别分四个分区，互不嵌套：
 - `/watermarks`（水印管理，2026-10-02 已实现，独立模块，§10 权威）：模板列表表格——预览缩略（图片型经 GET `/{id}/image`；文字型按字体 / 颜色渲染小样）、名称、类型（图片 / 文字 Tag）、参数摘要（锚点 / 偏移 / 透明度 / 混合 / 尺寸或字号）、**被引用数（`referenced_by`，>0 时删除按钮的确认文案给出具体数量与「先解除关联」）**、图片状态（图片型 `missing` 黄标「待上传」）、更新时间；操作：新建 / 编辑（弹窗：类型选择（创建后不可改）+ 公共参数 + 类型专属 + **浏览器侧实时预览**）、上传 / 替换图片、删除。
 - `/users`（播放端用户，ADR-0004 `users` 表 / ADR-0007 账户域）：用户列表表格——用户名（加粗，已封禁标红 Tag）、展示名、状态（可用 / 封禁 Tag）、并发上限（`0` 悬停提示「0 = 不限制」）、进行中会话数、最近登录、注册时间；操作：新建 / 编辑（弹窗表单：用户名创建后为只读，口令仅新建时可填，状态用 Switch，并发上限 0–10000）、重置密码（独立弹窗，双口令确认，提示将吊销全部会话）、吊销会话（有会话时才可点）、封禁 / 启用、删除（确认弹窗区分「级联删除会话」与「封禁后可恢复」）。页面**不提供口令 / 哈希的查看与导出入口**；API 见 §2.1.1。
 - `/keys`（密钥管理，已实现）：密钥列表表格——媒资 ID、展示名、媒资状态、kid（截断 + Tooltip 全量）、算法、MK 版本（非当前版本标「待轮换」）、加密产物对象数、生成时间；顶部条展示当前封装版本与各版本密钥用量；操作：详情（弹窗：kid / IV / mk_ver / 生成时间 / 使用中会话数，并明确标注「明文密钥不展示」）、删除（确认弹窗警告需重转码才能恢复可播）、「轮换 MK」（确认后重封装旧版本，无需重转码）；API 见 §2.1 与 §4.3。**页面不提供任何明文密钥的展示 / 导出入口**。
-- `/jobs`（转码任务，M2 已实现，M3 增停止 / 重启）：任务列表表格——任务 ID、媒资（ID + 展示名）、状态（排队 / 探测中 / 转码中 / 封装上传中 / 完成 / 失败；worker 失联的执行中任务标「中断」）、模板名（取任务快照）、尝试次数、耗时、失败原因、创建时间；**操作列**：停止（取消）/ 重启（重新入队），规则见 §5.1；**实时推送（SSE）**——连接即回放全量快照，任务变化由服务端主动推送（客户端零轮询），断线自动重连并展示连接状态；「刷新」= 重建连接（服务端随即回放最新快照），「耗时」列由本地时钟每秒重算（不发请求）；**侧边栏「转码任务」菜单项 Badge**（2026-10-01 用户定）：存在进行中任务（`QUEUED / PROBING / ENCODING / PACKAGING`）时显示数量，与任务页同一 SSE 快照源，无进行中任务不渲染；API 见 §2.1（`/api/admin/jobs`、`/api/admin/jobs/stream`、`/api/admin/jobs/{id}/stop|restart`），执行规则见 §5。
+- `/jobs`（转码任务，M2 已实现，M3 增取消 / 重启）：任务列表表格——任务 ID、媒资（ID + 展示名）、状态（排队 / 探测中 / 拉取源片中 / 转码中 / 封装上传中 / 完成 / 失败 / 已取消；取消请求等待中标「取消中」，worker 失联的执行中任务标「中断」）、模板名（取任务快照）、尝试次数、耗时、失败原因、创建时间；**操作列**：**日志**（抽屉：`GET /api/admin/jobs/{id}/logs` 增量拉取最近 48KB，任务执行中 1.5s 刷新、终结即停，2026-11-13）、取消（立即打断）/ 重启（重新入队），规则见 §5.1；**实时推送（SSE）**——连接即回放全量快照，任务变化由服务端主动推送（客户端零轮询），断线自动重连并展示连接状态；「刷新」= 重建连接（服务端随即回放最新快照），「耗时」列由本地时钟每秒重算（不发请求）；**侧边栏「转码任务」菜单项 Badge**（2026-10-01 用户定）：存在进行中任务（`QUEUED / PROBING / ENCODING / PACKAGING`）时显示数量，与任务页同一 SSE 快照源，无进行中任务不渲染；API 见 §2.1（`/api/admin/jobs`、`/api/admin/jobs/stream`、`/api/admin/jobs/{id}/stop|restart`），执行规则见 §5。
 - 操作（对应 §2.1）：上传视频（**2026-10-01 起改为跳转独立上传页 `/media/upload`（§9），本页不再内联文件选择与上传进度**；上传页负责多文件拖入 → 客户端队列（并发 2、切页不中断）→ 进度与任务状态展示，**上传完毕后异步自动生成元数据**在上传页的任务状态中体现——任务转入「元数据生成中」，按递增间隔轮询详情，就绪 → 完成，超时黄色告警提示可「更多 → 生成元数据」重跑，2026-09-30 增 / 2026-10-01 迁移）、预览（弹窗 `<video>` 播放 original，local 支持 Range 拖动）、详情（弹窗展示元数据：probe 摘要结构化展示——容器 / 分辨率 / 帧率 / 编码 / 像素格式 / 色彩空间 / 码率 / 音轨等 + 摘要 JSON 折叠块）、重命名（仅展示名）、删除（确认后硬删除全级联）、设置封面（弹窗双模式：手动上传 / 视频截帧，§2.3）、「更多 → 生成元数据」（ffprobe 探测，§2.1；2026-09-30 起上传完毕后**异步自动生成**，此处用于手动重跑）、「更多 → 转码」（M2 已实现：弹窗**多选**模板（默认勾选默认模板）→ 逐个展示所选模板的模式 / 加密 / 输出格式 → 一次发起入队多条 `transcode_jobs`（每个模板各一条、各落 `proceed/{id}/{模板id}/`），进度跳「转码任务」页查看）；「更多 → 字幕管理」打开**字幕管理抽屉**（M4 已实现：多轨 VTT 列表 / 上传 / 编辑元信息 / 替换文本 / 删除，语言按 BCP-47 归一化；规范见 §7.6）；「更多 → 分类、描述与标签」与详情弹窗的「编辑自定义元数据」打开**自定义元数据弹窗**（分类 TreeSelect 无限层级 + 视频描述 + 标签，§8.5）；「更多 → 修改上传时间」与详情弹窗「上传时间」旁的编辑按钮打开**上传时间弹窗**（`DatePicker showTime`；留空保存 = 恢复默认；2026-09-30 增）。
 - `/categories`（分类管理，2026-09-24 已实现，独立模块）：**树形表格**（antd `children` 层级，默认展开全部父节点，遵循 §3.0 滚动约定）——分类名（系统默认分类「其他」带「默认」标记）、描述、直属媒资、排序、更新时间；操作：**新建子分类**（行内，预设上级）、**编辑**（弹窗：上级 TreeSelect（自身与子孙禁选，防环路）/ 分类名 / 描述 / 同级排序）、**删除**（Popconfirm 提示：直属媒资将归入默认分类「其他」、媒资不被删除；系统默认分类按钮禁用）；顶部「新建顶级分类」与「刷新」；规范见 §8.1 / §8.5。
 
@@ -286,17 +287,26 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 
 ### 5.1 状态机与认领
 
-- 任务状态：`QUEUED → PROBING → DOWNLOADING → ENCODING → PACKAGING → DONE`；异常 → `FAILED`（取值与 Prisma `JobStatus` 逐字一致，`@openvod/contracts JOB_STATUSES`）。**2026-10-17 增 `DOWNLOADING`（拉取源片）**：源片先流式拉取到任务临时目录再转码——转码输入本地文件、ladder 多档只下载一次、「拉取源片」与「转码」在管理端可区分（ADR-0008 修订）。`transcode_jobs.progress`（0–100）记录**当前阶段**进度：`DOWNLOADING` = 已下载字节/总字节；`ENCODING` = （已完成档位数 + 当前档位 `out_time`/源时长）/ 总档位数（argv 注入 `-progress pipe:1`，Worker 流式解析）；认领时与其余阶段为 `NULL`；
+- 任务状态：`QUEUED → PROBING → DOWNLOADING → ENCODING → PACKAGING → DONE`；异常 → `FAILED`、取消 → `CANCELLED`（2026-11-12 新增终结态；取值与 Prisma `JobStatus` 逐字一致，`@openvod/contracts JOB_STATUSES`）。**2026-10-17 增 `DOWNLOADING`（拉取源片）**：源片先流式拉取到任务临时目录再转码——转码输入本地文件、ladder 多档只下载一次、「拉取源片」与「转码」在管理端可区分（ADR-0008 修订）。`transcode_jobs.progress`（0–100）记录**当前阶段**进度：`DOWNLOADING` = 已下载字节/总字节；`ENCODING` = （已完成档位数 + 当前档位 `out_time`/源时长）/ 总档位数（argv 注入 `-progress pipe:1`，Worker 流式解析）；认领时与其余阶段为 `NULL`；
 - **认领用 CAS 条件更新**：候选 = `status ∈ {QUEUED,PROBING,DOWNLOADING,ENCODING,PACKAGING}` 且（`lease_until` 为空或已过期）→ 条件更新为 `PROBING`、续 `lease_until`、`attempts+1`、写 `started_at`、清 `progress`；`updateMany` 受影响行数 = 1 才算认领成功。MySQL 与 SQLite 语义一致，多实例并发下只有一个实例能拿到；ADR-0008 里的 MySQL `FOR UPDATE SKIP LOCKED` 作为**高并发演进项**（v1 不做方言分支）；
+- **定向认领（`invoked` 模式，ADR-0017 §6，2026-11-13）**：异步云函数的唤醒载荷带 `job_ids`，`claimById` 只对指定任务做同一套 CAS（**不扫描队列**）；平台重投 / 并发唤醒只有一次能成功。载荷为空时退回队列扫描（兼容 http 模式与旧客户端）。多模板提交时管理端**逐任务各发一次**唤醒（一次唤醒 = 一次异步实例），避免整批在同一实例内串行；
 - 执行期按 `leaseMs/3` 心跳续期 → 长转码任务不会被重派；
 - Worker 崩溃 → lease 过期 → 任务被重新认领（`attempts+1`）；`attempts` 超过 `WORKER_MAX_ATTEMPTS`（默认 3）→ 直接判 `FAILED`，防止崩溃循环；
 - **同一媒资 + 同一模板同时只允许一个未终结任务**：管理端发起时校验（409）。产物按 `proceed/{id}/{templateId}/` 分树存放（§1.3），不同模板互不覆盖，故**同一媒资可并行不同模板的转码**；单次 submit 可多选模板，每个模板各入队一条任务。
 - **同一媒资的任务串行执行**：Worker 每轮只认领并执行一个任务，单实例下同媒资不同模板任务天然串行。加密任务对同一媒资**必须**串行——否则两个任务各自 `generateMediaKey` 会产出两把不同的 CEK，只有最后落库的一把能解密，另一套产物永久不可解（ADR-0006 §4.2 密钥唯一约束）。v1 单 worker 实例（`scripts/dev.ts` 启动）满足此约束；多实例横向扩展属演进项（认领时需做媒资级串行）；
-- **停止 / 重启（管理端「转码任务」页操作，M3）**：
-  - **停止（取消）** = 置 `FAILED`（`last_error=已手动停止（管理端）`）+ 清租约。仅对 **QUEUED**（撤下队列，不再被认领）或**租约已过期**的执行中任务（worker 失联 / 已死，安全终止）开放；**租约有效（worker 正在执行）拒绝**——任务状态会被 worker 覆盖，执行中的中途取消需要 worker 侧检查点配合（演进项）。写入用 CAS（`where status = 原状态`），与 worker 的完成写竞态时返回 409 让用户刷新；
-  - **重启（重新入队）** = 仅 **FAILED**（失败或手动停止）→ `QUEUED`，且 `attempts` **清零**（不清零会被认领逻辑立即判「超过重试上限」，worker `job-store.claim`）+ 清 `last_error` / 租约 / `started_at` / `finished_at`；
-  - 两者均落 `audit_logs`（`transcode.stop` / `transcode.restart`），并 poke 任务页 SSE 立即推送新状态；
-  - 任务 DTO 携带 `lease_active`（分发端是否持有有效租约），前端据此渲染「停止 / 重启」可用性与「中断」提示。
+- **取消 / 重启（管理端「转码任务」页操作）**：
+  - **取消（立即打断，2026-11-12）**：
+    - **QUEUED** 或**租约已过期**（worker 失联 / 已死）→ 直接置 `CANCELLED`（清租约 / 进度 / 错误），任务不会再被认领；
+    - **租约有效（worker 正在执行）** → 只写 `transcode_jobs.cancel_requested_at`（`status` 不动）。Worker 每 2s 轮询该列（`job-store.isCancelRequested`），命中即置内部取消标志并 `AbortController.abort()`：**ffmpeg 子进程先 SIGTERM、3s 宽限后 SIGKILL**，源片拉取 `pipeline` 断开，封装上传逐对象止损；阶段边界（探测后 / 拉源后 / 每档之间 / 上传前）另有同步检查点。收尾把 `status` 落为 `CANCELLED` 并清 `progress` / `lease_until`，**不写 `last_error`**；
+    - 取消请求已提交但租约仍有效时重复提交返回 409（状态列显示「取消中」）；租约过期后可再次提交，立即收尾；
+    - Worker 的 `setStatus` / `setProgress` / `extendLease` 均带 `status != CANCELLED` 守卫，已取消的任务不会被完成写「复活」；
+    - **媒资状态回滚**：取消不是故障，媒资回到任务执行前的状态（此前 `READY` 仍 `READY`，旧产物可播）；
+    - 认领时若候选任务 `cancel_requested_at` 非空且租约已过期（取消到达时 worker 已失联），直接收尾为 `CANCELLED`，不执行；
+  - **重启（重新入队）** = **FAILED 或 CANCELLED** → `QUEUED`，且 `attempts` **清零**（不清零会被认领逻辑立即判「超过重试上限」，worker `job-store.claim`）+ 清 `cancel_requested_at`（不清会被 worker 认领后立刻再次取消）+ 清 `last_error` / 租约 / `started_at` / `finished_at`；
+  - 两者均落 `audit_logs`（`transcode.stop` / `transcode.restart`），并 poke 任务页 SSE 立即推送新状态；取消写入用 CAS（`where status = 原状态`），与 worker 的完成写竞态时返回 409 让用户刷新；
+- **任务日志尾部（2026-11-13，ADR-0017 §6）**：Worker 把阶段日志与 ffmpeg stderr 逐行放入 48KB 环形缓冲（单行上限 2KB），每 2s **有变化才**覆盖写 `transcode_jobs.log_tail` 并把 `log_seq` +1；管理端 `GET /api/admin/jobs/{id}/logs?after=<seq>` 增量读取（未变化返回 `tail: null`）。日志是诊断数据、非事实源：不追加行、任务终结后仍保留尾部、不参与状态机；
+- **失效任务巡检（仅 `invoked` 模式）**：该模式没有任何进程会重派任务，管理端在任务页观察循环里做**读时巡检**（60s 节流）：租约过期超过 5 分钟、或排队超过 10 分钟未认领 → 置 `FAILED`（可重启重试）。常驻 / 门铃模式不启用（租约过期仍按崩溃重派处理，ADR-0008）；
+  - 任务 DTO 携带 `lease_active` 与 `cancel_requested_at`，前端据此渲染「取消 / 重启」可用性、「取消中」与「中断」提示。
 
 ### 5.2 执行顺序（顺序即正确性）
 
@@ -334,10 +344,11 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `WORKER_MODE` | `resident` | 运行模式（ADR-0017）：`resident` = 常驻轮询；`http` = HTTP 门铃（`POST /wake` 触发 claim-drain，空闲可退出）。DB `worker_mode` > env |
-| `WORKER_HTTP_PORT` | `9001` | http 模式监听端口（含 `GET /healthz`） |
-| `WORKER_IDLE_EXIT_MINUTES` | `0`（不退出） | http 模式空闲退出阈值 |
-| `WORKER_NOTIFY_SECRET` | 空（http 模式必填） | `/wake` Bearer 密钥；缺失拒绝启动 |
+| `WORKER_MODE` | `resident` | 运行模式（ADR-0017）：`resident` = 常驻轮询；`http` = HTTP 门铃（`POST /wake` 触发 claim-drain，空闲可退出）；`invoked` = 异步云函数单任务触发（载荷 `job_ids` 定向认领，不扫队列）。DB `worker_mode` > env |
+| `WORKER_HTTP_PORT` | `9001` | http / invoked 模式监听端口（含 `GET /healthz`） |
+| `WORKER_IDLE_EXIT_MINUTES` | `0`（不退出） | 空闲退出阈值（http / invoked）；invoked 建议 1~5，跑完主动退出避免平台按进程存活计费 |
+| `WORKER_JOBS_ROOT` | 空（= `os.tmpdir()/openvod-jobs`） | 任务临时目录根；invoked 模式**必须**指向挂载的文件系统（CFS / NAS），`/tmp` 装不下产物峰值 |
+| `WORKER_NOTIFY_SECRET` | 空（http / invoked 必填） | `/wake` Bearer 密钥；缺失拒绝启动 |
 | `WORKER_POLL_INTERVAL_MS` | `2000` | 轮询间隔（毫秒，仅 resident 模式） |
 | `WORKER_LEASE_MS` | `60000` | 任务 lease 时长（执行期按 1/3 续期） |
 | `WORKER_MAX_ATTEMPTS` | `3` | 单任务最大尝试次数 |

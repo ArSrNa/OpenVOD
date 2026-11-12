@@ -6,9 +6,11 @@
 import type { MasterKey } from "@openvod/crypto";
 import { DEFAULT_LADDER, WATERMARK_FONT_FILES, WATERMARK_FONT_ROOT } from "@openvod/transcode";
 import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { executeClaimedJob } from "./executor";
+import { executeClaimedJob, JobCancelledError } from "./executor";
 import { createHttpWorker } from "./http-mode";
+import { createJobLogSink } from "./job-log";
 import { createPrismaTranscodeJobStore } from "./job-store";
 import { createPrismaMediaKeyStore } from "./media-key-store";
 import { createPrismaMediaStore } from "./media-store";
@@ -121,9 +123,14 @@ process.on("SIGTERM", () => (running = false));
 process.on("SIGINT", () => (running = false));
 
 let pollIntervalMs = boot.pollIntervalMs;
+/**
+ * 任务临时目录根（ADR-0017 修订）：异步云函数实例的本地 /tmp 装不下「源片 + 全档产物」峰值，
+ * 必须挂文件系统（CFS / NAS）并把 `WORKER_JOBS_ROOT` 指过去；不配则沿用 os.tmpdir()。
+ */
+const jobsRoot = process.env.WORKER_JOBS_ROOT?.trim() || undefined;
 
-/** 认领并执行单个任务（无可认领任务返回 false）；两种模式共用 */
-async function runOnce(): Promise<boolean> {
+/** 认领并执行单个任务（无可认领任务返回 false）；各模式共用；jobId 有值时定向认领 */
+async function runOnce(jobId?: string): Promise<boolean> {
   const s = await loadWorkerSettings().catch((e) => {
     console.error("[worker] 读取系统设置失败（沿用上次配置）:", (e as Error).message);
     return null;
@@ -139,10 +146,21 @@ async function runOnce(): Promise<boolean> {
       }
     }
   }
-  const job = await jobStore.claim({ leaseMs: s?.leaseMs ?? boot.leaseMs, maxAttempts: s?.maxAttempts ?? boot.maxAttempts });
-  if (!job) return false;
+  const claimOpts = { leaseMs: s?.leaseMs ?? boot.leaseMs, maxAttempts: s?.maxAttempts ?? boot.maxAttempts };
+  const job = jobId ? await jobStore.claimById(jobId, claimOpts) : await jobStore.claim(claimOpts);
+  if (!job) {
+    if (jobId) console.log(`[worker] 任务 ${jobId} 不可认领（已终结 / 租约有效 / 超限），跳过`);
+    return false;
+  }
 
-  console.log(`[worker] 认领任务 ${job.id}（媒资 ${job.mediaId}，第 ${job.attempts} 次尝试）`);
+  // 实时日志（ADR-0017 修订）：阶段日志 + ffmpeg stderr 进环形尾部，每 2s 覆盖写 log_tail
+  const sink = createJobLogSink({ write: (tail) => jobStore.writeLog(job.id, tail) });
+  const say = (msg: string) => {
+    console.log(`[worker] ${msg}`);
+    sink.line(msg);
+  };
+  say(`认领任务 ${job.id}（媒资 ${job.mediaId}，第 ${job.attempts} 次尝试）`);
+
   try {
     const result = await executeClaimedJob(job, {
       jobStore,
@@ -153,42 +171,68 @@ async function runOnce(): Promise<boolean> {
       resolveSourceUrl: (key, ttlSec) => sourceResolver.resolve(key, ttlSec).then((r) => r.url),
       masterKeys,
       leaseMs: s?.leaseMs ?? boot.leaseMs,
+      jobsRoot,
       log: (msg) => console.log(`[worker] ${msg}`),
+      onLog: (line) => sink.line(line),
     });
     const variants = result.variants.map((v) => `${v.name}(${v.files} 文件)`).join(" / ");
-    console.log(
-      `[worker] 任务 ${job.id} 完成：${variants}${result.encrypted ? "｜AES-128 加密" : ""}` +
+    say(
+      `任务 ${job.id} 完成：${variants}${result.encrypted ? "｜AES-128 加密" : ""}` +
         `${result.sourceFallback ? "｜按源规格兜底产出（无降级维度）" : ""}` +
         `｜上传 ${result.uploadedObjects} 个对象` +
         `${result.deletedStaleObjects ? `｜清理旧产物 ${result.deletedStaleObjects} 个` : ""}`,
     );
   } catch (e) {
     const message = (e as Error).message;
-    console.error(`[worker] 任务 ${job.id} 失败：${message}`);
+    if (e instanceof JobCancelledError) {
+      // 取消是用户意图，不写 last_error：管理端靠 CANCELLED 状态区分「失败」与「取消」（spec.md §5.1）
+      say(`任务 ${job.id} 已取消：${message}`);
+      await jobStore
+        .setStatus(job.id, "CANCELLED", { lastError: null, finishedAt: new Date(), leaseUntil: null, progress: null })
+        .catch((err) => console.error("[worker] 标记取消状态出错:", err));
+      return true;
+    }
+    say(`任务 ${job.id} 失败：${message}`);
     await jobStore
       .setStatus(job.id, "FAILED", { lastError: message, finishedAt: new Date(), leaseUntil: null, progress: null })
       .catch((err) => console.error("[worker] 标记失败状态出错:", err));
+  } finally {
+    // 最后一次覆盖写（成功 / 失败 / 取消都要落，否则日志尾部停在中断前）
+    await sink.stop();
   }
   return true;
 }
 
-/** claim-drain：循环认领直到队列空（http 模式的 /wake 触发体） */
-async function drainOnce(): Promise<void> {
-  while (running && (await runOnce().catch((e) => {
-    console.error("[worker] drain error:", (e as Error).message);
-    return false;
-  }))) {
+/**
+ * 一轮 drain（/wake 触发体）：
+ *   jobIds 非空 = invoked 模式，只认领载荷里的任务（不扫队列，重复投递由 CAS 挡住）；
+ *   jobIds 为空 = http 模式，循环认领直到队列空。
+ */
+async function drainOnce(jobIds: string[] = []): Promise<void> {
+  const runGuarded = (id?: string) =>
+    runOnce(id).catch((e) => {
+      console.error("[worker] drain error:", (e as Error).message);
+      return false;
+    });
+  if (jobIds.length) {
+    for (const id of jobIds) {
+      if (!running) return;
+      await runGuarded(id);
+    }
+    return;
+  }
+  while (running && (await runGuarded())) {
     // runOnce 返回 true = 执行了一个任务，继续认领
   }
 }
 
-if (mode === "http") {
-  // ---- HTTP 门铃模式（ADR-0017 §2）：/wake 触发 drain，空闲超时退出加速平台缩零 ----
+if (mode === "http" || mode === "invoked") {
+  // ---- 门铃模式（ADR-0017 §2 + 2026-11-13 修订）：/wake 触发 drain，空闲超时退出加速平台缩零 ----
   const idleExitMinutes = Math.max(0, Number(process.env.WORKER_IDLE_EXIT_MINUTES ?? "0") || 0);
   const worker = createHttpWorker({
     port: Number(process.env.WORKER_HTTP_PORT ?? "9001") || 9001,
     notifySecret: process.env.WORKER_NOTIFY_SECRET ?? "",
-    onWake: () => drainOnce(),
+    onWake: (jobIds) => drainOnce(jobIds),
     idleExitMs: idleExitMinutes > 0 ? idleExitMinutes * 60_000 : 0,
     onIdle: () => {
       console.log("[worker] 空闲退出（队列已空，等待下次唤醒）");
@@ -196,6 +240,9 @@ if (mode === "http") {
     },
   });
   await worker.start();
+  console.log(
+    `[worker] 运行模式 ${mode}${jobsRoot ? `，任务目录 ${jobsRoot}` : `，任务目录 ${join(tmpdir(), "openvod-jobs")}（默认）`}`,
+  );
   process.on("SIGTERM", () => void worker.stop());
   process.on("SIGINT", () => void worker.stop());
 } else {

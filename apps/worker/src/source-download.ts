@@ -20,6 +20,8 @@ export interface FetchSourceOptions {
   onProgress?: (downloaded: number, total: number | null) => void;
   /** 读停滞上限（毫秒）：这么久没有任何数据即失败（与 ffmpeg 输入的 -rw_timeout 同口径） */
   idleTimeoutMs?: number;
+  /** 外部中断（管理端取消任务）：abort 即断开连接并删除半成品（由任务目录整体清理） */
+  signal?: AbortSignal;
 }
 
 export interface FetchSourceResult {
@@ -41,6 +43,7 @@ export async function fetchSourceToLocal(opts: FetchSourceOptions): Promise<Fetc
   const controller = new AbortController();
   let idle: ReturnType<typeof setTimeout> | undefined;
   let idleFired = false;
+  let cancelled = false;
   const arm = () => {
     clearTimeout(idle);
     idle = setTimeout(() => {
@@ -49,6 +52,14 @@ export async function fetchSourceToLocal(opts: FetchSourceOptions): Promise<Fetc
     }, idleTimeoutMs);
   };
   arm();
+
+  // 外部取消与「读停滞」共用同一个 AbortController，但报错措辞要能区分（前者是用户意图，后者是故障）
+  const onCancel = () => {
+    cancelled = true;
+    controller.abort();
+  };
+  if (opts.signal?.aborted) onCancel();
+  else opts.signal?.addEventListener("abort", onCancel, { once: true });
 
   try {
     const res = await fetch(opts.url, { signal: controller.signal });
@@ -70,16 +81,19 @@ export async function fetchSourceToLocal(opts: FetchSourceOptions): Promise<Fetc
       Readable.fromWeb(res.body as unknown as import("node:stream/web").ReadableStream),
       meter,
       createWriteStream(opts.destPath),
+      { signal: controller.signal },
     );
     if (total != null && received !== total) {
       throw new Error(`拉取源片不完整：${received}/${total} 字节`);
     }
     return { input: opts.destPath, bytes: received, downloaded: true };
   } catch (e) {
-    // 停滞中止：统一成可读原因（底层 abort 的报错措辞随运行时版本而异）
+    // 中止原因：取消请求优先，其次停滞（底层 abort 的报错措辞随运行时版本而异）
+    if (cancelled) throw new Error("任务已取消（已中止拉取源片）");
     if (idleFired) throw new Error(`拉取源片停滞超过 ${idleTimeoutMs}ms（已中止）`);
     throw e;
   } finally {
     clearTimeout(idle);
+    opts.signal?.removeEventListener("abort", onCancel);
   }
 }

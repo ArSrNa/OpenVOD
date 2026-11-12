@@ -17,7 +17,8 @@ export async function POST(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
     const { id } = await ctx.params;
     const result = await restartTranscodeJob(id);
     jobsHub.poke(); // 「转码任务」页的 SSE 立即推送新状态
-    void notifyWorkerWake(); // ADR-0017 门铃：同发起转码；stop 不需要通知（409 语义不依赖通道）
+    // ADR-0017 门铃：同发起转码（带 job_id 供 invoked 模式定向认领）；stop 不需要通知（409 语义不依赖通道）
+    void notifyWorkerWake([id]);
     await auditAction(req, session, "transcode.restart", id, { status: result.status });
     return apiJson(result);
   } catch (e) {

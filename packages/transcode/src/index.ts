@@ -25,7 +25,14 @@ export interface RunFFmpegOptions {
   timeoutMs?: number;
   /** 进度回调（仅在 argv 带 `-progress pipe:1` 时有值） */
   onProgress?: (info: FFmpegProgressInfo) => void;
+  /** stderr 行回调（实时日志入口，ADR-0017 修订）：按 \r\n / \n / \r 切行，退出时补齐最后一行 */
+  onStderrLine?: (line: string) => void;
+  /** 外部中断（管理端取消任务）：abort 后先 SIGTERM 再 SIGKILL，被中断的调用以 FFmpegError 拒绝 */
+  signal?: AbortSignal;
 }
+
+/** 取消后给 ffmpeg 的优雅退出宽限期；超时仍未退出则 SIGKILL（避免半成品分片写坏目录） */
+const ABORT_KILL_GRACE_MS = 3_000;
 
 /** stderr 只保尾部（失败消息取末 500 字符；避免长任务把内存吃满） */
 const STDERR_KEEP_CHARS = 256 * 1024;
@@ -38,16 +45,30 @@ const STDERR_KEEP_CHARS = 256 * 1024;
 export async function runFFmpeg(argv: string[], opts: RunFFmpegOptions = {}): Promise<void> {
   const timeoutMs = opts.timeoutMs ?? 6 * 3600_000;
   await new Promise<void>((resolve, reject) => {
+    if (opts.signal?.aborted) {
+      reject(new FFmpegError(argv, "任务已取消（abort），未启动 ffmpeg"));
+      return;
+    }
     const child = spawn("ffmpeg", argv, { stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
     let stdoutRest = "";
     let settled = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
 
     const timer = setTimeout(() => {
       stderr += `\n[runFFmpeg] 超时 ${timeoutMs}ms，已终止`;
       child.kill("SIGKILL");
     }, timeoutMs);
     timer.unref?.();
+
+    // 取消：先 SIGTERM 让 ffmpeg 自己收尾，宽限期后仍在则 SIGKILL（零碎分片由任务目录整体清理）
+    const onAbort = () => {
+      stderr += "\n[runFFmpeg] 任务已取消，终止 ffmpeg";
+      child.kill("SIGTERM");
+      killTimer = setTimeout(() => child.kill("SIGKILL"), ABORT_KILL_GRACE_MS);
+      killTimer.unref?.();
+    };
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
 
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
@@ -61,16 +82,26 @@ export async function runFFmpeg(argv: string[], opts: RunFFmpegOptions = {}): Pr
       }
     });
 
+    let stderrRest = "";
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
       stderr += chunk;
       if (stderr.length > STDERR_KEEP_CHARS) stderr = stderr.slice(-STDERR_KEEP_CHARS);
+      if (!opts.onStderrLine) return;
+      // ffmpeg 的统计行以 \r 覆盖刷新（无 \n），三种行尾都要切，否则实时日志会一整坨不动
+      stderrRest += chunk;
+      const parts = stderrRest.split(/\r\n|\n|\r/);
+      stderrRest = parts.pop() ?? "";
+      for (const line of parts) if (line.trim()) opts.onStderrLine(line);
     });
 
     const finish = (fn: () => void) => {
       if (settled) return;
+      if (opts.onStderrLine && stderrRest.trim()) opts.onStderrLine(stderrRest);
       settled = true;
       clearTimeout(timer);
+      clearTimeout(killTimer);
+      opts.signal?.removeEventListener("abort", onAbort);
       fn();
     };
     child.on("error", (e) => finish(() => reject(new FFmpegError(argv, `${stderr}\n${String(e)}`))));
@@ -142,11 +173,15 @@ export interface ProbeResult {
   format?: FFprobeFormat;
 }
 
-export async function ffprobeJSON(input: string, timeoutMs = 120_000): Promise<ProbeResult> {
+export async function ffprobeJSON(
+  input: string,
+  timeoutMs = 120_000,
+  signal?: AbortSignal,
+): Promise<ProbeResult> {
   const { stdout } = await execFileP(
     "ffprobe",
     ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", input],
-    { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 },
+    { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024, signal },
   );
   return JSON.parse(stdout) as ProbeResult;
 }

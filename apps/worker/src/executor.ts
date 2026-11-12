@@ -36,6 +36,19 @@ import type { MediaStatusName, MediaStore } from "./media-store";
 
 export class JobExecutionError extends Error {}
 
+/**
+ * 任务被管理端取消（spec.md §5.1，2026-11-12）：与普通失败区分——
+ * 调用方（index.ts）据此置 `CANCELLED` 而非 `FAILED`，媒资状态也回到执行前（取消不是故障）。
+ */
+export class JobCancelledError extends Error {
+  constructor(message = "任务已取消（管理端）") {
+    super(message);
+  }
+}
+
+/** 取消轮询间隔：执行期每 2s 查一次 cancel_requested_at，保证「直接打断」而非等租约心跳 */
+const CANCEL_POLL_MS = 2_000;
+
 /** 取源 / 水印图 URL 解析（缺省 = 签名提供者 `storage.presignGet`；Worker 注入 source-fetch 优选解析器） */
 export type SourceUrlResolver = (key: string, ttlSec: number) => Promise<string>;
 
@@ -52,8 +65,15 @@ export interface JobExecutorDeps {
   jobsRoot?: string;
   /** lease 时长（毫秒），执行期按 1/3 周期续期 */
   leaseMs?: number;
+  /** 取消轮询间隔（毫秒），默认 2000；单测注入更短周期以便快速断言 */
+  cancelPollMs?: number;
   hlsTimeSec?: number;
   log?: (msg: string) => void;
+  /**
+   * 实时日志回调（ADR-0017 修订）：worker 阶段日志与 ffmpeg stderr 逐行送出，
+   * Worker 侧接 job-log 环形缓冲落库；不传则只进进程日志（resident 模式行为不变）。
+   */
+  onLog?: (line: string) => void;
 }
 
 export interface ExecutedVariant {
@@ -237,10 +257,13 @@ async function uploadTree(
   storage: StorageAdapter,
   localRoot: string,
   prefix: string,
+  signal?: AbortSignal,
 ): Promise<{ keys: Set<string>; count: number }> {
   const files = await walkFiles(localRoot);
   const keys = new Set<string>();
   for (const file of files) {
+    // 取消可能在封装上传阶段到达（长任务的分片数很多）：每个对象之间检查一次，尽快止损
+    if (signal?.aborted) throw new JobCancelledError();
     const key = `${prefix}/${file.rel}`;
     const data = new Uint8Array(await Bun.file(file.abs).arrayBuffer());
     await storage.put(key, data, contentTypeFor(file.rel));
@@ -269,6 +292,11 @@ export async function executeClaimedJob(
   deps: JobExecutorDeps,
 ): Promise<ExecuteJobResult> {
   const log = deps.log ?? ((msg: string) => console.log(`[worker] ${msg}`));
+  /** 汇聚点：进程日志 + 可选实时通道（管理端「日志」抽屉的数据来源） */
+  const emitLog = (msg: string) => {
+    log(msg);
+    deps.onLog?.(msg);
+  };
   const leaseMs = deps.leaseMs ?? 60_000;
   const hlsTimeSec = deps.hlsTimeSec ?? DEFAULTS.hlsTimeSec;
 
@@ -300,14 +328,40 @@ export async function executeClaimedJob(
   }, Math.max(5_000, Math.floor(leaseMs / 3)));
   heartbeat.unref?.();
 
+  // 取消（spec.md §5.1，2026-11-12）：管理端写 cancel_requested_at，本进程轮询到即 abort——
+  // ffmpeg 子进程被 SIGTERM（3s 后 SIGKILL）、拉源 pipeline 断开、封装上传逐对象止损。
+  // 阶段边界（转码档位之间 / 上传之前）另有同步检查点，避免 abort 前多跑一档。
+  const cancelSignal = new AbortController();
+  let cancelled = false;
+  const throwIfCancelled = () => {
+    if (cancelled || cancelSignal.signal.aborted) throw new JobCancelledError();
+  };
+  const cancelPoll = setInterval(() => {
+    if (cancelled) return;
+    void deps.jobStore
+      .isCancelRequested(job.id)
+      .then((requested) => {
+        if (!requested || cancelled) return;
+        cancelled = true;
+        emitLog(`任务 ${job.id}：收到取消请求，正在中断执行`);
+        cancelSignal.abort();
+      })
+      .catch(() => {
+        // 查询失败不影响执行：下一轮继续探测（真取消会由后续轮次或租约过期收尾）
+      });
+  }, deps.cancelPollMs ?? CANCEL_POLL_MS);
+  cancelPoll.unref?.();
+
   try {
     await mkdir(outRoot, { recursive: true });
     await deps.mediaStore.setStatus(media.id, "TRANSCODING");
 
     // 1) 输入与探测
+    throwIfCancelled();
     const sourceKey = await resolveSourceKey(deps.storage, media.id, media.sourceKey);
     const input = await resolveInput(resolveUrl, sourceKey);
-    const probe = await ffprobeJSON(input);
+    const probe = await ffprobeJSON(input, undefined, cancelSignal.signal);
+    throwIfCancelled();
     const summary = summarizeProbe(probe);
     const source: SourceInfo = {
       width: summary.video?.width ?? 0,
@@ -326,7 +380,7 @@ export async function executeClaimedJob(
     if (!templateId) {
       throw new JobExecutionError("任务缺少模板 ID（快照与任务记录都没有），无法确定产物目录 proceed/{id}/{模板id}/");
     }
-    log(
+    emitLog(
       `任务 ${job.id}：源 ${source.width}×${source.height}${source.fps ? `@${source.fps}` : ""}，模板「${snapshot.name}」（${templateId}）`,
     );
 
@@ -340,8 +394,10 @@ export async function executeClaimedJob(
       destPath: localInput,
       totalBytes: sourceStat?.size ?? null,
       onProgress: (downloaded, total) => reportProgress(total ? (downloaded / total) * 100 : null),
+      signal: cancelSignal.signal,
     });
-    log(
+    throwIfCancelled();
+    emitLog(
       `任务 ${job.id}：源片已就绪（${(fetched.bytes / 1048576).toFixed(1)} MB${fetched.downloaded ? "，已落盘" : "，本地复用"}）`,
     );
 
@@ -358,7 +414,7 @@ export async function executeClaimedJob(
     // 4) 编译计划（三维度均不低于源的档位在此被跳过；全档跳过则按源规格兜底出一档）
     const watermark = await resolveWatermark(resolveUrl, snapshot);
     if (watermark) {
-      log(`任务 ${job.id}：烧录水印 ${describeWatermark(watermark.snapshot)}`);
+      emitLog(`任务 ${job.id}：烧录水印 ${describeWatermark(watermark.snapshot)}`);
     }
     const { plans, entries, sourceFallback } = buildPlans(snapshot, source, {
       // 远端来源已落盘（本地复用则原样返回），转码阶段读本地文件
@@ -374,19 +430,24 @@ export async function executeClaimedJob(
       // 防御性兜底：keep_original 与 compileSourceMatched 都必产一档，正常不会走到这里
       throw new JobExecutionError(`所有档位均被跳过，无可用输出（${skipped.join("；") || "模板未产出任何档位"}）`);
     }
-    for (const reason of skipped) log(`任务 ${job.id}：跳过 ${reason}`);
+    for (const reason of skipped) emitLog(`任务 ${job.id}：跳过 ${reason}`);
     if (sourceFallback) {
-      log(`任务 ${job.id}：模板档位均无降级维度（分辨率 / 帧率 / 码率 ≥ 源），已按源规格兜底产出一档`);
+      emitLog(`任务 ${job.id}：模板档位均无降级维度（分辨率 / 帧率 / 码率 ≥ 源），已按源规格兜底产出一档`);
     }
 
     // 5) 逐档转码（顺序执行：转码是 CPU 密集，v1 不做并行以免打满容器）
     //    进度 = （已完成档位数 + 当前档位 out_time / 源时长）/ 总档位数
+    throwIfCancelled();
     await deps.jobStore.setStatus(job.id, "ENCODING", { progress: 0 });
     for (const [index, plan] of executed.entries()) {
+      throwIfCancelled(); // 档位边界：取消后不再起下一档
       const outDir = `${outRoot}/${plan.name}`;
       await mkdir(outDir, { recursive: true });
-      log(`任务 ${job.id}：转码 ${plan.name}（${plan.width}×${plan.height}${snapshot.encrypt ? "，AES-128" : ""}）`);
+      emitLog(`任务 ${job.id}：转码 ${plan.name}（${plan.width}×${plan.height}${snapshot.encrypt ? "，AES-128" : ""}）`);
       await runFFmpeg(plan.argv!, {
+        signal: cancelSignal.signal,
+        // ffmpeg stderr 逐行进实时日志（进度统计行以 \r 刷新，runFFmpeg 内已切行）
+        onStderrLine: (line) => deps.onLog?.(line),
         onProgress: ({ outTimeUs }) => {
           if (!summary.durationMs) return;
           const fraction = Math.min(1, outTimeUs / 1000 / summary.durationMs);
@@ -395,11 +456,12 @@ export async function executeClaimedJob(
       });
     }
 
-    // 6) 生成主清单并上传（先写盘再整体上传）
+    // 6) 生成主清单并上传（先写盘再整体上传）；取消则一个对象都不传，旧产物保持原样
+    throwIfCancelled();
     await deps.jobStore.setStatus(job.id, "PACKAGING", { progress: null });
     await writeFile(join(outRoot, "master.m3u8"), buildMasterPlaylist(entries, { mediaId: media.id }));
     const prefix = `${STORAGE_PARTITIONS.proceed}/${media.id}/${templateId}`;
-    const { keys, count } = await uploadTree(deps.storage, outRoot, prefix);
+    const { keys, count } = await uploadTree(deps.storage, outRoot, prefix, cancelSignal.signal);
     if (!count) throw new JobExecutionError("产物上传为空（疑似转码未产出任何文件）");
     const deletedStale = await pruneStale(deps.storage, prefix, keys);
 
@@ -407,9 +469,9 @@ export async function executeClaimedJob(
     let replacedKey: boolean | null = null;
     if (key && !key.reused) {
       replacedKey = (await persistMediaKey(deps.keyStore, media.id, key)).replaced;
-      log(`任务 ${job.id}：密钥已落库（kid=${key.kid.slice(0, 8)}…，${replacedKey ? "替换旧密钥" : "首次生成"}）`);
+      emitLog(`任务 ${job.id}：密钥已落库（kid=${key.kid.slice(0, 8)}…，${replacedKey ? "替换旧密钥" : "首次生成"}）`);
     } else if (key) {
-      log(`任务 ${job.id}：复用该媒资已有密钥（kid=${key.kid.slice(0, 8)}…，多模板产物共用一份 CEK）`);
+      emitLog(`任务 ${job.id}：复用该媒资已有密钥（kid=${key.kid.slice(0, 8)}…，多模板产物共用一份 CEK）`);
     }
 
     // 8) 收尾：媒资就绪 + 任务完成
@@ -434,12 +496,18 @@ export async function executeClaimedJob(
     };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
+    // 取消不是故障：媒资回到执行前状态（旧产物仍在就仍然可播），由调用方置 CANCELLED
+    if (cancelled || e instanceof JobCancelledError) {
+      await deps.mediaStore.setStatus(media.id, previousStatus).catch(() => {});
+      throw new JobCancelledError(message);
+    }
     // 旧产物仍在时不要误标失败（否则明明可播却显示失败）
     const restore: MediaStatusName = previousStatus === "READY" ? "READY" : "FAILED";
     await deps.mediaStore.setStatus(media.id, restore).catch(() => {});
     throw new JobExecutionError(message);
   } finally {
     clearInterval(heartbeat);
+    clearInterval(cancelPoll);
     // 明文 CEK 与 key_info 必须随任务目录消失（成功 / 失败 / 取消都一样）
     await cleanupJobDir(jobDir).catch((e) => {
       console.error(`[worker] 任务临时目录清理失败：${(e as Error).message}`);

@@ -4,10 +4,17 @@ import { expect, test } from "bun:test";
 import { normalizeSettingValue, SettingsError } from "../src/lib/settings";
 import { postWorkerWake } from "../src/lib/worker-notify";
 
-function fakeFetch(status: number): { fetchImpl: typeof fetch; calls: Array<{ url: string; authorization: string | null }> } {
-  const calls: Array<{ url: string; authorization: string | null }> = [];
+function fakeFetch(status: number): {
+  fetchImpl: typeof fetch;
+  calls: Array<{ url: string; authorization: string | null; body: string | null }>;
+} {
+  const calls: Array<{ url: string; authorization: string | null; body: string | null }> = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    calls.push({ url: String(input), authorization: (init?.headers as Record<string, string>)?.authorization ?? null });
+    calls.push({
+      url: String(input),
+      authorization: (init?.headers as Record<string, string>)?.authorization ?? null,
+      body: typeof init?.body === "string" ? init.body : null,
+    });
     return new Response(null, { status });
   }) as typeof fetch;
   return { fetchImpl, calls };
@@ -17,7 +24,13 @@ test("POST {url}/wake 且带 Bearer 密钥；202 视为送达", async () => {
   const { fetchImpl, calls } = fakeFetch(202);
   const result = await postWorkerWake({ url: "https://worker.example.com/", secret: "s3cret", fetchImpl });
   expect(result).toEqual({ notified: true });
-  expect(calls).toEqual([{ url: "https://worker.example.com/wake", authorization: "Bearer s3cret" }]);
+  expect(calls).toEqual([{ url: "https://worker.example.com/wake", authorization: "Bearer s3cret", body: null }]);
+});
+
+test("带 jobIds 时以 JSON 载荷发送（invoked 模式定向认领）", async () => {
+  const { fetchImpl, calls } = fakeFetch(202);
+  await postWorkerWake({ url: "https://worker.example.com", secret: "s3cret", jobIds: ["job-a", "job-b"], fetchImpl });
+  expect(calls[0]!.body).toBe(JSON.stringify({ job_ids: ["job-a", "job-b"] }));
 });
 
 test("非 202 / 网络错误 / 缺配置：不送达但绝不抛异常", async () => {
@@ -34,9 +47,10 @@ test("非 202 / 网络错误 / 缺配置：不送达但绝不抛异常", async (
   expect((await postWorkerWake({ url: "https://worker.example.com", secret: "", fetchImpl })).reason).toContain("worker_notify_secret");
 });
 
-test("worker_mode 仅允许 resident / http", () => {
+test("worker_mode 仅允许 resident / http / invoked", () => {
   expect(normalizeSettingValue("worker_mode", "http")).toBe("http");
   expect(normalizeSettingValue("worker_mode", "Resident")).toBe("resident");
+  expect(normalizeSettingValue("worker_mode", "Invoked")).toBe("invoked");
   expect(() => normalizeSettingValue("worker_mode", "websocket")).toThrow(SettingsError);
 });
 

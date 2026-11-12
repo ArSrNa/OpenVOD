@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { openMediaKey, parseMasterKeys, pickWrappingMasterKey } from "@openvod/crypto";
 import { STORAGE_KEYS } from "@openvod/shared";
 import type { StorageAdapter, StorageObject } from "@openvod/storage";
-import { executeClaimedJob, type JobExecutorDeps } from "../src/executor";
+import { executeClaimedJob, JobCancelledError, type JobExecutorDeps } from "../src/executor";
 import type { JobStatusName, TranscodeJobRow, TranscodeJobStore } from "../src/job-store";
 import type { MediaKeyRecord, MediaKeyStore } from "../src/media-key-store";
 import type { MediaRow, MediaStatusName, MediaStore } from "../src/media-store";
@@ -31,6 +31,8 @@ class FakeJobStore implements TranscodeJobStore {
   /** 阶段进度上报序列（0–100） */
   progress: number[] = [];
   leaseExtends = 0;
+  /** 模拟管理端写入 cancel_requested_at（取消用例置 true） */
+  cancelRequested = false;
   async claim(): Promise<TranscodeJobRow | null> {
     return null;
   }
@@ -42,6 +44,9 @@ class FakeJobStore implements TranscodeJobStore {
   }
   async extendLease(): Promise<void> {
     this.leaseExtends += 1;
+  }
+  async isCancelRequested(): Promise<boolean> {
+    return this.cancelRequested;
   }
 }
 
@@ -495,6 +500,28 @@ describe("M2 执行器", () => {
       env.cleanup();
     },
     45_000,
+  );
+
+  it.skipIf(!hasFFmpeg)(
+    "取消：执行期轮询命中即中断（抛 JobCancelledError），不置 DONE、媒资回到执行前状态、临时目录清理",
+    async () => {
+      const env = setup();
+      await seedSource(env, sourcePathOf(env));
+      // 模拟管理端已写 cancel_requested_at：执行期轮询一命中就 abort 并抛取消
+      env.jobStore.cancelRequested = true;
+
+      await expect(
+        executeClaimedJob(job(TEMPLATE_ENCRYPTED), { ...env.deps, cancelPollMs: 20 }),
+      ).rejects.toBeInstanceOf(JobCancelledError);
+
+      // 取消不是失败：不写 DONE，媒资回到执行前的 UPLOADED（旧产物不受影响）
+      expect(env.jobStore.statuses).not.toContain("DONE");
+      expect(env.mediaStore.statuses.at(-1)).toBe("UPLOADED");
+      // 无论中断在哪个阶段，任务临时目录（含明文 CEK）都必须被清掉
+      expect(existsSync(join(env.jobsRoot, JOB_ID))).toBe(false);
+      env.cleanup();
+    },
+    30_000,
   );
 });
 

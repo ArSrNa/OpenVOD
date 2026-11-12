@@ -66,6 +66,7 @@
 
 # 管理端 admin 镜像（ADR-0003 / ADR-0013：Next.js 全栈单容器，UI + API 同源）
 # 构建上下文是**仓库根**：admin 经 transpilePackages 直接消费 workspace 的 TS 源码包。
+# 镜像 runtime 阶段含 ffmpeg/ffprobe（管理端「生成元数据」与「水印图片宽高」就地探测，spec.md §2.1 / §10.2）。
 .build-admin-image: &build-admin-image
   name: 构建并推送 admin 镜像
   runner:
@@ -76,6 +77,50 @@
     - name: docker build admin
       script:
         - docker build -f apps/admin/Dockerfile -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/admin:latest . --push
+
+# 管理端 admin → 腾讯云 CCR（ccr.ccs.tencentyun.com，镜像仓库 tcb-${CCR_UIN}-iydy/openvod）
+# 用途：把 admin 镜像同步到腾讯云侧仓库，供 TKE / 云托管 / SCF 等直接拉取。
+# 凭据（CCR_UIN / CCR_PASSWORD）来自密钥仓库 ccr.yaml，只在本 stage 注入，不进仓库、不进日志。
+#
+# 为什么必须显式「OCI → docker」：buildx 的 push / image 输出默认附带 provenance 证明，
+# 产物是 OCI index（application/vnd.oci.image.index.v1+json）；CCR 只接受 docker v2 schema2
+# manifest。两条一起用才稳：
+#   --provenance=false      不再生成证明 manifest
+#   --output type=docker    把镜像按 docker 媒体类型载入本地 daemon，后续 docker push 即 schema2
+# （也可用 --output type=image,oci-mediatypes=false,push=true 直推，但那样就拿不到 docker push 的显式日志。）
+.push-admin-ccr: &push-admin-ccr
+  name: 构建 admin 并推送腾讯云 CCR
+  runner:
+    cpus: 32
+  services:
+    - docker
+  stages:
+    - name: 登录 CCR → 构建（docker 媒体类型）→ 推送
+      imports:
+        - https://cnb.cool/arsrna/env/-/blob/main/ccr.yaml # CCR_UIN / CCR_PASSWORD
+      script: |
+        set -e
+        : "${CCR_UIN:?密钥仓库 ccr.yaml 未提供 CCR_UIN}"
+        : "${CCR_PASSWORD:?密钥仓库 ccr.yaml 未提供 CCR_PASSWORD}"
+        IMAGE="ccr.ccs.tencentyun.com/tcb-${CCR_UIN}-iydy/openvod:admin"
+        echo "目标镜像：$IMAGE"
+
+        # 1) 登录：密码走 --password-stdin（用 -p 会把口令整条回显在流水线日志里）
+        printf '%s' "$CCR_PASSWORD" | docker login ccr.ccs.tencentyun.com --username "$CCR_UIN" --password-stdin
+
+        # 2) 构建：构建上下文必须是仓库根（admin 经 transpilePackages 直引 workspace 源码）。
+        #    镜像面向腾讯云 x86（TKE / SCF），显式 --platform linux/amd64；构建机若为 arm64
+        #    需要 buildx + QEMU（bootstrap binfmt），否则此处会直接报 no match for platform。
+        docker buildx build \
+          -f apps/admin/Dockerfile \
+          --platform linux/amd64 \
+          --provenance=false \
+          --output type=docker \
+          -t "$IMAGE" .
+
+        # 3) 推送（daemon 里已是 docker v2s2，push 出去的 manifest 即 schema2）
+        docker push "$IMAGE"
+        echo "已推送到腾讯云 CCR：$IMAGE"
 
 # 转码 Worker 镜像（ADR-0003 / ADR-0008：Bun 常驻容器；P0 转码禁止上函数）
 # 构建上下文同为仓库根；镜像内含 ffmpeg/ffprobe（worker 启动自检的必需项）。
@@ -232,6 +277,9 @@ $:
     - <<: *deploy-delivery-edgeone
   web_trigger_admin_docker:
     - <<: *build-admin-image
+  # 构建 admin 并推送到腾讯云 CCR（凭据取密钥仓库 ccr.yaml；镜像落成 docker 媒体类型再 push）
+  web_trigger_admin_ccr:
+    - <<: *push-admin-ccr
   web_trigger_worker_docker:
     - <<: *build-worker-image
   web_trigger_player_docker:

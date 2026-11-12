@@ -259,7 +259,7 @@ const PLAIN_META: Record<string, { env?: string; validate: Validator } | undefin
   [SETTING_KEYS.corsOrigins]: { env: "DELIVERY_CORS_ORIGINS", validate: corsOriginsValidator() },
   [SETTING_KEYS.workerMode]: {
     env: "WORKER_MODE",
-    validate: enumValidator("worker 运行模式", ["resident", "http"]),
+    validate: enumValidator("worker 运行模式", ["resident", "http", "invoked"]),
   },
   [SETTING_KEYS.workerPollIntervalMs]: { env: "WORKER_POLL_INTERVAL_MS", validate: intValidator("worker 轮询间隔", 500, 600000) },
   [SETTING_KEYS.workerNotifyUrl]: { env: "WORKER_NOTIFY_URL", validate: urlValidator("worker 唤醒地址") },

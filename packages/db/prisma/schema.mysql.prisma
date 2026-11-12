@@ -33,6 +33,7 @@ enum JobStatus {
   PACKAGING
   DONE
   FAILED
+  CANCELLED
 }
 
 enum SubtitleStatus {
@@ -284,9 +285,15 @@ model TranscodeJob {
   attempts   Int       @default(0)
   /// Worker 心跳续期；崩溃后过期重派
   leaseUntil DateTime? @map("lease_until")
+  /// 取消请求时间（管理端写入；Worker 取消轮询命中即中断执行并置 CANCELLED，spec.md §5.1）
+  cancelRequestedAt DateTime? @map("cancel_requested_at")
   /// 当前阶段进度（0–100；DOWNLOADING / ENCODING 阶段有意义，其余为 null）
   progress   Int?
   lastError  String?   @map("last_error")
+  /// 任务日志尾部（环形缓冲，Worker 每 2s 覆盖写；诊断用，非事实源。MySQL 实际列类型为 MEDIUMTEXT）
+  logTail    String?   @map("log_tail")
+  /// 日志版本号（每次覆盖 +1；管理端据此判断是否有更新，避免无变化时回传整段尾部）
+  logSeq     Int       @default(0) @map("log_seq")
   startedAt  DateTime? @map("started_at")
   finishedAt DateTime? @map("finished_at")
   createdAt  DateTime  @default(now()) @map("created_at")

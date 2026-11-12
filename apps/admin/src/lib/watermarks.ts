@@ -22,6 +22,7 @@ import { join } from "node:path";
 import { NextResponse } from "next/server";
 import { apiError } from "./api";
 import { getStorage } from "./storage";
+import { FFPROBE_HINT, probeFFprobeAvailability } from "./ffprobe-env";
 import { detectImageFormat, WATERMARK_IMAGE_CONTENT_TYPES, WATERMARK_IMAGE_EXTS } from "./watermark-image";
 
 const db = getDb<any>();
@@ -256,6 +257,11 @@ export async function uploadWatermarkImage(
   }
   const ext = WATERMARK_IMAGE_EXTS[format];
   const contentType = WATERMARK_IMAGE_CONTENT_TYPES[format];
+  // 宽高只能靠 ffprobe 探测：运行环境缺它属于**服务端**故障（500），不能退化成「图片损坏」（400）
+  const reason = await probeFFprobeAvailability();
+  if (reason) {
+    throw new WatermarkError("internal", `运行环境无法执行 ffprobe，无法解析图片尺寸：${reason}（${FFPROBE_HINT}）`, 500);
+  }
   const dims = await probeImageDimensions(bytes, ext);
   const key = STORAGE_KEYS.watermark(id, ext);
   const storage = await getStorage();

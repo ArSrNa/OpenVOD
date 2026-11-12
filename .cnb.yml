@@ -135,9 +135,11 @@
       script:
         - docker build -f apps/worker/Dockerfile -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/worker:latest . --push
 
-# 转码 worker → 腾讯云 CCR（与上面 admin 同一条口径，仓库 tcb-${CCR_UIN}-iydy/openvod，标签 :worker）
+# 转码 worker → 腾讯云 CCR（仓库 tcb-${CCR_UIN}-iydy/openvod，标签 :worker）
 # 用途：云托管 / TCB 侧取 worker 镜像；凭据同样来自密钥仓库 ccr.yaml，只在本 stage 注入。
-# OCI → docker 的原因见 .push-admin-ccr 上方注释（CCR 只收 docker v2 schema2 manifest）。
+# 「OCI → docker」的正确做法是**导出侧** oci-mediatypes=false，不是 `--output type=docker` 后 docker push
+# （2026-11-13 实测：后者在 Docker 29 + containerd 镜像存储下仍推 OCI index，CCR 显示 OCI-Image-v1）。
+# 反例与断言见本 stage 的 script 注释；.push-admin-ccr 目前仍是旧写法，首次推 admin 前建议先按同样方式改。
 .push-worker-ccr: &push-worker-ccr
   name: 构建 worker 并推送腾讯云 CCR
   runner:
@@ -158,18 +160,27 @@
         # 1) 登录：密码走 --password-stdin（用 -p 会把口令整条回显在流水线日志里）
         printf '%s' "$CCR_PASSWORD" | docker login ccr.ccs.tencentyun.com --username "$CCR_UIN" --password-stdin
 
-        # 2) 构建：上下文为仓库根（worker 经 workspace 依赖直引 packages/* 源码）。
-        #    --provenance=false + --output type=docker 把结果落成 docker 媒体类型再进本地 daemon，
-        #    否则 buildx 产物是带证明的 OCI index，CCR 拒收；随后 docker push 出去才是 schema2。
+        # 2) 构建即推送，并在**导出侧**锁定 docker v2 schema2（2026-11-13 实测，别再改回 --output type=docker）：
+        #      oci-mediatypes=false   → manifest 用 application/vnd.docker.distribution.manifest.v2+json
+        #      --provenance=false / --sbom=false → 不附带证明与附件（否则会被包成 OCI image index）
+        #    反例实测：`--output type=docker` + `docker push` 推出去的是
+        #    application/vnd.oci.image.index.v1+json（含一个 attestation manifest）——本环境 Docker 29
+        #    用 containerd 镜像存储（Storage Driver: overlayfs / io.containerd.snapshotter.v1），
+        #    docker push 不做 schema2 转换，CCR 里就显示成 OCI-Image-v1。
         docker buildx build \
           -f apps/worker/Dockerfile \
           --platform linux/amd64 \
           --provenance=false \
-          --output type=docker \
-          -t "$IMAGE" .
+          --sbom=false \
+          --output type=image,name="$IMAGE",oci-mediatypes=false,push=true \
+          .
 
-        # 3) 推送（worker 镜像含 ffmpeg 与 fonts-noto-cjk，层较大，首次推送耗时会明显长于 admin）
-        docker push "$IMAGE"
+        # 3) 断言远端确实是 Docker v2 schema2：worker 镜像层大（ffmpeg / fonts-noto-cjk），
+        #    推完顺手核一次，避免「推成功但类型退回 OCI」时到部署阶段才发现
+        MEDIA=$(docker buildx imagetools inspect "$IMAGE" --format '{{.Manifest.MediaType}}')
+        echo "远端 manifest 媒体类型：$MEDIA"
+        test "$MEDIA" = "application/vnd.docker.distribution.manifest.v2+json" \
+          || { echo "推送结果不是 Docker v2 schema2（得到 $MEDIA），检查 --provenance=false / oci-mediatypes=false"; exit 1; }
         echo "已推送到腾讯云 CCR：$IMAGE"
 
 # 播放演示 App player 镜像（spec.md §11.8：Next.js 全栈单容器，免登录播放端 Demo）

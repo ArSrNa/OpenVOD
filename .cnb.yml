@@ -240,38 +240,57 @@ $:
   web_trigger_publish_sdk:
     - <<: *publish-sdk
   # tag_push（打 tag 发版）：一次性构建全部运行镜像并推送制品库。
-  # 四个 stage 顺序执行（worker → admin → delivery → player），任一失败即中断，不留"半个版本"；
+  #
+  # 四个镜像放在**同一个 Stage 的四个并行 job** 里。CNB 并发模型是「Pipeline 之间并发、Stage 之间
+  # 串行、Stage 内 jobs 对象形式 = 并行 / 数组形式 = 串行」，所以把原来的四个 stage 改成
+  # 一个 stage + `jobs:` 对象，四个 docker build 同时开跑，总耗时 ≈ 最慢的那个而不是四者相加。
+  # 任一 job 失败 → 该 Stage 失败 → 流水线失败。
+  #
+  # 为什么不把四条构建拆成四条独立 Pipeline 并发：
+  #   - 并行 job 共用本 Pipeline 的**同一个构建节点**和**同一个 DinD daemon**（`runner.cpus` 是整条
+  #     Pipeline 的总配额，由四个 job 分摊），省节点、基础镜像层只拉一次；
+  #   - 拆成四条 Pipeline 会各自占一个节点、各自拉一遍 node:22 / golang:1.26 / oven/bun，且其中
+  #     一条失败时另外三条照样会把镜像推上去，更容易留下「半个版本」。
+  # 代价是四个 build 共享配额：重负载下单 build 拿不到全部核心，故 runner.cpus 从 32 抬到 64
+  # （单次构建仍是"一个节拍"内做完，不会出现四个 build 串行等同一个节点的排队）。
+  #
   # 每个镜像同时打 :latest 与 :${CNB_BRANCH}（tag 名）双标签。
-  # 注：与上方四个 web_trigger 锚点独立成流水线并行不同，发版要求四镜像同批产出，故单流水线串行。
   tag_push:
-    - name: 发布全部运行镜像（worker / admin / delivery）
+    - name: 发布全部运行镜像（worker / admin / delivery / player）
       runner:
-        cpus: 32
+        cpus: 64 # 总配额（内存 = 核数 × 2G），四个并行 docker build 分摊；调小会显著拉长最慢的 build
       services:
         - docker
       stages:
-        - name: docker build worker
-          script:
-            - docker build -f apps/worker/Dockerfile -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/worker:latest -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/worker:${CNB_BRANCH} . --push
-        - name: docker build admin
-          script:
-            - docker build -f apps/admin/Dockerfile -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/admin:latest -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/admin:${CNB_BRANCH} . --push
-        # 构建上下文必须是 apps/delivery（Dockerfile 的 COPY 路径相对该目录）。
-        # SCF 仅接受 x86：构建机若为 arm64，改用 buildx：
-        #   docker buildx build --platform linux/amd64 --push -t .../delivery:latest -t .../delivery:${CNB_BRANCH} apps/delivery
-        - name: docker build delivery
-          script:
-            - cd apps/delivery
-            # 版本信息注入 GET /v1/meta（唯一真源 = 根 package.json）。
-            # 这里跑在只有 docker 的 runner 上，没有 bun/node，故用 sed 解析，不能用 bun -e。
-            - VERSION=$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' ../../package.json | head -n 1)
-            - test -n "$VERSION" || { echo "无法从根 package.json 读取 version"; exit 1; }
-            - COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
-            - BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-            - docker build --build-arg VERSION="$VERSION" --build-arg COMMIT="$COMMIT" --build-arg BUILD_TIME="$BUILD_TIME" -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:latest -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:${CNB_BRANCH} . --push
-        - name: docker build player
-          script:
-            - docker build -f apps/player/Dockerfile -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/player:latest -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/player:${CNB_BRANCH} . --push
+        - name: 并行构建并推送四个运行镜像
+          # 对象形式 = 并行；job 的 key 即 CNB_BUILD_JOB_NAME / 日志里的任务名
+          jobs:
+            worker:
+              name: docker build worker
+              script:
+                - docker build -f apps/worker/Dockerfile -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/worker:latest -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/worker:${CNB_BRANCH} . --push
+            admin:
+              name: docker build admin
+              script:
+                - docker build -f apps/admin/Dockerfile -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/admin:latest -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/admin:${CNB_BRANCH} . --push
+            # 构建上下文必须是 apps/delivery（Dockerfile 的 COPY 路径相对该目录）。
+            # SCF 仅接受 x86：构建机若为 arm64，改用 buildx：
+            #   docker buildx build --platform linux/amd64 --push -t .../delivery:latest -t .../delivery:${CNB_BRANCH} apps/delivery
+            delivery:
+              name: docker build delivery
+              script:
+                - cd apps/delivery
+                # 版本信息注入 GET /v1/meta（唯一真源 = 根 package.json）。
+                # 这里跑在只有 docker 的 runner 上，没有 bun/node，故用 sed 解析，不能用 bun -e。
+                - VERSION=$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' ../../package.json | head -n 1)
+                - test -n "$VERSION" || { echo "无法从根 package.json 读取 version"; exit 1; }
+                - COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+                - BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+                - docker build --build-arg VERSION="$VERSION" --build-arg COMMIT="$COMMIT" --build-arg BUILD_TIME="$BUILD_TIME" -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:latest -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:${CNB_BRANCH} . --push
+            player:
+              name: docker build player
+              script:
+                - docker build -f apps/player/Dockerfile -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/player:latest -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/player:${CNB_BRANCH} . --push
 
     # 播放器 SDK 发版（与镜像同批的**独立 job**）：单测覆盖率上报 + 发布 openvod-jssdk 到
     # npm 官方与 CNB 制品库，版本取根 package.json 的 version（并校验与 tag 名一致）。

@@ -35,8 +35,10 @@
     - name: docker build delivery
       script:
         - cd apps/delivery
-        # 版本信息注入 GET /v1/meta（唯一真源 = 根 package.json）
-        - VERSION=$(bun -e 'process.stdout.write(require("../../package.json").version)')
+        # 版本信息注入 GET /v1/meta（唯一真源 = 根 package.json）。
+        # 这里跑在只有 docker 的 runner 上，没有 bun/node，故用 sed 解析，不能用 bun -e。
+        - VERSION=$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' ../../package.json | head -n 1)
+        - test -n "$VERSION" || { echo "无法从根 package.json 读取 version"; exit 1; }
         - COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
         - BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
         - docker build --build-arg VERSION="$VERSION" --build-arg COMMIT="$COMMIT" --build-arg BUILD_TIME="$BUILD_TIME" -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:latest . --push
@@ -260,8 +262,10 @@ $:
         - name: docker build delivery
           script:
             - cd apps/delivery
-            # 版本信息注入 GET /v1/meta（唯一真源 = 根 package.json）
-            - VERSION=$(bun -e 'process.stdout.write(require("../../package.json").version)')
+            # 版本信息注入 GET /v1/meta（唯一真源 = 根 package.json）。
+            # 这里跑在只有 docker 的 runner 上，没有 bun/node，故用 sed 解析，不能用 bun -e。
+            - VERSION=$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' ../../package.json | head -n 1)
+            - test -n "$VERSION" || { echo "无法从根 package.json 读取 version"; exit 1; }
             - COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
             - BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
             - docker build --build-arg VERSION="$VERSION" --build-arg COMMIT="$COMMIT" --build-arg BUILD_TIME="$BUILD_TIME" -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:latest -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:${CNB_BRANCH} . --push

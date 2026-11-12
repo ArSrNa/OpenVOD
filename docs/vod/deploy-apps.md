@@ -52,10 +52,10 @@ task image:player     # docker build -f apps/player/Dockerfile -t openvod-player
    不匹配，启动报 `generated for "debian-openssl-1.1.x", but the actual deployment required "debian-openssl-3.0.x"`，
    `/healthz` 变 `db:false`。两阶段都装 openssl 即对齐（worker 基于 Debian 全量环境，无此问题）。
 5. **player 镜像不需要 Prisma / openssl，也不接受构建期地址内联**（2026-10-13，spec.md §11.8）：
-   player 不 import `packages/db` → Dockerfile 省去两份客户端生成（对比第 1 条）；浏览器直连分发端地址
-   由**运行时** env 下发（`/api/session` 响应 `delivery_base`：`PLAYER_PUBLIC_DELIVERY_BASE_URL` →
-   `NEXT_PUBLIC_DELIVERY_BASE_URL` → `DELIVERY_BASE_URL` → 默认），镜像一次构建跨环境部署、改 env 即生效。
-   容器内服务端地址（容器网络视角）与浏览器视角地址不同时必须分别配置——`127.0.0.1` 在容器内指容器自身。
+   player 不 import `packages/db` → Dockerfile 省去两份客户端生成（对比第 1 条）；**2026-11-12 起**浏览器不再直连分发端
+   （spec.md §11.9：`/api/delivery/**` 同源代理），只需在服务端配 `DELIVERY_BASE_URL`（容器网络视角）——
+   镜像一次构建跨环境部署、改 env 即生效，且不必再对齐「浏览器视角地址」
+   （原 `PLAYER_PUBLIC_DELIVERY_BASE_URL` 已退场）。容器内 `127.0.0.1` 指容器自身，指向宿主服务请用容器可达地址。
 
 ## 运行
 
@@ -75,9 +75,9 @@ docker run -d --name openvod-worker -p 9001:9001 --env-file .env \
   -v /data/openvod-tmp:/tmp openvod-worker:latest
 
 # player（播放演示 App，spec.md §11）：免登录；依赖分发端可达 + 预览账号（PLAYER_PREVIEW_* / 回退 DELIVERY_PREVIEW_*）
-# 容器内服务端地址用 .env 的 DELIVERY_BASE_URL；浏览器直连地址用 PLAYER_PUBLIC_DELIVERY_BASE_URL（容器内 127.0.0.1 不是宿主）
+# 只需服务端的 DELIVERY_BASE_URL（容器内可达）；浏览器请求经 /api/delivery 同源代理，无需浏览器视角地址（spec.md §11.9）
 docker run -d --name openvod-player -p 3100:3100 --env-file .env \
-  -e PLAYER_PUBLIC_DELIVERY_BASE_URL=http://<浏览器可达的分发端地址> openvod-player:latest
+  -e DELIVERY_BASE_URL=http://<容器内可达的分发端地址> openvod-player:latest
 ```
 
 接通验证：admin `curl -fsS localhost:8787/healthz` 返回 `{"ok":true,"db":true}`；
@@ -136,8 +136,8 @@ CNB 云原生开发环境实测要点（2026-09-22）：
 - admin 需要 `DATABASE_URL` / `DB_PROVIDER` / `BETTER_AUTH_SECRET` 等（env 域 `shared` + `admin`）；
   worker 需要 `DATABASE_URL` / `MASTER_KEYS` / `STORAGE_*`（env 域 `shared` + `worker`）。域划分见 spec.md 附录。
 - player 需要 `DELIVERY_BASE_URL`（容器内可达）+ 预览账号（`PLAYER_PREVIEW_*` / 回退 `DELIVERY_PREVIEW_*`）；
-  浏览器直连地址 `PLAYER_PUBLIC_DELIVERY_BASE_URL` 留空时回退 `DELIVERY_BASE_URL`——**容器内 `127.0.0.1`
-  不是宿主**，两者视角不同时必须分别配置（spec.md §11.8）。
+  浏览器请求一律经 `/api/delivery` 同源代理（spec.md §11.9），不再有「浏览器视角地址」——
+  **容器内 `127.0.0.1` 不是宿主**，指向宿主服务请直接写在 `DELIVERY_BASE_URL` 里。
 
 ## CNB 一键构建
 
@@ -198,8 +198,8 @@ CNB 云原生开发环境实测要点（2026-09-22）：
 - **admin 构建期无需 env**（实测 `next build` 通过，页面为 `ƒ Dynamic` / 两个静态页），
   但运行时必须有 DB 与 `BETTER_AUTH_SECRET`，否则 `/healthz` 报 `db:false`。
 - **player 镜像已实测**（2026-10-13）：`task image:player` 本地构建通过；`docker run --network host --env-file .env`
-  启动后 `/healthz` 200、`/api/session` 正常换 JWT（响应带 `delivery_base`）、浏览器列表与播放页链路通
-  （容器内即生产构建 `next start`）。浏览器直连地址运行时下发：改 env 重启即生效，无需重建镜像。
+  启动后 `/healthz` 200、`/api/session` 正常换 JWT、浏览器列表与播放页链路通（容器内即生产构建 `next start`）。
+  服务端地址改 env 重启即生效，无需重建镜像。
 - **`docker run --env-file` 不剥引号**（2026-10-13 实测；compose 的 `env_file` 会剥、shell 的 `. .env` 会剥）：
   `.env` 里 `KEY="v"` 经 `docker run` 注入后值含引号——URL 会解析失败、`PLAYER_PORT` 让 `next start -p` 直接退出。
   player 已做剥离防御（`apps/player/src/lib/env.ts` + 镜像 CMD/HEALTHCHECK 只保留数字）；

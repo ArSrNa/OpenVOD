@@ -19,7 +19,7 @@ export default function HomePage() {
     setItems(null);
     setError(null);
     try {
-      const sdk = await getSdk();
+      const sdk = getSdk();
       const page = await sdk.listMedia({ limit: 50 });
       setItems(page.items);
     } catch (e) {
@@ -88,7 +88,7 @@ function ListError({ error, onRetry }: { error: DeliveryError; onRetry: () => vo
   const extra = isConfig
     ? "配置后重启 player（bun scripts/dev.ts player），账号用 `bun apps/admin/scripts/bootstrap-playback.ts <用户名> <口令>` 创建"
     : error.status === 0
-      ? "请确认分发端已启动（bun scripts/dev.ts delivery）、浏览器可直连分发端（DELIVERY_CORS_ORIGINS 放行 player 源站）"
+      ? "请确认分发端已启动（bun scripts/dev.ts delivery），且 player 服务端的 DELIVERY_BASE_URL 可达（浏览器请求经 /api/delivery 同源代理，无需浏览器直连分发端）"
       : undefined;
   return (
     <Alert

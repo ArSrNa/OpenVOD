@@ -321,8 +321,10 @@ M3/M4 播放链路（login / 播放会话 / 清单改写 / 密钥 / 字幕）已
   `.cnb.yml` 新增 `web_trigger_player_docker` 手动构建按钮 + `tag_push` 纳入 player（四镜像串行 + 双标签）；
   `Taskfile.yml` 新增 `image:player`；根 `docker-compose.yml` 新增 player 服务（`PLAYER_PORT` 映射 + `/healthz` 探活），
   `scripts/compose.sh` 打印播放端预览地址；
-- ✅ 已完成：浏览器直连地址**运行时下发**（`/api/session` 响应 `delivery_base`：`PLAYER_PUBLIC_DELIVERY_BASE_URL`
-  → `NEXT_PUBLIC_DELIVERY_BASE_URL` → `DELIVERY_BASE_URL`）——镜像一次构建跨环境部署、改 env 即生效，不再依赖构建期内联。
+- ✅ 已完成：~~浏览器直连地址运行时下发~~（**2026-11-12 改为同源代理**，spec.md §11.9）：浏览器请求全部经
+  `/api/delivery` 转发到服务端 `DELIVERY_BASE_URL`，浏览器侧不再持有分发端地址（原 `delivery_base` /
+  `PLAYER_PUBLIC_DELIVERY_BASE_URL` 退场）——镜像一次构建跨环境部署、改 env 即生效，且端口预览 / 容器形态下
+  不会出现「浏览器访问 127.0.0.1」的必然失败。
 
 ### 播放器 SDK（2026-10-13 用户定；权威设计见 [player-sdk-intent.md](./player-sdk-intent.md) / [player-sdk-spec.md](./player-sdk-spec.md)）
 

@@ -1010,13 +1010,11 @@ t = ⌊(now + ttl) / ttl⌋ · ttl + ttl           # V：过期时刻；不论�
 | 变量 | 必填 | 默认 | 说明 |
 |---|---|---|---|
 | `PLAYER_PORT` | 否 | `3100` | dev / start 端口（`dev.ts` 与 compose 复用） |
-| `DELIVERY_BASE_URL` | 否 | `http://127.0.0.1:9000` | **服务端**调分发端 `login` 的地址（容器内视角） |
-| `PLAYER_PUBLIC_DELIVERY_BASE_URL` | 否 | 空 | **浏览器**直连分发端地址（运行时经 `/api/session` 下发，§11.8）：容器部署时与容器内视角不同须分别配置 |
-| `NEXT_PUBLIC_DELIVERY_BASE_URL` | 否 | 空 | 兼容保留：构建期内联的浏览器直连地址（优先级低于 `PLAYER_PUBLIC_DELIVERY_BASE_URL`、高于服务端 `DELIVERY_BASE_URL`） |
+| `DELIVERY_BASE_URL` | 否 | `http://127.0.0.1:9000` | **服务端**调分发端的地址（容器内视角）：login / media / play / 清单 / 密钥 / 字幕全部经 `/api/delivery` 代理（§11.9），**浏览器不直连分发端** |
 | `PLAYER_PREVIEW_USERNAME` | 是 | 空 | 预览播放账号（`bootstrap-playback.ts` 创建）；缺省回退 `DELIVERY_PREVIEW_USERNAME` |
 | `PLAYER_PREVIEW_PASSWORD` | 是 | 空 | 预览播放账号口令；缺省回退 `DELIVERY_PREVIEW_PASSWORD` |
 
-- **CORS 前置**：浏览器直连分发端（业务 API + 清单 + 密钥 + 字幕）→ `DELIVERY_CORS_ORIGINS` 需覆盖 player 源站（本地 / 体验环境默认 `*` 已满足；收敛后须显式加）；分片直连对象存储 → **对象桶 CORS 需放行 player 源站**（与管理端预览同一前提，§6.6 部署前置；未配置时表现为「有总时长一直转圈」，页面给出同款提示）。
+- **CORS 前置（2026-11-12 修订，§11.9）**：业务 API / 清单 / 密钥 / 字幕改由 player 服务端同源代理，**不再需要** `DELIVERY_CORS_ORIGINS` 放行 player 源站；仅**分片直连对象存储**仍需**对象桶 CORS 放行 player 源站**（与管理端预览同一前提，§6.6 部署前置；未配置时表现为「有总时长一直转圈」，页面给出同款提示）。
 
 ### 11.3 会话与鉴权（免登录）
 
@@ -1049,7 +1047,7 @@ t = ⌊(now + ttl) / ttl⌋ · ttl + ttl           # V：过期时刻；不论�
 ### 11.5 播放器集成（Video.js v10 React）
 
 - 组件路线与管理端一致：`VideoPlayer` → `VideoSkin` → `HlsJsVideo`（`@videojs/hlsjs-video`，hls.js / MSE；Safari 由 Video.js 回退原生 HLS）；`@videojs/react/video/skin.css` 随组件导入；皮肤不带尺寸，必须外部给定（16:9 + maxHeight）；
-- **字幕挂载**：`<track>` 作为 `HlsJsVideo` 的 children（官方支持）；跨域轨道需媒体元素 `crossOrigin="anonymous"` + 分发端 CORS 响应头（§6.1 已具备）；字幕菜单由皮肤内置（`CaptionsButton`），不新增自定义菜单（如需语言菜单可用 `useCaptionsOptions`，备选）；
+- **字幕挂载**：`<track>` 作为 `HlsJsVideo` 的 children（官方支持）；2026-11-12 起字幕 VTT 经 `/api/delivery` 同源代理（§11.9），不再依赖跨域响应头（`crossOrigin="anonymous"` 保留无害）；字幕菜单由皮肤内置（`CaptionsButton`），不新增自定义菜单（如需语言菜单可用 `useCaptionsOptions`，备选）；
 - **换源**：受控 `src` 变更或 `key` 重建均可接受，行为约束见 §11.4（进度保留、字幕继续可用）；不引入第三方清晰度插件——跨模板切换是换源，**不是**同清单内 rendition 选择（同清单内多档 ABR 由 hls.js 自动切换，不进菜单）；
 - 卡顿诊断（可选）：8s stall 提示（同管理端 `HlsPreviewPlayer` 思路），CORS 未放行时的「转圈」根因提示。
 
@@ -1076,8 +1074,22 @@ t = ⌊(now + ttl) / ttl⌋ · ttl + ttl           # V：过期时刻；不论�
 ### 11.8 镜像与流水线（2026-10-13 追加；原文非目标转为交付项）
 
 - **镜像**：`apps/player/Dockerfile`（`node:22-bookworm-slim` 两阶段：bun 装依赖 + `next build` → 运行时 `next start`），构建上下文是**仓库根**（workspace 源码直引，同 admin）；**不依赖 `packages/db` / Prisma**，构建期无需生成客户端、无需 env（与 admin 镜像的差异，见 deploy-apps.md）；
-- **浏览器直连地址运行时下发**：`GET /api/session` 响应增加 `delivery_base`，取值顺序 `PLAYER_PUBLIC_DELIVERY_BASE_URL` → `NEXT_PUBLIC_DELIVERY_BASE_URL` → `DELIVERY_BASE_URL` → `http://127.0.0.1:9000`；客户端将其随 token 存 `sessionStorage`，且**页面加载后首次请求必经 `/api/session`** 刷新该值——镜像一次构建可跨环境部署，改 env 即生效、无需重建（构建期 `NEXT_PUBLIC_*` 内联降级为兼容路径）；
+- ~~**浏览器直连地址运行时下发**~~（**2026-11-12 废止，见 §11.9**）：原 `GET /api/session` 响应 `delivery_base`（`PLAYER_PUBLIC_DELIVERY_BASE_URL` → `NEXT_PUBLIC_DELIVERY_BASE_URL` → `DELIVERY_BASE_URL`）改为同源代理，浏览器不再需要分发端地址；两个 `*_PUBLIC_DELIVERY_BASE_URL` 键随之退场（保留在 env 中也不再生效）。「镜像一次构建跨环境部署、改 env 即生效」的语义不变，且更彻底——分发端地址只存在服务端；
 - **CNB 流水线**：`.cnb.yml` 新增 `web_trigger_player_docker` 手动按钮（推送 `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/player:latest`）；`tag_push`（打 tag 发版）纳入 player——四镜像（worker → admin → delivery → player）单流水线串行构建、双标签（`:latest` 与 `:<tag名>`）；
-- **compose**：根 `docker-compose.yml` 新增 `player` 服务（`PLAYER_PORT` 宿主/容器同端口、`env_file: .env` + 显式透传 `PLAYER_PUBLIC_DELIVERY_BASE_URL`、`/healthz` 探活、json-file 日志轮转）；`scripts/compose.sh up` 额外打印播放端预览地址（`{{port}}` 换 `PLAYER_PORT`）；
+- **compose**：根 `docker-compose.yml` 新增 `player` 服务（`PLAYER_PORT` 宿主/容器同端口、`env_file: .env`、`/healthz` 探活、json-file 日志轮转）；`scripts/compose.sh up` 额外打印播放端预览地址（`{{port}}` 换 `PLAYER_PORT`）；
 - **本地等价**：`task image:player`（`docker build -f apps/player/Dockerfile -t openvod-player:latest .`）；`OPENVOD_PLAYER_IMAGE` 可覆盖 compose 镜像地址；
-- **前置不变**：容器形态下浏览器直连分发端仍需 `DELIVERY_CORS_ORIGINS` 与对象桶 CORS 放行播放端源站（§11.2）；容器内服务端 `DELIVERY_BASE_URL` 与浏览器视角地址不同时必须分别配置。
+- **前置（2026-11-12 修订）**：容器形态下只需 `DELIVERY_BASE_URL` 指向容器内可达的分发端地址（§11.9 代理），浏览器不再直连分发端——`DELIVERY_CORS_ORIGINS` 无需放行 player 源站；分片直连对象存储仍需对象桶 CORS 放行播放端源站（§11.2）。
+
+### 11.9 浏览器同源代理（2026-11-12 修订）
+
+> 起因：player 经端口预览（CNB 网关 / 任意反向代理）打开时，浏览器里的 `127.0.0.1` 指**用户自己的机器**——前端直连 `DELIVERY_BASE_URL` 必然失败；用 `PLAYER_PUBLIC_DELIVERY_BASE_URL` 手工对齐浏览器视角也只是把配置负担转嫁给部署者。
+
+- **决策**：浏览器只与 player **同源**通信。新增 catch-all route handler `apps/player/src/app/api/delivery/[...path]/route.ts`，把 `/api/delivery/**` 透传（method / query / `Authorization` / `Range`）到 `DELIVERY_BASE_URL`；SDK 的 `baseUrl` 固定为 `/api/delivery`（以 `window.location.origin` 补全为绝对 URL，SDK 要求 http(s) 形态）；
+- **响应改写**（`apps/player/src/lib/delivery-server.ts`）：
+  - `POST /v1/media/{id}/play`：`manifest_url` 与 `subtitles[].url` 改写为 `/api/delivery/...` 同源路径（`manifestTokenExp` 仍能从 query 解析 `exp`；SDK 仅补「根相对 URL 按 baseUrl 源站解析」，play 流程本身不变）；
+  - HLS 清单（主 / 子）：URI 行与标签属性 `URI="..."`（`EXT-X-KEY` 密钥地址等）逐条改写；改写规则 = 分发端本机/私有地址 **或** 播放链路路径（`/v1/media/{id}/manifest|key|subtitles`）一律代理，公网对象存储 / CDN 分片保持直连；
+  - 代理响应统一 `Cache-Control: no-store`（清单 / 密钥的 P0 纪律在代理层同样生效）；
+- **字节取向不变**：公网分片 URL 不改写、字节不经过 player 进程；只有浏览器不可达的回环 / 私有网段地址（本地 RustFS 等开发形态）才由代理转发，属体验环境便利而非生产路径；
+- **配置收敛**：`DELIVERY_BASE_URL` 成为唯一分发端地址（服务端）；`PLAYER_PUBLIC_DELIVERY_BASE_URL` / `NEXT_PUBLIC_DELIVERY_BASE_URL` 与 `/api/session` 的 `delivery_base` 字段退场（env 里残留无副作用）；
+- **验收**：`GET /api/delivery/v1/media`（带 Bearer）200 且 `no-store`；play 响应 `manifest_url` 以 `/api/delivery` 开头；主清单内子清单 URL、子清单内 `EXT-X-KEY` 的 `URI` 均为同源路径；`key` 经代理返回 16 字节；浏览器 Network 面板中不出现分发端主机名（分片除外）。
+

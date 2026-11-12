@@ -6,9 +6,8 @@
 #
 # 与 admin 镜像的差异：
 #   1) player **不依赖** packages/db / Prisma → 不跑两份客户端生成（构建更快，也不需 openssl）；
-#   2) 浏览器直连分发端地址**运行时下发**（/api/session 响应带 `delivery_base`，spec.md §11.2）——
-#      镜像一次构建可跨环境部署，不依赖构建期 NEXT_PUBLIC_* 内联；部署时改 env 即可，
-#      无需重建镜像（容器内地址用 DELIVERY_BASE_URL，浏览器视角地址用 PLAYER_PUBLIC_DELIVERY_BASE_URL）。
+#   2) 分发端地址只在**服务端**（DELIVERY_BASE_URL）：浏览器请求一律经 `/api/delivery` 同源代理
+#      （spec.md §11.9）——镜像一次构建可跨环境部署、不依赖构建期内联，改 env 重启即生效。
 FROM node:22-bookworm-slim AS build
 
 RUN npm i -g bun@1

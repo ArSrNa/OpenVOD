@@ -180,16 +180,14 @@ CNB 云原生开发环境实测要点（2026-09-22）：
 # 登录：密码走 stdin，避免 -p 明文回显进流水线日志
 printf '%s' "$CCR_PASSWORD" | docker login ccr.ccs.tencentyun.com --username "$CCR_UIN" --password-stdin
 
-# 构建（仓库根上下文）：必须是 docker 媒体类型，否则 CCR 拒收
-docker buildx build -f apps/admin/Dockerfile --platform linux/amd64 \
-  --provenance=false --output type=docker \
-  -t ccr.ccs.tencentyun.com/tcb-${CCR_UIN}-iydy/openvod:admin .
+# 构建即推送，并在导出侧锁死 docker v2 schema2（仓库根上下文）
 docker buildx build -f apps/worker/Dockerfile --platform linux/amd64 \
-  --provenance=false --output type=docker \
-  -t ccr.ccs.tencentyun.com/tcb-${CCR_UIN}-iydy/openvod:worker .
+  --provenance=false --sbom=false \
+  --output type=image,name=ccr.ccs.tencentyun.com/tcb-${CCR_UIN}-iydy/openvod:worker,oci-mediatypes=false,push=true .
 
-docker push ccr.ccs.tencentyun.com/tcb-${CCR_UIN}-iydy/openvod:admin
-docker push ccr.ccs.tencentyun.com/tcb-${CCR_UIN}-iydy/openvod:worker
+# 断言远端确实是 schema2（不是 OCI），不满足直接失败
+docker buildx imagetools inspect ccr.ccs.tencentyun.com/tcb-${CCR_UIN}-iydy/openvod:worker \
+  --format '{{.Manifest.MediaType}}'   # 期望 application/vnd.docker.distribution.manifest.v2+json
 ```
 
 worker 镜像含 `ffmpeg` 与 `fonts-noto-cjk`（层明显大于 admin），首次推送耗时会比 admin 长；
@@ -197,10 +195,14 @@ worker 镜像含 `ffmpeg` 与 `fonts-noto-cjk`（层明显大于 admin），首�
 
 要点：
 
-- **必须落成 docker v2 schema2**：`docker buildx build --push`（或 `--output type=image`）默认附带 provenance
-  证明，产物是 OCI index（`application/vnd.oci.image.index.v1+json`），**CCR 只接受 schema2 manifest**，
-  直推会 400 / `manifest invalid`。`--provenance=false` 关证明 + `--output type=docker` 把镜像转成 docker
-  媒体类型载入本地 daemon，此后的 `docker push` 出去才是 schema2。
+- **必须落成 docker v2 schema2，且只能靠导出侧参数**（2026-11-13 本机实测）：
+  ①`--provenance=false` 关证明、`--sbom=false` 关附件，否则 `--push` 会多出一个 attestation manifest，
+  整体变成 OCI index（`application/vnd.oci.image.index.v1+json`）；
+  ②`oci-mediatypes=false` 让 manifest 媒体类型是 `application/vnd.docker.distribution.manifest.v2+json`。
+  **`--output type=docker` + `docker push` 不能保证 schema2**：Docker 29 起默认使用 containerd 镜像存储
+  （`Storage Driver: overlayfs` / `io.containerd.snapshotter.v1`），镜像以 OCI 形态存储、push 时不做
+  schema2 转换——实测推上去的是 OCI index，CCR 控制台里就显示 `OCI-Image-v1`。
+  `.push-admin-ccr` 仍是旧写法，首次推 admin 前应先按上面的 worker 写法改掉（curl/`imagetools` 断言同理）。
 - **架构对齐腾讯云**：显式 `--platform linux/amd64`（TKE / SCF 均为 x86）；构建机若为 arm64 需 buildx + QEMU，
   否则直接报 `no match for platform`（宁可构建失败，也不要把 arm64 镜像推上去）。
 - **命名空间 / 仓库要先存在**：CCR 控制台里没有 `tcb-<UIN>-iydy` 命名空间或 `openvod` 仓库时，

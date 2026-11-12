@@ -22,29 +22,22 @@
 //                         /watermarks/[id]（GET 详情 / PATCH 更新 / DELETE 删除）、
 //                         /watermarks/[id]/image（PUT 上传替换图片 / GET 图片预览 302）
 import { NextRequest, NextResponse } from "next/server";
+import { apiError, unauthorized } from "@/lib/api";
 import { getAuth } from "@/lib/auth";
 
-const STUB = NextResponse.json(
-  {
-    error: {
-      code: "not_implemented",
-      message: "scaffold：路由随 specification 实现（ADR-0004/0008）",
-    },
-  },
-  { status: 501 },
-);
+// 占位响应在调用时生成（apiError 自带 Cache-Control: no-store），不再复用一个模块级实例
+function notImplemented(): NextResponse {
+  return apiError("not_implemented", "scaffold：路由随 specification 实现（ADR-0004/0008）", 501);
+}
 
 async function handle(req: NextRequest): Promise<NextResponse> {
   const auth = await getAuth();
   const session = await auth.api.getSession({ headers: req.headers });
   if (!session) {
-    return NextResponse.json(
-      { error: { code: "unauthorized", message: "未登录" } },
-      { status: 401 },
-    );
+    return unauthorized();
   }
   void new URL(req.url); // specification：按 path 分发到各业务 handler
-  return STUB;
+  return notImplemented();
 }
 
 export const GET = handle;

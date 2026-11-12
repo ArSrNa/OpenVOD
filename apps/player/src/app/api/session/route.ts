@@ -53,8 +53,10 @@ export async function GET() {
       cache: "no-store",
     });
   } catch (e) {
+    // 分发端地址（可能是回源内网 / 源站 IP）只在服务端日志里出现
+    console.error("[player] 无法连接分发端:", base, e);
     return noStoreJson(
-      { error: { code: "internal", message: `无法连接分发端（${base}）：${(e as Error).message}` } },
+      { error: { code: "internal", message: "无法连接分发端，请检查服务端 DELIVERY_BASE_URL" } },
       502,
     );
   }

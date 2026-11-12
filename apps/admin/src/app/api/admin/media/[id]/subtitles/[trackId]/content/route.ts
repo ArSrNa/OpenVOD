@@ -7,7 +7,7 @@
 // 分发端字幕响应 no-store，故编辑后播放端下一次请求即取到新文本（spec.md §7.2/§7.5）。
 import { NextRequest, NextResponse } from "next/server";
 import { SUBTITLE_CONTENT_TYPE } from "@openvod/shared";
-import { apiJson, auditAction, getAdminSession, unauthorized } from "@/lib/api";
+import { apiError, apiJson, auditAction, getAdminSession, unauthorized } from "@/lib/api";
 import {
   defaultSubtitleDeps,
   readSubtitleContent,
@@ -45,10 +45,7 @@ export async function PUT(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
   const session = await getAdminSession(req);
   if (!session) return unauthorized();
   if (!req.body) {
-    return NextResponse.json(
-      { error: { code: "bad_request", message: "请求体为空（应携带 .vtt 字幕文件字节流）" } },
-      { status: 400 },
-    );
+    return apiError("bad_request", "请求体为空（应携带 .vtt 字幕文件字节流）", 400);
   }
   try {
     const { id, trackId } = await ctx.params;

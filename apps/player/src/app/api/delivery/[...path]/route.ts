@@ -46,7 +46,9 @@ async function proxy(req: NextRequest, ctx: Ctx): Promise<Response> {
   try {
     target = new URL(`${base}/${segments.join("/")}`);
   } catch {
-    return proxyError(`DELIVERY_BASE_URL 不是合法地址：${base}`);
+    // 不回显 base：分发端地址（回源地址 / IP）只允许存在于服务端，不能经浏览器可见的响应体泄露
+    console.error("[player] DELIVERY_BASE_URL 不是合法地址:", base);
+    return proxyError("分发端地址配置非法（DELIVERY_BASE_URL），请检查服务端 env");
   }
   target.search = req.nextUrl.search;
 
@@ -66,7 +68,9 @@ async function proxy(req: NextRequest, ctx: Ctx): Promise<Response> {
       redirect: "manual",
     });
   } catch (e) {
-    return proxyError(`无法连接分发端（${base}）：${(e as Error).message}（检查 DELIVERY_BASE_URL 与分发端状态）`);
+    // 同上：异常详情（可能含源站地址）只进服务端日志，响应体只给通用提示
+    console.error("[player] 无法连接分发端:", base, e);
+    return proxyError("无法连接分发端，请检查服务端 DELIVERY_BASE_URL 与分发端状态");
   }
 
   const contentType = (upstream.headers.get("content-type") ?? "").toLowerCase();

@@ -85,6 +85,10 @@ func New(o Options) http.Handler {
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
+	// P0 缓存纪律（ADR-0006 §5）：分发端**所有**响应一律不缓存。放在路由前统一兜底，
+	// 而不是逐个 handler 设置——历史上清单 / key / 字幕 / meta 设了，login、media 列表 / 详情、
+	// play 以及全部错误响应都漏了（无 Cache-Control 的 2xx 允许中间层按启发式规则缓存）。
+	r.Use(noStoreResponses)
 	r.Use(requestLogger(o.Logger))
 	r.Use(corsMiddleware(o.Cfg.CORSOrigins))
 
@@ -867,6 +871,22 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 func writeError(w http.ResponseWriter, status int, code contracts.Code, message string) {
 	writeJSON(w, status, contracts.ErrorEnvelope{Error: contracts.Error{Code: code, Message: message}})
+}
+
+/**
+ * noStoreResponses P0 缓存纪律（ADR-0006 §5）的**唯一兜底**：进入路由前就给响应头写好
+ * `Cache-Control: no-store`，因此成功 / 错误 / 404 / 探活 / CORS 预检全部覆盖。
+ * 个别 handler 仍保留显式设置（清单 / key / 字幕 / meta），那是给读代码的人的就地提示，
+ * 与本中间件重复无害（同值 set 是幂等的）。
+ *
+ * 注意：分发端没有「需要缓存」的响应——分片与视频字节由对象存储 / CDN 直出、不经过本进程，
+ * 所以这里不做按路径放行。
+ */
+func noStoreResponses(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func writePlaylist(w http.ResponseWriter, text string) {

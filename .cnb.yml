@@ -35,7 +35,11 @@
     - name: docker build delivery
       script:
         - cd apps/delivery
-        - docker build -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:latest . --push
+        # 版本信息注入 GET /v1/meta（唯一真源 = 根 package.json）
+        - VERSION=$(bun -e 'process.stdout.write(require("../../package.json").version)')
+        - COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+        - BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        - docker build --build-arg VERSION="$VERSION" --build-arg COMMIT="$COMMIT" --build-arg BUILD_TIME="$BUILD_TIME" -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:latest . --push
 
 # 分发端 EdgeOne Cloud Functions（ADR-0003：与 SCF 容器同级的另一个目标）
 # 用开发镜像的 Go + Bun；scripts/edgeone.ts 固定 Makers CLI 版本，构建和上传使用同一份产物。
@@ -256,7 +260,11 @@ $:
         - name: docker build delivery
           script:
             - cd apps/delivery
-            - docker build -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:latest -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:${CNB_BRANCH} . --push
+            # 版本信息注入 GET /v1/meta（唯一真源 = 根 package.json）
+            - VERSION=$(bun -e 'process.stdout.write(require("../../package.json").version)')
+            - COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+            - BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            - docker build --build-arg VERSION="$VERSION" --build-arg COMMIT="$COMMIT" --build-arg BUILD_TIME="$BUILD_TIME" -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:latest -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:${CNB_BRANCH} . --push
         - name: docker build player
           script:
             - docker build -f apps/player/Dockerfile -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/player:latest -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/player:${CNB_BRANCH} . --push

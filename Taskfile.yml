@@ -70,8 +70,14 @@ tasks:
 
   # ---- 构建 / 测试 / 发布（ADR-0003） ----
   build:delivery:
+    desc: 编译静态二进制（注入 GET /v1/meta 的版本 / 提交 / 构建时间）
     dir: apps/delivery
-    cmds: [go build -trimpath -ldflags="-s -w" -o bin/delivery .]
+    cmds:
+      - |
+        VERSION=$(bun -e 'process.stdout.write(require("../../package.json").version)')
+        COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+        BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        go build -trimpath -ldflags "-s -w -X openvod/apps/delivery/internal/version.Version=$VERSION -X openvod/apps/delivery/internal/version.Commit=$COMMIT -X openvod/apps/delivery/internal/version.BuildTime=$BUILD_TIME" -o bin/delivery .
 
   edgeone:prepare:
     desc: 准备独立 Go 项目到 .run/edgeone-delivery（cloud-functions 只保留入口，避免库文件变成路由）
@@ -84,9 +90,15 @@ tasks:
       - bun --no-env-file scripts/edgeone.ts build
 
   image:delivery:
-    desc: SCF 仅接受 x86，必须显式 --platform（ADR-0003）
+    desc: SCF 仅接受 x86，必须显式 --platform（ADR-0003）；版本号取根 package.json
     cmds:
-      - docker buildx build --platform linux/amd64 -t openvod-delivery:latest apps/delivery
+      - |
+        VERSION=$(bun -e 'process.stdout.write(require("./package.json").version)')
+        COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+        BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        docker buildx build --platform linux/amd64 \
+          --build-arg VERSION="$VERSION" --build-arg COMMIT="$COMMIT" --build-arg BUILD_TIME="$BUILD_TIME" \
+          -t openvod-delivery:latest apps/delivery
 
   image:admin:
     desc: 管理端镜像（Next.js 全栈单容器，ADR-0013；构建上下文=仓库根）

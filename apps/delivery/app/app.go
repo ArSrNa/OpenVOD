@@ -24,6 +24,7 @@ import (
 	"openvod/apps/delivery/internal/mk"
 	"openvod/apps/delivery/internal/server"
 	"openvod/apps/delivery/internal/store"
+	"openvod/apps/delivery/internal/version"
 )
 
 // shutdownTimeout 优雅关闭窗口（平台回收实例时给在途请求留的排空时间）
@@ -104,6 +105,7 @@ func run(wrap func(http.Handler) http.Handler) error {
 		logger.Info("delivery listening",
 			"addr", cfg.Listen, "env", cfg.Env,
 			"storage", "s3", "public_base_url", cfg.PublicBaseURL,
+			"version", version.Version, "commit", version.Commit,
 			"jwt_keys", len(signers), "mk_versions", len(cfg.MasterKeys))
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			listenErr <- err

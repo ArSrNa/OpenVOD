@@ -304,11 +304,27 @@ function ensureDeps(env: Env): void {
   }
 }
 
+/** 版本号唯一真源 = 根 package.json（与发版 tag 同口径，GET /v1/meta 展示用） */
+function buildLdflags(): string {
+  const version = (JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as { version: string }).version;
+  let commit = "unknown";
+  try {
+    const out = Bun.spawnSync(["git", "rev-parse", "--short", "HEAD"], { cwd: ROOT, stdout: "pipe", stderr: "ignore" });
+    if (out.exitCode === 0) commit = out.stdout.toString().trim() || commit;
+  } catch {
+    /* 非 git 工作区：保持 unknown */
+  }
+  const built = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  const pkg = "openvod/apps/delivery/internal/version";
+  return `-X ${pkg}.Version=${version} -X ${pkg}.Commit=${commit} -X ${pkg}.BuildTime=${built}`;
+}
+
 function buildDelivery(env: Env): void {
   requireCmd("go", "分发端需要");
   println("[delivery] 编译（go build）...");
   const bin = join(RUN_DIR, "delivery");
-  if (runInheritSync(["go", "build", "-o", bin, "."], env, join(ROOT, "apps", "delivery")) !== 0) {
+  const cmd = ["go", "build", "-ldflags", buildLdflags(), "-o", bin, "."];
+  if (runInheritSync(cmd, env, join(ROOT, "apps", "delivery")) !== 0) {
     println(red("[delivery] 编译失败"));
     process.exit(1);
   }

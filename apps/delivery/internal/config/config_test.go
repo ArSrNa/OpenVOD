@@ -109,6 +109,19 @@ func TestParseDatabaseURLRejectsEmpty(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsLegacyDeliveryDatabaseURL(t *testing.T) {
+	t.Setenv("MASTER_KEYS", "1:"+strings.Repeat("ab", 32))
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("DELIVERY_DATABASE_URL", "mysql://ro:pw@db.example.com:3306/openvod")
+	_, err := Load()
+	if err == nil {
+		t.Fatal("只有旧变量名时 Load 应失败")
+	}
+	if !strings.Contains(err.Error(), "DELIVERY_DATABASE_URL") || !strings.Contains(err.Error(), "改名") {
+		t.Fatalf("报错应提示改名，得到：%v", err)
+	}
+}
+
 func TestLoadReadsDatabaseURL(t *testing.T) {
 	t.Setenv("MASTER_KEYS", "1:"+strings.Repeat("ab", 32))
 	t.Setenv("DATABASE_URL", "file:/tmp/openvod-load.db")

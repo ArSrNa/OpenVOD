@@ -14,8 +14,8 @@ import {
 type FormValues = Record<string, string | number | null | undefined>;
 type Confirmation = { kind: "reload" } | { kind: "clear-secret"; field: SettingField } | null;
 
-const SOURCE_LABELS = { db: "控制台设置", env: "环境变量", default: "默认值" };
-const EFFECT_DESCRIPTION = "管理端最多 30 秒、分发端最多 60 秒内读取新配置；Worker 在下次空闲轮询时更新（缓存最多 30 秒）。执行中的转码任务继续使用原有配置。";
+const SOURCE_LABELS = { db: "控制台", env: "环境变量", default: "默认值" };
+const EFFECT_DESCRIPTION = "保存后 30 秒内管理端生效、60 秒内分发端生效；Worker 会在下一次空闲轮询时更新（最多 30 秒）。正在执行的转码任务继续按旧配置跑完。";
 
 function changedValues(
   snapshot: SettingsEditorResponse | null,
@@ -173,13 +173,13 @@ export function SettingsManager({ group = "playback" }: { group?: SettingsGroup 
       return (
         <Input.Password
           autoComplete="new-password"
-          placeholder="输入新值替换；留空保持不变"
+          placeholder="留空表示不修改；输入新值即替换"
           disabled={disabled || clearedSecrets.has(field.key)}
         />
       );
     }
     if (field.type === "number") {
-      return <InputNumber min={field.min} max={field.max} precision={0} placeholder="留空使用环境变量或默认值" style={{ width: "100%" }} />;
+      return <InputNumber min={field.min} max={field.max} precision={0} placeholder="留空则使用环境变量或默认值" style={{ width: "100%" }} />;
     }
     if (field.type === "boolean") {
       return <Select options={[{ value: "true", label: "启用" }, { value: "false", label: "关闭" }, { value: "", label: "使用环境变量或默认值" }]} />;
@@ -194,7 +194,7 @@ export function SettingsManager({ group = "playback" }: { group?: SettingsGroup 
         />
       );
     }
-    return <Input placeholder={field.placeholder ?? "留空使用环境变量或默认值"} allowClear autoComplete="off" />;
+    return <Input placeholder={field.placeholder ?? "留空则使用环境变量或默认值"} allowClear autoComplete="off" />;
   };
 
   return (
@@ -213,7 +213,7 @@ export function SettingsManager({ group = "playback" }: { group?: SettingsGroup 
             type="warning"
             showIcon
             message="已选择自定义签名提供者"
-            description="自定义提供者需要先在代码中实现并注册（TS 与 Go 两侧），再重新构建部署；未注册时分发端与管理端的签名请求会直接报错。可以把下方提示词交给你的 AI 编码助手生成实现代码。"
+            description="这种模式需要先在代码里实现并注册签名算法（TS 和 Go 各一份），再重新构建部署。没注册就切换，管理端和分发端的签名请求会直接报错。可以把下面的提示词交给 AI 编码助手生成实现代码。"
             action={
               <Button size="small" icon={<RobotOutlined />} onClick={() => {
                 setPromptProvider(String(values["storage_custom_signer"] ?? "") || "custom");
@@ -228,7 +228,7 @@ export function SettingsManager({ group = "playback" }: { group?: SettingsGroup 
             type="info"
             showIcon
             message="CDN URL 鉴权模式的前置条件"
-            description={<>切换前请在 CDN 控制台完成：① 私有回源（存储凭证配在 CDN 侧，不入库）；② Token 鉴权开启——鉴权方式与「CDN 鉴权方式」一致、密钥与「CDN 边缘鉴权密钥」一致、有效时长与「CDN 鉴权有效期」一致（方式 A 的鉴权参数名 sign）；③ 缓存键含 query、缓存 TTL ≤ 签名窗口（逐项清单见部署文档 deploy-delivery.md「CDN 加速域名与资产签名配置清单」）。切换后建议 CDN 全量刷新一次。</>}
+            description={<>切换前先到 CDN 控制台完成三件事：① 私有回源（存储凭证配在 CDN 侧，不存进本系统）；② 开启 Token 鉴权，鉴权方式、密钥、有效时长要和本页对应三项完全一致（方式 A 还要对上鉴权参数名，默认 sign）；③ 缓存键包含 query，缓存时间不超过签名窗口。逐项清单见部署文档 deploy-delivery.md「CDN 加速域名与资产签名配置清单」。切换完成后建议在 CDN 全量刷新一次。</>}
             style={{ marginBottom: 24 }}
           />
         )}
@@ -238,7 +238,7 @@ export function SettingsManager({ group = "playback" }: { group?: SettingsGroup 
               type="info"
               showIcon
               message="配置来源与生效时间"
-              description={<>输入框显示当前配置值。普通字段留空会恢复环境变量或默认值，密钥留空保持不变。<br />{EFFECT_DESCRIPTION}</>}
+              description={<>输入框里显示的就是当前生效的值。普通字段清空后会退回环境变量或默认值；密钥框留空表示不修改。<br />{EFFECT_DESCRIPTION}</>}
               style={{ marginBottom: 24 }}
             />
             <Form<FormValues>
@@ -269,7 +269,7 @@ export function SettingsManager({ group = "playback" }: { group?: SettingsGroup 
                   <Form.Item
                     key={field.key}
                     name={field.key}
-                    label={<Space wrap><span>{field.label}</span><Tag color={current.source === "db" ? "blue" : undefined}>{SOURCE_LABELS[current.source]}</Tag>{current.secret && <Tag color={current.configured ? "green" : undefined}>{current.configured ? "已配置" : "未配置"}</Tag>}{changed && <Tag color="orange">{changes[field.key] === "" ? "待恢复默认来源" : "未保存"}</Tag>}</Space>}
+                    label={<Space wrap><span>{field.label}</span><Tag color={current.source === "db" ? "blue" : undefined}>{SOURCE_LABELS[current.source]}</Tag>{current.secret && <Tag color={current.configured ? "green" : undefined}>{current.configured ? "已配置" : "未配置"}</Tag>}{changed && <Tag color="orange">{changes[field.key] === "" ? "保存后回退" : "未保存"}</Tag>}</Space>}
                     rules={field.type === "number" ? [{
                       validator: (_, value) => {
                         if (value === "" || value === null || value === undefined) return Promise.resolve();
@@ -283,9 +283,9 @@ export function SettingsManager({ group = "playback" }: { group?: SettingsGroup 
                       <>
                         {field.help && <div>{field.help}</div>}
                         {clearing ? (
-                          <Space wrap><Typography.Text type="warning">保存后移除控制台中的密钥，回退环境变量。</Typography.Text><Button size="small" type="link" disabled={disabled} onClick={() => setClearedSecrets((previous) => { const next = new Set(previous); next.delete(field.key); return next; })}>取消清除</Button></Space>
+                          <Space wrap><Typography.Text type="warning">保存后会删掉控制台里的密钥，改用环境变量。</Typography.Text><Button size="small" type="link" disabled={disabled} onClick={() => setClearedSecrets((previous) => { const next = new Set(previous); next.delete(field.key); return next; })}>取消清除</Button></Space>
                         ) : current.overridden ? (
-                          <Button size="small" type="link" disabled={disabled} onClick={() => field.type === "secret" ? setConfirmation({ kind: "clear-secret", field }) : setFieldValue(field.key, "")}>移除控制台覆盖</Button>
+                          <Button size="small" type="link" disabled={disabled} onClick={() => field.type === "secret" ? setConfirmation({ kind: "clear-secret", field }) : setFieldValue(field.key, "")}>移除控制台配置</Button>
                         ) : null}
                       </>
                     }
@@ -311,7 +311,7 @@ export function SettingsManager({ group = "playback" }: { group?: SettingsGroup 
         cancelText="保留当前内容"
         okButtonProps={{ danger: true }}
       >
-        {confirmation?.kind === "clear-secret" ? "保存设置后将移除数据库中的密钥并回退环境变量。如果部署环境没有提供该密钥，对应功能可能不可用。" : "当前尚未保存的修改将被最新配置替换。"}
+        {confirmation?.kind === "clear-secret" ? "保存后会删掉数据库里的这个密钥，改用环境变量里的值。如果环境变量也没配，依赖它的功能会不可用。" : "未保存的修改会被最新配置覆盖。"}
       </Modal>
       <Modal
         open={promptOpen}
@@ -336,8 +336,8 @@ export function SettingsManager({ group = "playback" }: { group?: SettingsGroup 
       >
         <Space direction="vertical" style={{ width: "100%" }} size={12}>
           <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            补充你的 CDN 鉴权算法说明（可留空），提示词会包含双语言实现契约与测试要求；
-            密钥等敏感信息不会进入提示词。粘贴给你的编码助手即可生成实现代码。
+            可以补充你的 CDN 鉴权算法说明，留空也行。提示词里写明了 TS 与 Go 两侧的实现契约和测试要求，
+            不包含密钥等敏感信息；复制给编码助手即可生成实现代码。
           </Typography.Paragraph>
           <Input
             value={promptProvider}

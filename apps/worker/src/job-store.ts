@@ -35,6 +35,8 @@ export interface TranscodeJobStore {
   setProgress(id: string, progress: number): Promise<void>;
   /** 执行期心跳续期（长转码任务不被重派） */
   extendLease(id: string, leaseMs: number): Promise<void>;
+  /** 是否已请求取消（管理端写 cancel_requested_at，或已被置 CANCELLED）；执行期轮询此接口 */
+  isCancelRequested(id: string): Promise<boolean>;
 }
 
 function toRow(row: {
@@ -77,51 +79,69 @@ export function createPrismaTranscodeJobStore(): TranscodeJobStore {
 
   return {
     async claim({ leaseMs, maxAttempts }) {
-      const now = new Date();
-      // 可认领 = 未终结 且（无 lease 或 lease 已过期）
-      const claimable = { OR: [{ leaseUntil: null }, { leaseUntil: { lt: now } }] };
-      const candidate = await db.transcodeJob.findFirst({
-        where: { status: { in: ACTIVE_JOB_STATUSES }, ...claimable },
-        orderBy: { createdAt: "asc" },
-        select: { id: true, attempts: true, startedAt: true },
-      });
-      if (!candidate) return null;
+      // 取消收尾可能让首轮候选作废，故循环若干轮再判定「队列空」
+      for (let round = 0; round < 5; round++) {
+        const now = new Date();
+        // 可认领 = 未终结 且（无 lease 或 lease 已过期）
+        const claimable = { OR: [{ leaseUntil: null }, { leaseUntil: { lt: now } }] };
+        const candidate = await db.transcodeJob.findFirst({
+          where: { status: { in: ACTIVE_JOB_STATUSES }, ...claimable },
+          orderBy: { createdAt: "asc" },
+          select: { id: true, attempts: true, startedAt: true, cancelRequestedAt: true },
+        });
+        if (!candidate) return null;
 
-      // 超过重试上限：直接判失败，避免死循环重派（ADR-0008 崩溃重派的安全阀）
-      if (candidate.attempts >= maxAttempts) {
-        await db.transcodeJob.update({
-          where: { id: candidate.id },
+        // 取消请求只在原 worker 失联（租约过期）后才被这里看到：不再执行，直接收尾为 CANCELLED
+        if (candidate.cancelRequestedAt) {
+          const settled = await db.transcodeJob.updateMany({
+            where: { id: candidate.id, status: { in: ACTIVE_JOB_STATUSES }, ...claimable },
+            data: { status: "CANCELLED", leaseUntil: null, finishedAt: now, progress: null, lastError: null },
+          });
+          if (settled.count === 1) {
+            console.log(`[worker] 任务 ${candidate.id} 的取消请求已生效（原 worker 已失联），置 CANCELLED`);
+          }
+          continue;
+        }
+
+        // 超过重试上限：直接判失败，避免死循环重派（ADR-0008 崩溃重派的安全阀）
+        if (candidate.attempts >= maxAttempts) {
+          await db.transcodeJob.update({
+            where: { id: candidate.id },
+            data: {
+              status: "FAILED",
+              lastError: clampLastError(`重试次数已达上限（${maxAttempts} 次）：worker 反复崩溃或任务本身不可完成`),
+              finishedAt: now,
+              leaseUntil: null,
+            },
+          });
+          console.warn(`[worker] 任务 ${candidate.id} 超过重试上限，已置 FAILED`);
+          return null;
+        }
+
+        const claimed = await db.transcodeJob.updateMany({
+          where: { id: candidate.id, status: { in: ACTIVE_JOB_STATUSES }, ...claimable },
           data: {
-            status: "FAILED",
-            lastError: clampLastError(`重试次数已达上限（${maxAttempts} 次）：worker 反复崩溃或任务本身不可完成`),
-            finishedAt: now,
-            leaseUntil: null,
+            status: "PROBING",
+            leaseUntil: new Date(now.getTime() + leaseMs),
+            attempts: { increment: 1 },
+            startedAt: candidate.startedAt ?? now,
+            lastError: null,
+            progress: null,
           },
         });
-        console.warn(`[worker] 任务 ${candidate.id} 超过重试上限，已置 FAILED`);
-        return null;
+        if (claimed.count !== 1) return null; // 竞态：被其它实例抢走
+
+        const row = await db.transcodeJob.findUnique({ where: { id: candidate.id } });
+        return row ? toRow(row) : null;
       }
-
-      const claimed = await db.transcodeJob.updateMany({
-        where: { id: candidate.id, status: { in: ACTIVE_JOB_STATUSES }, ...claimable },
-        data: {
-          status: "PROBING",
-          leaseUntil: new Date(now.getTime() + leaseMs),
-          attempts: { increment: 1 },
-          startedAt: candidate.startedAt ?? now,
-          lastError: null,
-          progress: null,
-        },
-      });
-      if (claimed.count !== 1) return null; // 竞态：被其它实例抢走
-
-      const row = await db.transcodeJob.findUnique({ where: { id: candidate.id } });
-      return row ? toRow(row) : null;
+      return null;
     },
 
+    // 取消是终结态：所有执行期写入都带 `status != CANCELLED` 守卫，
+    // 避免管理端已取消后 worker 的完成 / 进度 / 续租写把任务「复活」（spec.md §5.1）。
     async setStatus(id, status, patch) {
-      await db.transcodeJob.update({
-        where: { id },
+      await db.transcodeJob.updateMany({
+        where: { id, status: { not: "CANCELLED" } },
         data: {
           status,
           ...(patch?.lastError !== undefined
@@ -136,14 +156,25 @@ export function createPrismaTranscodeJobStore(): TranscodeJobStore {
 
     async setProgress(id, progress) {
       const clamped = Math.max(0, Math.min(100, Math.round(progress)));
-      await db.transcodeJob.update({ where: { id }, data: { progress: clamped } });
+      await db.transcodeJob.updateMany({
+        where: { id, status: { not: "CANCELLED" } },
+        data: { progress: clamped },
+      });
     },
 
     async extendLease(id, leaseMs) {
-      await db.transcodeJob.update({
-        where: { id },
+      await db.transcodeJob.updateMany({
+        where: { id, status: { not: "CANCELLED" } },
         data: { leaseUntil: new Date(Date.now() + leaseMs) },
       });
+    },
+
+    async isCancelRequested(id) {
+      const row = await db.transcodeJob.findUnique({
+        where: { id },
+        select: { status: true, cancelRequestedAt: true },
+      });
+      return Boolean(row && (row.status === "CANCELLED" || row.cancelRequestedAt));
     },
   };
 }

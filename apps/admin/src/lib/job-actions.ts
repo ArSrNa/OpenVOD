@@ -1,12 +1,11 @@
-// 转码任务的「停止 / 重启」操作守卫（纯函数；spec.md §5.1，ADR-0008）
+// 转码任务的「取消 / 重启」操作守卫（纯函数；spec.md §5.1，ADR-0008）
 //
-// 语义（与 worker 的认领 / 租约机制对齐，apps/worker/src/job-store.ts）：
-//   停止（取消）＝ 标记为 FAILED（原因：手动停止）并清空租约：
-//     - QUEUED：撤下队列，永不被认领；
-//     - PROBING/ENCODING/PACKAGING 且租约已过期：worker 失联 / 已死，安全终止；
-//     - 租约仍有效（worker 正在执行）：拒绝——任务状态会被 worker 覆盖，
-//       执行中的中途取消需要 worker 侧检查点配合（演进项，spec.md §5.1）。
-//   重启（重新入队）＝ 仅 FAILED（失败或手动停止）可重启：status → QUEUED、attempts 清零、
+// 语义（与 worker 的认领 / 租约 / 取消轮询机制对齐，apps/worker/src/job-store.ts）：
+//   取消（2026-11-12 起可**立即打断**）：
+//     - QUEUED / 租约已过期：直接置 CANCELLED（撤下队列或安全终止）；
+//     - 租约有效（worker 正在执行）：写 cancel_requested_at 作为取消请求，worker 2s 内轮询到即
+//       杀 ffmpeg / 中止拉源并落 CANCELLED；请求期间按钮显示「取消中」，重复提交被拒；
+//   重启（重新入队）＝ FAILED 或 CANCELLED → QUEUED：attempts 清零、清 cancel_requested_at、
 //     清错误与租约——不清零 attempts 会被认领逻辑立即判「超过重试上限」而秒失败。
 // 本模块只做判定，不改库；DB 写入与 CAS 见 lib/transcode.ts。
 
@@ -19,16 +18,20 @@ export interface JobActionInput {
   status: string;
   /** 分发端是否持有有效租约（lease_until > now）；QUEUED 恒为 false */
   leaseActive: boolean;
+  /** 是否已提交取消请求（cancel_requested_at 非空） */
+  cancelRequested?: boolean;
 }
 
 export interface JobActionState {
-  /** 停止（取消）可用：未终结且租约无效 */
+  /** 取消可用：未终结，且（未请求取消 或 租约已过期可立即收尾） */
   canStop: boolean;
-  /** 重启（重新入队）可用：仅 FAILED */
+  /** 重启（重新入队）可用：FAILED / CANCELLED */
   canRestart: boolean;
   /** 执行中任务租约已过期（worker 失联）——状态列提示「中断」 */
   leaseExpired: boolean;
-  /** 停止被拒的原因（canStop 为 false 时给出） */
+  /** 已提交取消请求、等待 worker 中断——状态列提示「取消中」 */
+  cancelling: boolean;
+  /** 取消被拒的原因（canStop 为 false 时给出） */
   stopBlocked?: string;
   /** 重启被拒的原因（canRestart 为 false 时给出） */
   restartBlocked?: string;
@@ -36,27 +39,30 @@ export interface JobActionState {
 
 export function jobActionState(input: JobActionInput): JobActionState {
   const active = (ACTIVE_STATUSES as readonly string[]).includes(input.status);
+  const cancelRequested = Boolean(input.cancelRequested);
   const leaseExpired = active && input.status !== "QUEUED" && !input.leaseActive;
+  const cancelling = active && cancelRequested;
 
   let canStop = false;
   let stopBlocked: string | undefined;
   if (active) {
-    if (input.leaseActive) {
-      stopBlocked = "任务正被 worker 执行（租约有效），无法停止；如 worker 已失联，请等租约过期后再试";
+    if (cancelRequested && input.leaseActive) {
+      // worker 已收到请求但还没收尾：不接受重复提交，避免覆盖请求时间（等待即可）
+      stopBlocked = "取消请求已提交，正在等待 worker 中断执行";
     } else {
       canStop = true;
     }
   } else {
-    stopBlocked = "任务已结束，无需停止";
+    stopBlocked = "任务已结束，无需取消";
   }
 
   let canRestart = false;
   let restartBlocked: string | undefined;
-  if (input.status === "FAILED") {
+  if (input.status === "FAILED" || input.status === "CANCELLED") {
     canRestart = true;
   } else {
-    restartBlocked = "只有失败（含手动停止）的任务才能重启";
+    restartBlocked = "只有失败或已取消的任务才能重启";
   }
 
-  return { canStop, canRestart, leaseExpired, stopBlocked, restartBlocked };
+  return { canStop, canRestart, leaseExpired, cancelling, stopBlocked, restartBlocked };
 }

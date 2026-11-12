@@ -16,6 +16,7 @@
 ```
 queued → probing → downloading → encoding → packaging → ready
                     ↘ failed（可重试 ≤3，指数退避）
+                    ↘ cancelled（管理端取消：立即中断，终结态）
 queued/probing/downloading/encoding/packaging 带 lease_until（Worker 心跳续期，崩溃过期重派）
 media 状态与 job 状态联动（ready / transcoding / failed / archived…）
 ```
@@ -66,3 +67,4 @@ media 状态与 job 状态联动（ready / transcoding / failed / archived…）
 ## 修订记录
 
 - **2026-10-17（`DOWNLOADING` 阶段落地：把「预取源片」从设计补回实现）**：本 ADR 第 2 条原本就是「预取源片到 `/tmp/jobs/{jobId}/`（本地卷）」，实现时让 ffmpeg 边流边转（HTTP 直读源片），带来两个后果——① 状态机分辨不出「拉取源片」与「转码」（用户只看到「转码中」），② ladder 多档时**每档各自重读一遍源片**。本次落地：`JobStatus` 增 `DOWNLOADING`（位于 `PROBING` 与 `ENCODING` 之间）；Worker 探测后把源片流式拉取到任务目录（`apps/worker/src/source-download.ts`：进度回调、字节数校验、读停滞上限 `idleTimeoutMs` 默认 60s），转码阶段输入**本地文件**；`transcode_jobs.progress`（0–100）记录当前阶段进度——`DOWNLOADING` 为下载字节占比，`ENCODING` 为（已完成档位数 + 当前档位 `out_time` / 源时长）/ 总档位数（argv 由模板编译器注入 `-progress pipe:1`，`runFFmpeg` 改 `spawn` 流式解析 stdout）。取舍：单档模板的「下载」与「编码」由重叠变为串行（网络已快时多出数秒），换来状态可读、进度可视、多档只下一次、编码不受网络抖动影响——按 ADR 原设计执行。
+- **2026-11-12（任务取消落地：执行中可立即打断）**：此前管理端「停止」只是把任务置 `FAILED` 并清租约，租约有效（worker 正在执行）时直接 409——执行中的任务无法终止。本次落地：`JobStatus` 增终结态 `CANCELLED`、`transcode_jobs` 增 `cancel_requested_at`；管理端对执行中任务只写取消请求位，Worker 执行期每 2s 轮询（`job-store.isCancelRequested`），命中后置取消标志并 `AbortController.abort()`——**ffmpeg 子进程 SIGTERM（3s 宽限后 SIGKILL）**、源片拉取 `pipeline` 断开、封装上传逐对象止损，阶段边界另有同步检查点；收尾置 `CANCELLED` 且**不写 `last_error`**（取消不是故障），媒资回到执行前状态。所有执行期写库（状态 / 进度 / 续租）带 `status != CANCELLED` 守卫，取消不会被完成写覆盖；认领时若发现租约已过期的取消请求，直接收尾不执行。`restart` 扩展为 `FAILED | CANCELLED` 并清 `cancel_requested_at`。实现细节见 spec.md §5.1。

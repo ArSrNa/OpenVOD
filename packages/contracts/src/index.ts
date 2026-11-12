@@ -398,8 +398,18 @@ export const UpdateWatermarkRequest = WatermarkTemplateInput.partial();
 
 /** transcode_jobs.status 取值（与 Prisma `JobStatus` 枚举逐字一致）。
  *  阶段顺序：排队中 → 探测中 → **拉取源片** → 转码中 → 封装上传中 → 完成（DOWNLOADING 为 2026-10-17 新增，
- *  源片拉取到本地与转码是两个阶段：转码输入本地文件，多档只下载一次，状态可区分）。 */
-export const JOB_STATUSES = ["QUEUED", "PROBING", "DOWNLOADING", "ENCODING", "PACKAGING", "DONE", "FAILED"] as const;
+ *  源片拉取到本地与转码是两个阶段：转码输入本地文件，多档只下载一次，状态可区分）。
+ *  CANCELLED 为 2026-11-12 新增（终结态）：管理端取消后由 Worker 中断执行并落库（spec.md §5.1）。 */
+export const JOB_STATUSES = [
+  "QUEUED",
+  "PROBING",
+  "DOWNLOADING",
+  "ENCODING",
+  "PACKAGING",
+  "DONE",
+  "FAILED",
+  "CANCELLED",
+] as const;
 
 /** 未终结状态（认领候选 / 「进行中任务」统计 / 产物删除守卫共用；各消费方统一引用此常量） */
 export const ACTIVE_JOB_STATUSES = ["QUEUED", "PROBING", "DOWNLOADING", "ENCODING", "PACKAGING"] as const;
@@ -491,8 +501,10 @@ export const TranscodeJobDTO = z.object({
   attempts: z.number().int(),
   /** 当前阶段进度（0–100；DOWNLOADING / ENCODING 阶段有意义，其余为 null） */
   progress: z.number().int().min(0).max(100).nullable(),
-  /** 分发端是否持有有效租约（执行中）；未认领 / worker 失联（租约过期）时为 false —— 「停止」操作的依据 */
+  /** 分发端是否持有有效租约（执行中）；未认领 / worker 失联（租约过期）时为 false —— 「取消」操作的依据 */
   lease_active: z.boolean(),
+  /** 取消请求提交时间（null = 未请求取消）；执行中的任务由 Worker 轮询到后立即中断并置 CANCELLED */
+  cancel_requested_at: z.string().nullable(),
   last_error: z.string().nullable(),
   created_at: z.string(),
   started_at: z.string().nullable(),

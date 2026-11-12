@@ -7,7 +7,7 @@ import type { MasterKey } from "@openvod/crypto";
 import { DEFAULT_LADDER, WATERMARK_FONT_FILES, WATERMARK_FONT_ROOT } from "@openvod/transcode";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { executeClaimedJob } from "./executor";
+import { executeClaimedJob, JobCancelledError } from "./executor";
 import { createHttpWorker } from "./http-mode";
 import { createPrismaTranscodeJobStore } from "./job-store";
 import { createPrismaMediaKeyStore } from "./media-key-store";
@@ -164,6 +164,14 @@ async function runOnce(): Promise<boolean> {
     );
   } catch (e) {
     const message = (e as Error).message;
+    if (e instanceof JobCancelledError) {
+      // 取消是用户意图，不写 last_error：管理端靠 CANCELLED 状态区分「失败」与「取消」（spec.md §5.1）
+      console.warn(`[worker] 任务 ${job.id} 已取消：${message}`);
+      await jobStore
+        .setStatus(job.id, "CANCELLED", { lastError: null, finishedAt: new Date(), leaseUntil: null, progress: null })
+        .catch((err) => console.error("[worker] 标记取消状态出错:", err));
+      return true;
+    }
     console.error(`[worker] 任务 ${job.id} 失败：${message}`);
     await jobStore
       .setStatus(job.id, "FAILED", { lastError: message, finishedAt: new Date(), leaseUntil: null, progress: null })

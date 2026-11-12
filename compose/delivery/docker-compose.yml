@@ -5,10 +5,10 @@
 #       EdgeOne Cloud Functions / SCF）；本文件让 delivery 也能以自托管容器形态单独跑。
 #
 # 用法（在本文件所在目录执行）：
-#   docker compose up -d --build     # 构建镜像（等价 task image:delivery）并启动
+#   docker compose pull && docker compose up -d   # 直接拉制品库镜像启动（本文件不含 build 环节）
 #   docker compose logs -f           # 跟日志
 #   docker compose down
-# 已用 `task image:delivery` 或从制品库拉过同名镜像时，可注释掉 build 段直接 `up -d`。
+# 镜像由流水线构建并推送到制品库；需本地改源码构建时用 `task image:delivery`。
 #
 # 变量：全部直接写在本文件里（.dockerignore 已排除 .env*，镜像不携带任何密钥）。
 # 最小集只有 DATABASE_URL + MASTER_KEYS：
@@ -19,9 +19,7 @@ name: openvod-delivery
 
 services:
   delivery:
-    build:
-      context: ../../apps/delivery
-    image: openvod-delivery:latest
+    image: docker.cnb.cool/arsrna/media/openvod/delivery:latest
     environment:
       # ===== 必须改 =====
       # 三端共用同一连接串（admin / worker / delivery 必须指向同一个库）。

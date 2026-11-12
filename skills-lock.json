@@ -1,124 +1,131 @@
 {
-  "version": 1,
+  "version": 2,
   "skills": {
     "antd": {
       "source": "ant-design/ant-design-cli",
       "sourceType": "github",
       "skillPath": "skills/antd/SKILL.md",
-      "computedHash": "b5ba1145c24be0fd8f03714d3cfdaf8b9f93d8e8ef441c756709561d072ced27"
+      "computedHash": "5a3feb6a3530550e759edacf9e89dfc1f05a3b39c5125afeae5dad829dad66b6"
     },
     "better-auth-best-practices": {
       "source": "better-auth/skills",
       "sourceType": "github",
       "skillPath": "better-auth/best-practices/SKILL.md",
-      "computedHash": "0c30be0e118c2b7a0c4c57bd9e63bf110c7e420a79ec6ce7997153f3b1e066ee"
+      "computedHash": "2773c3687f2cf96d659049ebf2d8c86058a33541b09360712df0dc6b1404c403"
     },
     "better-auth-security-best-practices": {
       "source": "better-auth/skills",
       "sourceType": "github",
       "skillPath": "security/SKILL.md",
-      "computedHash": "7a230edf3a24ce18162cb4379f59b6a19b8d24ca04db530609d0f15cede556dc"
+      "computedHash": "36e9710eaa13c61c00bec00a4902fdc6ed829e6de13127238ae57494e93c1d9d"
     },
     "cnb-api": {
       "source": "https://cnb.cool/cnb/skills/cnb-skill.git",
       "sourceUrl": "https://cnb.cool/cnb/skills/cnb-skill.git",
       "sourceType": "git",
       "skillPath": "skills/cnb-api/SKILL.md",
-      "computedHash": "c57a659f1a2b9f64ab168eed32ea49a70d860db769a7c4231d2fabf71b8149f0"
+      "computedHash": "3599b1ac924bfdd19edfae81b6822d029f12d25d03c27e83d2e3fa0d0f036a99"
     },
     "cnb-code-commit": {
       "source": "https://cnb.cool/cnb/skills/cnb-skill.git",
       "sourceUrl": "https://cnb.cool/cnb/skills/cnb-skill.git",
       "sourceType": "git",
       "skillPath": "skills/cnb-code-commit/SKILL.md",
-      "computedHash": "25046d799f69a0bc7f1a511d6d49d1d6c5e8dd69497b48b8463cc9fc4702514b"
+      "computedHash": "8e4954c592b042d39ff645ff2a0be49ea9e38effded2d33efe27622b82519b11"
     },
     "cnb-code-review": {
       "source": "https://cnb.cool/cnb/skills/cnb-skill.git",
       "sourceUrl": "https://cnb.cool/cnb/skills/cnb-skill.git",
       "sourceType": "git",
       "skillPath": "skills/cnb-code-review/SKILL.md",
-      "computedHash": "fd06822a790833cb3b854515c13048ba8b0492be632c19e7151978077603e3ee"
+      "computedHash": "54c200a647c51f38aebbc9eac1337b0d3c0695206ea570e1e33b14347e4e24f5"
     },
     "cnb-docs": {
       "source": "https://cnb.cool/cnb/skills/cnb-skill.git",
       "sourceUrl": "https://cnb.cool/cnb/skills/cnb-skill.git",
       "sourceType": "git",
       "skillPath": "skills/cnb-docs/SKILL.md",
-      "computedHash": "a0a7cc1fcca4c4363776cace06fae52e60695361dbfdbb21aae7cb5315c69826"
+      "computedHash": "27de25ad8913c32b30c06a0de8185f787bf054ab1423e7115e0bacb3116234fe"
     },
     "cnb-npc-search": {
       "source": "https://cnb.cool/cnb/skills/cnb-skill.git",
       "sourceUrl": "https://cnb.cool/cnb/skills/cnb-skill.git",
       "sourceType": "git",
       "skillPath": "skills/cnb-npc-search/SKILL.md",
-      "computedHash": "1b71f39a170a1c9db2053efd211ab9dc4a50a29761a5f969cd784eb2527e8917"
+      "computedHash": "eff88cdec258ef89cd196bcbf2f4e6e86e94239fed260ba4d3372bee90c124d2"
     },
     "cnb-pipeline": {
       "source": "https://cnb.cool/cnb/skills/cnb-skill.git",
       "sourceUrl": "https://cnb.cool/cnb/skills/cnb-skill.git",
       "sourceType": "git",
       "skillPath": "skills/cnb-pipeline/SKILL.md",
-      "computedHash": "b8620bbe075e6b861f68da2d2c234d236282847696fafdf6c380771c7ad3b833"
+      "computedHash": ""
     },
     "cnb-pr-analysis": {
       "source": "https://cnb.cool/cnb/skills/cnb-skill.git",
       "sourceUrl": "https://cnb.cool/cnb/skills/cnb-skill.git",
       "sourceType": "git",
       "skillPath": "skills/cnb-pr-analysis/SKILL.md",
-      "computedHash": "04b881634da8dcf85519c554a56adbe32a8263a4d4392efa3538f64de83732e9"
+      "computedHash": "df2c4c3c25c02aac8d03741fe040d6bb516755e65825789831fe2b902ee84c4e"
     },
     "cnb-repo-knowledge-base": {
       "source": "https://cnb.cool/cnb/skills/cnb-skill.git",
       "sourceUrl": "https://cnb.cool/cnb/skills/cnb-skill.git",
       "sourceType": "git",
       "skillPath": "skills/cnb-repo-knowledge-base/SKILL.md",
-      "computedHash": "5aa13ed5168dced658b5a7d8fef20b300b047998caa3816adf9cdcd966834f37"
+      "computedHash": "3da10d9929f7a1746d0eba36d0e8ed2633fef4087f43c2df8a7172821a60742b"
     },
     "cnb-tapd-resource-fetcher": {
       "source": "https://cnb.cool/cnb/skills/cnb-skill.git",
       "sourceUrl": "https://cnb.cool/cnb/skills/cnb-skill.git",
       "sourceType": "git",
       "skillPath": "skills/cnb-tapd-resource-fetcher/SKILL.md",
-      "computedHash": "ad5c247d7a9043d7282dbac90a851f4bf0239235f1fa9890035b3e93236bbe55"
+      "computedHash": "b2895c13b9dbfc8c7d41eaedb7408c9ccd2cbb7740af4a8954d4bd4630ee9b03"
     },
     "cnb-text-path-converter": {
       "source": "https://cnb.cool/cnb/skills/cnb-skill.git",
       "sourceUrl": "https://cnb.cool/cnb/skills/cnb-skill.git",
       "sourceType": "git",
       "skillPath": "skills/cnb-text-path-converter/SKILL.md",
-      "computedHash": "863e254033138300da92e65c1157e3678add184b30ea10531348925fe25175c0"
+      "computedHash": "a6e9a7579fb3c0b57b75fd7d7240c21755bd8bc03d814e5924f451a152aa6de7"
     },
     "cnb-upload-attachment": {
       "source": "https://cnb.cool/cnb/skills/cnb-skill.git",
       "sourceUrl": "https://cnb.cool/cnb/skills/cnb-skill.git",
       "sourceType": "git",
       "skillPath": "skills/cnb-upload-attachment/SKILL.md",
-      "computedHash": "90713e5699d8a6dcd9ee2b2c464dd5b1dc7efb3b7feb808edae62e6f5a400dc7"
+      "computedHash": "b032f8997d46d4807b3da2c84e6a9b3cdccbe60fa0fbbd4ab2046827260aa504"
     },
     "create-auth": {
       "source": "better-auth/skills",
       "sourceType": "github",
       "skillPath": "better-auth/create-auth/SKILL.md",
-      "computedHash": "9a9b498bc144367b8e237233f89def63fb2bd69e8cafe173eaa58fe3a863cdc4"
+      "computedHash": "6f68253a5ab812aa8c9b70c57609aca763093a594e3b07163142e0fa7d64904a"
     },
     "email-and-password-best-practices": {
       "source": "better-auth/skills",
       "sourceType": "github",
       "skillPath": "better-auth/emailAndPassword/SKILL.md",
-      "computedHash": "863886759f729081e265941f4f72c503835d55a1f34f6d63cebe6571159fff4a"
+      "computedHash": "407c1244202876daa748818ed41dc55afde1b3f7aec48ae3a1f1c8a7ee40465e"
     },
     "organization-best-practices": {
       "source": "better-auth/skills",
       "sourceType": "github",
       "skillPath": "better-auth/organization/SKILL.md",
-      "computedHash": "8c85e683dabef4532f1e8b67bbed5c453d39e0e3d5aeedd69d16b568f6e6d44f"
+      "computedHash": "e5b1238c3b62c789918fe397ed52787742e50944343de33f459629f29b0fe922"
+    },
+    "shuorenhua": {
+      "source": "MrGeDiao/shuorenhua",
+      "sourceType": "github",
+      "skillPath": "skills/shuorenhua/SKILL.md",
+      "computedHash": "ddabb94693c6ea7584d39ccd4f61c1d05fd22a605fc5db61f6e3127c35b9ab2c",
+      "installMode": "copy"
     },
     "two-factor-authentication-best-practices": {
       "source": "better-auth/skills",
       "sourceType": "github",
       "skillPath": "better-auth/twoFactor/SKILL.md",
-      "computedHash": "5bc3051aef5060db013f0b3cbe812c40dbae5c22d6ba3ddde4b941158362a197"
+      "computedHash": "89ca7fde92a69aec2cf7407d29058c5428e17d228e2578c79e0129d128524f38"
     }
   }
 }

@@ -4,10 +4,10 @@
 #       常驻编排见根 docker-compose.yml；本文件只起 player。
 #
 # 用法（在本文件所在目录执行）：
-#   docker compose up -d --build     # 构建镜像（等价 task image:player）并启动
+#   docker compose pull && docker compose up -d   # 直接拉制品库镜像启动（本文件不含 build 环节）
 #   docker compose logs -f
 #   docker compose down
-# 已用 `task image:player` 或从制品库拉过同名镜像时，可注释掉 build 段直接 `up -d`。
+# 镜像由流水线构建并推送到制品库；需本地改源码构建时用 `task image:player`。
 #
 # 变量：全部直接写在本文件里（.dockerignore 已排除 .env*，镜像不携带任何密钥）。
 # 最小集 = 分发端地址（容器视角 + 浏览器视角）+ 预览播放账号：
@@ -19,11 +19,7 @@ name: openvod-player
 
 services:
   player:
-    build:
-      # player 经 workspace 依赖 @openvod/contracts（TS 源码直引），上下文必须是仓库根
-      context: ../..
-      dockerfile: apps/player/Dockerfile
-    image: openvod-player:latest
+    image: docker.cnb.cool/arsrna/media/openvod/player:latest
     environment:
       # ===== 必须改 =====
       # 容器内（服务端）调分发端 login 的地址；容器内 127.0.0.1 指容器自身

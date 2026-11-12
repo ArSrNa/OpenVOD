@@ -240,14 +240,14 @@ bun start   # 等价 sh scripts/compose.sh up：docker compose pull + up -d
 | `compose/player/` | 播放演示 player | `3100` | `DELIVERY_BASE_URL`、`PLAYER_PUBLIC_DELIVERY_BASE_URL`、`PLAYER_PREVIEW_USERNAME` / `PLAYER_PREVIEW_PASSWORD` |
 
 ```bash
-(cd compose/admin    && docker compose up -d --build)   # 构建并启动（等价 task image:admin）
-(cd compose/worker   && docker compose up -d --build)
-(cd compose/delivery && docker compose up -d --build)
-(cd compose/player   && docker compose up -d --build)
+(cd compose/admin    && docker compose pull && docker compose up -d)   # 拉制品库镜像并启动
+(cd compose/worker   && docker compose pull && docker compose up -d)
+(cd compose/delivery && docker compose pull && docker compose up -d)
+(cd compose/player   && docker compose pull && docker compose up -d)
 ```
 
-- **构建**：admin / worker / player 的构建上下文是仓库根（`context: ../..`），delivery 是 `apps/delivery`；
-  已用 `task image:*` 或从制品库拉过同名镜像时，注释掉 `build` 段直接 `up -d` 即可。
+- **镜像**：四个文件统一使用制品库 `docker.cnb.cool/arsrna/media/openvod/{admin,worker,delivery,player}:latest`，
+  **不含 `build` 段**；改了源码需要新镜像时走流水线（CNB 页面按钮）或本地 `task image:*` 构建后推送。
 - **只改必要的几个变量**：`DATABASE_URL` 指向容器可达的 MySQL（容器内 `127.0.0.1` 是容器自身，故文件里用
   `host.docker.internal`，并通过 `extra_hosts: host-gateway` 兼容 Linux），`MASTER_KEYS` 四端必须完全一致。
 - **其余配置不用写**：对象存储凭据、播放签名密钥、播放域名、TTL 等在管理台首次启动向导（`/setup`）时写入

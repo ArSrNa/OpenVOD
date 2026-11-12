@@ -4,10 +4,10 @@
 #       常驻编排见根 docker-compose.yml（镜像预构建）；本文件只起 admin。
 #
 # 用法（在本文件所在目录执行）：
-#   docker compose up -d --build     # 构建镜像（等价 task image:admin）并启动
+#   docker compose pull && docker compose up -d   # 直接拉制品库镜像启动（本文件不含 build 环节）
 #   docker compose logs -f
 #   docker compose down
-# 已用 `task image:admin` 或从制品库拉过同名镜像时，可注释掉 build 段直接 `up -d`。
+# 镜像由流水线构建并推送到制品库；需本地改源码构建时用 `task image:admin`（产物同名 tag 可覆盖）。
 #
 # 变量：全部直接写在本文件里（.dockerignore 已排除 .env*，镜像不携带任何密钥）。
 # 最小集只有 DATABASE_URL + DB_PROVIDER + MASTER_KEYS：
@@ -18,11 +18,7 @@ name: openvod-admin
 
 services:
   admin:
-    build:
-      # admin 依赖 workspace 源码包 + 镜像内重建两份 Prisma 客户端，上下文必须是仓库根
-      context: ../..
-      dockerfile: apps/admin/Dockerfile
-    image: openvod-admin:latest
+    image: docker.cnb.cool/arsrna/media/openvod/admin:latest
     environment:
       # ===== 必须改 =====
       # 三端共用同一连接串；容器内 127.0.0.1 指容器自身，连宿主 MySQL 用 host.docker.internal

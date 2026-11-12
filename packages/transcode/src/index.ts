@@ -25,6 +25,8 @@ export interface RunFFmpegOptions {
   timeoutMs?: number;
   /** 进度回调（仅在 argv 带 `-progress pipe:1` 时有值） */
   onProgress?: (info: FFmpegProgressInfo) => void;
+  /** stderr 行回调（实时日志入口，ADR-0017 修订）：按 \r\n / \n / \r 切行，退出时补齐最后一行 */
+  onStderrLine?: (line: string) => void;
   /** 外部中断（管理端取消任务）：abort 后先 SIGTERM 再 SIGKILL，被中断的调用以 FFmpegError 拒绝 */
   signal?: AbortSignal;
 }
@@ -80,14 +82,22 @@ export async function runFFmpeg(argv: string[], opts: RunFFmpegOptions = {}): Pr
       }
     });
 
+    let stderrRest = "";
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
       stderr += chunk;
       if (stderr.length > STDERR_KEEP_CHARS) stderr = stderr.slice(-STDERR_KEEP_CHARS);
+      if (!opts.onStderrLine) return;
+      // ffmpeg 的统计行以 \r 覆盖刷新（无 \n），三种行尾都要切，否则实时日志会一整坨不动
+      stderrRest += chunk;
+      const parts = stderrRest.split(/\r\n|\n|\r/);
+      stderrRest = parts.pop() ?? "";
+      for (const line of parts) if (line.trim()) opts.onStderrLine(line);
     });
 
     const finish = (fn: () => void) => {
       if (settled) return;
+      if (opts.onStderrLine && stderrRest.trim()) opts.onStderrLine(stderrRest);
       settled = true;
       clearTimeout(timer);
       clearTimeout(killTimer);

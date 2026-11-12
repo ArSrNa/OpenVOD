@@ -134,9 +134,10 @@ MASTER_KEYS="1:0000000000000000000000000000000000000000000000000000000000000000"
 DELIVERY_PUBLIC_BASE_URL=""
 
 # ---- 运行模式与队列认领（ADR-0008 / ADR-0017）----
-WORKER_MODE="resident"           # resident = 常驻轮询；http = HTTP 门铃（serverless，/wake 触发认领）
-WORKER_HTTP_PORT="9001"          # http 模式监听端口（仅 http 模式）
-WORKER_IDLE_EXIT_MINUTES="0"     # http 模式空闲退出分钟数；0 = 不退出
+WORKER_MODE="resident"           # resident = 常驻轮询；http = HTTP 门铃；invoked = 异步云函数单任务触发
+WORKER_HTTP_PORT="9001"          # http / invoked 模式监听端口
+WORKER_IDLE_EXIT_MINUTES="0"     # 空闲退出分钟数；0 = 不退出（invoked 建议 1~5）
+WORKER_JOBS_ROOT=""              # 任务临时目录根；invoked 必填 CFS/NAS 挂载点，空 = os.tmpdir()/openvod-jobs
 WORKER_POLL_INTERVAL_MS="2000"   # 轮询间隔（毫秒，仅 resident 模式）
 WORKER_LEASE_MS="60000"          # 任务 lease 时长（执行期按 1/3 续期，崩溃后过期重派）
 WORKER_MAX_ATTEMPTS="3"          # 单任务最大尝试次数，超过判 FAILED
@@ -164,10 +165,11 @@ STORAGE_CDN_BASE_URL=""               # 加速域名（可选）
 | `DB_PROVIDER` | 否 | `mysql` | `mysql` \| `sqlite`，决定实例化哪份 Prisma 客户端（`@openvod/db`） |
 | `MASTER_KEYS` | **加密任务必填** | 无 | 加密封装 CEK 的 MK。缺失时启动自检告警，**加密模板任务将失败**（未加密模板不受影响） |
 | `DELIVERY_PUBLIC_BASE_URL` | 否 | 内建占位 | 转码期写 `key_info` 的密钥 URI 占位基址（ADR-0006 §2/§3）；应与 delivery 同值 |
-| `WORKER_MODE` | 否 | `resident` | `resident`（常驻轮询，自托管）\| `http`（门铃模式：暴露 `POST /wake`，唤醒后 claim-drain，空闲可退出；ADR-0017）。DB `worker_mode` > env |
-| `WORKER_HTTP_PORT` | 否 | `9001` | http 模式监听端口（含 `GET /healthz` 供平台探活） |
-| `WORKER_IDLE_EXIT_MINUTES` | 否 | `0`（不退出） | http 模式空闲退出阈值：最后一次认领后连续 N 分钟无任务即 graceful 退出，加速平台缩零 |
-| `WORKER_NOTIFY_SECRET` | http 模式**是** | 空 | `/wake` Bearer 共享密钥（常量时间比较）；admin 侧 `worker_notify_secret` 须同值，**http 模式未配置则拒绝启动**（防计费攻击） |
+| `WORKER_MODE` | 否 | `resident` | `resident`（常驻轮询，自托管）\| `http`（门铃模式：暴露 `POST /wake`，唤醒后 claim-drain，空闲可退出）\| `invoked`（异步云函数：载荷 `job_ids` 定向认领，不扫队列，ADR-0017 §6）。DB `worker_mode` > env |
+| `WORKER_HTTP_PORT` | 否 | `9001` | http / invoked 模式监听端口（含 `GET /healthz` 供平台探活） |
+| `WORKER_IDLE_EXIT_MINUTES` | 否 | `0`（不退出） | 空闲退出阈值：最后一次认领后连续 N 分钟无任务即 graceful 退出，加速平台缩零；invoked 建议 1~5 |
+| `WORKER_JOBS_ROOT` | 否 | 空（= `os.tmpdir()/openvod-jobs`） | 任务临时目录根。invoked 模式**必须**指向挂载的文件系统（CFS / NAS）：大内存 ≠ 大磁盘，`/tmp` 装不下「源片 + 全档产物」峰值 |
+| `WORKER_NOTIFY_SECRET` | http / invoked 模式**是** | 空 | `/wake` Bearer 共享密钥（常量时间比较）；admin 侧 `worker_notify_secret` 须同值，**未配置则拒绝启动**（防计费攻击） |
 | `WORKER_POLL_INTERVAL_MS` | 否 | `2000` | 轮询认领间隔（毫秒，仅 resident 模式） |
 | `WORKER_LEASE_MS` | 否 | `60000` | 任务 lease 时长；执行期按 1/3 续期，崩溃后 lease 过期即重派（ADR-0008） |
 | `WORKER_MAX_ATTEMPTS` | 否 | `3` | 单任务最大尝试次数，超过判 `FAILED`，防崩溃循环 |
@@ -339,7 +341,7 @@ PLAYER_PREVIEW_PASSWORD=""                       # 预览播放账号口令；�
 | `MASTER_KEYS` | ✅ | ✅（加密任务） | ✅ | — |
 | `URL_SIGN_KEY_HEX` / `URL_SIGN_KEY_KID` | ✅ | — | — | — |
 | `BETTER_AUTH_SECRET` / `ADMIN_*` / `OIDC_*` | — | — | ✅ | — |
-| `WORKER_MODE` / `WORKER_HTTP_PORT` / `WORKER_IDLE_EXIT_MINUTES` | — | ✅ | — | — |
+| `WORKER_MODE` / `WORKER_HTTP_PORT` / `WORKER_IDLE_EXIT_MINUTES` / `WORKER_JOBS_ROOT` | — | ✅ | — | — |
 | `WORKER_POLL_INTERVAL_MS` / `WORKER_LEASE_MS` / `WORKER_MAX_ATTEMPTS` | — | ✅ | — | — |
 | `WORKER_NOTIFY_URL` / `WORKER_NOTIFY_SECRET` | — | ✅（SECRET 必填） | ✅（仅发通知） | — |
 | `DELIVERY_*`（JWT / TTL / CORS / LISTEN） | ✅ | — | — | — |

@@ -5,6 +5,7 @@
 import {
   ACTIVE_JOB_STATUSES,
   TranscodeJobDTO,
+  TranscodeJobLogsResponse,
   TranscodeSubmitResponse,
   z,
   type DashboardStats,
@@ -118,6 +119,22 @@ export async function listTranscodeJobs(limit = 200): Promise<{
     // 被 SSE 变化指纹误判为「有变化」（详见 lib/jobs-stream）
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: limit,
+    // 必须显式 select：log_tail 最大 48KB，列表 200 条 × 1.5s 全量拉会把 SSE 观察拖垮
+    select: {
+      id: true,
+      mediaId: true,
+      status: true,
+      templateId: true,
+      templateSnapshot: true,
+      attempts: true,
+      progress: true,
+      leaseUntil: true,
+      cancelRequestedAt: true,
+      lastError: true,
+      createdAt: true,
+      startedAt: true,
+      finishedAt: true,
+    },
   });
   const mediaIds = [...new Set(rows.map((r) => r.mediaId))];
   const medias: Array<{ id: string; title: string }> = mediaIds.length
@@ -165,7 +182,9 @@ export interface StopJobResult {
  * 写入均用 CAS（状态未变才生效），与 worker 的完成写竞态时让用户刷新重试。
  */
 export async function stopTranscodeJob(id: string): Promise<StopJobResult> {
-  const row = await db.transcodeJob.findUnique({ where: { id } }).catch(() => null);
+  const row = await db.transcodeJob
+    .findUnique({ where: { id }, select: { status: true, leaseUntil: true, cancelRequestedAt: true } })
+    .catch(() => null);
   if (!row) throw new TranscodeError("not_found", `任务不存在：${id}`, 404);
   const leaseActive = row.leaseUntil ? row.leaseUntil.getTime() > Date.now() : false;
   const state = jobActionState({
@@ -212,7 +231,7 @@ export async function stopTranscodeJob(id: string): Promise<StopJobResult> {
  * cancel_requested_at 必须清空——否则 worker 认领后会立刻再次收到取消。
  */
 export async function restartTranscodeJob(id: string): Promise<{ id: string; status: "QUEUED" }> {
-  const row = await db.transcodeJob.findUnique({ where: { id } }).catch(() => null);
+  const row = await db.transcodeJob.findUnique({ where: { id }, select: { status: true } }).catch(() => null);
   if (!row) throw new TranscodeError("not_found", `任务不存在：${id}`, 404);
   const state = jobActionState({ status: row.status, leaseActive: false });
   if (!state.canRestart) {
@@ -234,6 +253,23 @@ export async function restartTranscodeJob(id: string): Promise<{ id: string; sta
     throw new TranscodeError("bad_request", "任务状态刚刚发生变化，请刷新后重试", 409);
   }
   return { id, status: "QUEUED" };
+}
+
+/**
+ * 任务日志尾部（ADR-0017 修订，2026-11-13）：Worker 每 2s 覆盖写 log_tail 并把 log_seq +1。
+ * 客户端带 after=<上次 seq>；未变化时 tail 为 null（不回传 48KB 文本）。
+ * 日志是诊断数据、非事实源：任务不存在以外的读取失败按空处理（下一次轮询自愈）。
+ */
+export async function getTranscodeJobLogs(
+  id: string,
+  after = 0,
+): Promise<z.infer<typeof TranscodeJobLogsResponse>> {
+  const row = await db.transcodeJob
+    .findUnique({ where: { id }, select: { logSeq: true, logTail: true } })
+    .catch(() => null);
+  if (!row) throw new TranscodeError("not_found", `任务不存在：${id}`, 404);
+  const seq = row.logSeq ?? 0;
+  return { seq, tail: seq > after ? (row.logTail ?? "") : null };
 }
 
 /** 业务错误 → 统一错误信封响应 */

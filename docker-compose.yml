@@ -60,14 +60,15 @@ services:
     image: ${OPENVOD_WORKER_IMAGE:-docker.cnb.cool/arsrna/media/openvod/worker:latest}
     env_file:
       - .env
-    # http 模式（ADR-0017）需要暴露 /wake 门铃端口时自行取消注释：
+    # http / invoked 模式（ADR-0017）需要暴露 /wake 门铃端口时自行取消注释：
     # ports:
     #   - "${WORKER_HTTP_PORT:-9001}:${WORKER_HTTP_PORT:-9001}"
     volumes:
       - ${OPENVOD_WORKER_TMP:-./.run/worker-tmp}:/tmp
+      # invoked 模式请把 WORKER_JOBS_ROOT 指向大磁盘挂载点（CFS / NAS），不要用 /tmp
     healthcheck:
-      # 双模式（与镜像 HEALTHCHECK 一致）：http 探 /healthz；resident 无端口，进程在 = 健康
-      test: ["CMD-SHELL", "if [ \"${WORKER_MODE:-resident}\" = \"http\" ]; then bun -e \"const r = await fetch('http://127.0.0.1:'+(process.env.WORKER_HTTP_PORT||9001)+'/healthz'); process.exit(r.ok?0:1)\"; else kill -0 1; fi"]
+      # 模式感知（与镜像 HEALTHCHECK 一致）：http / invoked 探 /healthz；resident 无端口，进程在 = 健康
+      test: ["CMD-SHELL", "case \"${WORKER_MODE:-resident}\" in http|invoked) bun -e \"const r = await fetch('http://127.0.0.1:'+(process.env.WORKER_HTTP_PORT||9001)+'/healthz'); process.exit(r.ok?0:1)\";; *) kill -0 1;; esac"]
       interval: 30s
       timeout: 5s
       retries: 3

@@ -511,6 +511,26 @@ export const TranscodeJobDTO = z.object({
   finished_at: z.string().nullable(),
 });
 
+/**
+ * 任务日志尾部（管理端「日志」抽屉；ADR-0017 修订）。
+ * Worker 每 2s 覆盖写 `transcode_jobs.log_tail` 并把 `log_seq` +1；客户端带 after=<上次 seq>，
+ * 未变化时 tail 为 null（不回传 48KB 文本）。
+ */
+export const TranscodeJobLogsResponse = z.object({
+  seq: z.number().int(),
+  /** null = 自 after 起无更新，客户端保持现有内容 */
+  tail: z.string().nullable(),
+});
+
+/**
+ * Worker 唤醒请求（admin → worker，http / invoked 共用）。
+ * `job_ids` 只被 invoked 模式消费（定向认领，不扫队列）；http 模式忽略载荷、照常 drain 队列。
+ * admin 在多任务时**逐任务各发一次**（一次唤醒 = 一次异步实例，避免同实例串行被巡检误判）。
+ */
+export const WorkerWakeRequest = z.object({
+  job_ids: z.array(z.string().min(1)).max(TRANSCODE_SUBMIT_MAX_TEMPLATES).optional(),
+});
+
 // ---- 密钥管理（spec.md §4.3；ADR-0006） ----
 // 仅管理端消费：分发端 /key 返回裸字节（octet-stream）、Go 侧不消费任何 DTO，
 // 故本节**不进 gen-json.ts 清单、不生成 Go struct**（同转码模板，ADR-0014）。

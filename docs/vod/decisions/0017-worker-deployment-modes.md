@@ -2,6 +2,7 @@
 
 - 状态：已接受（2026-09-24，用户委托决策）
 - 日期：2026-09-24
+- 修订：2026-11-13 —— 增加第三模式 `invoked`（异步云函数单任务触发）与任务日志尾部通道，见 §6
 - 关联：ADR-0008（转码流水线，本 ADR 修订其「常驻容器」前提）、ADR-0003（部署目标）、ADR-0004（数据库与 ORM）、ADR-0011（部署拓扑）、ADR-0015（环境变量与系统设置边界）、spec.md §5.1
 
 ## 背景
@@ -33,7 +34,7 @@ v1 的 worker 是**常驻进程 + 轮询认领**（ADR-0008），admin 与 worke
   - 可选空闲退出：连续 N 分钟无可认领任务时 graceful exit，加速平台实例缩零；
   - `executor.ts` / `job-store.ts` / `settings.ts` 全部复用，模式只是入口分支。
 
-部署形态映射：`resident` → 自托管 Compose；`http` → serverless 容器平台（任务型 / Web 服务型）。
+部署形态映射：`resident` → 自托管 Compose；`http` → serverless 容器平台（任务型 / Web 服务型）；`invoked` → 异步云函数（见 §6，可选适配，非默认）。
 
 ### 3. admin 通知钩子
 
@@ -58,6 +59,19 @@ P0 边界重申：**转码禁止上「请求-响应型函数」**（SCF / EdgeOn
 - **通知丢失兜底**：任务留存 DB；由平台定时触发器低频拉起实例（如每小时一次，队列空即退），或管理台人工重启（现有 restart 语义覆盖）；
 - **serverless DB 冷启动**：worker 启动时 DB 连接带退避重试（自动暂停恢复需数秒到数十秒），避免被定时器拉起后首连失败退出；
 - **冷启动预期**：worker 镜像含 ffmpeg（体积大），首次唤醒 10~60s 才开跑属正常，需在产品预期上接受。
+
+### 6. 第三模式 `invoked`（异步云函数单任务触发，2026-11-13 修订）
+
+新增依据：确有平台的**异步调用**能同时给到「触发立即返回 + 最长 1 天执行」，即 §4 第 3 条硬门槛（无请求期间实例可继续后台工作）可以满足。但这类平台**没有稳定回连地址、也不适合长连接**，所以既不能沿用队列扫描，也不能用流式响应送日志。定位：**可选适配器**，不改变「服务器部署为主形态」的优先级。
+
+- **入口**：复用 `POST /wake`（Bearer `WORKER_NOTIFY_SECRET`），载荷 `{ job_ids: string[] }`；admin 在发起转码 / 重启成功后把本次任务 id 一并发过去。http 模式忽略载荷、照常扫队列（旧客户端无 body 也兼容）。
+- **认领**：`claimById` 定向 CAS（与 `claim` 同一套条件更新：未终结 + 租约空/过期 → PROBING + attempts+1），**不扫描队列**；平台重投 / 并发唤醒只有一次能抢到。
+- **生命周期**：实例由异步平台管理；建议 `WORKER_IDLE_EXIT_MINUTES=1~5`，任务跑完后主动退出，避免平台按「进程还活着」继续计费。
+- **磁盘（硬要求）**：`WORKER_JOBS_ROOT` 必须指向挂载的文件系统（CFS / NAS）。大内存不等于大磁盘，`/tmp` 通常 512MB，装不下「源片 + 全档产物」峰值——见 ADR-0008 2026-11-13 修订。
+- **日志**：异步触发返回 `{ret_code:200}` 后没有响应通道，日志不走流式响应。Worker 每 2s 把环形尾部（48KB）覆盖写 `transcode_jobs.log_tail` 并把 `log_seq` +1；管理端 `GET /api/admin/jobs/{id}/logs?after=<seq>` 增量拉取，抽屉打开时才轮询（1.5s），关闭即停。日志是诊断数据、非事实源，任务结束仍保留尾部。
+- **失效兜底**：`invoked` 下没有任何进程会重派任务。管理端在任务页观察循环里做**读时巡检**（60s 节流，仅 `worker_mode=invoked` 生效）：租约过期超过 5 分钟、或排队超过 10 分钟未认领 → 置 `FAILED`（「可重启重试」），不改变常驻 / 门铃模式的崩溃重派语义。
+- **并发**：一次唤醒 = 一次异步实例。多模板提交时管理端**逐任务各发一次** `/wake`（载荷只带一个 jobId）——否则整批会在同一实例内串行，后面的任务长时间停在 `QUEUED`，被失效巡检误判。`/wake` 仍接受 `job_ids[]`（手工 / 批量调用兼容），实例内顺序执行；跨实例并发由平台并发上限约束（v1 管理端不做闸门）。
+- **取消**：保留执行期 2s 读取 `cancel_requested_at`（现状），这是唯一需要的读轮询，且只在任务期间发生。
 
 ## 理由
 
@@ -89,3 +103,11 @@ P0 边界重申：**转码禁止上「请求-响应型函数」**（SCF / EdgeOn
 - **admin 通知钩子**（新增 `apps/admin/src/lib/worker-notify.ts`）：`/api/admin/media/{id}/transcode` 与 `/api/admin/jobs/{id}/restart` 成功后 fire-and-forget `POST {WORKER_NOTIFY_URL}/wake`，失败仅告警不阻塞业务；`stop` 不通知（409 语义不依赖通道）。
 - **配置面**：`worker_mode`（明文，枚举 `resident|http`）/`worker_notify_url`（明文 URL）/`worker_notify_secret`（MK 封装，≥16 字符）登记进 `system_settings` 键注册表（ADR-0015 边界：DB > env > 默认），「系统设置 → 任务设置」分组可维护；worker 侧 `WORKER_HTTP_PORT` / `WORKER_IDLE_EXIT_MINUTES` 为纯部署参数，仅 env。
 - **测试**：`apps/worker/test/http-mode.test.ts`（鉴权 401、202、drain 合并、healthz、空密钥拒启、空闲退出）；`apps/admin/test/worker-notify.test.ts`（URL/Bearer 装配、失败不抛、新键校验）。
+
+## 实现记录（2026-11-13，invoked 模式与任务日志）
+
+- **第三模式**（`apps/worker/src/index.ts` / `settings.ts` / `http-mode.ts` / `job-store.ts`）：`WORKER_MODE=invoked` 与 http 共用门铃入口，`/wake` 载荷解析出 `job_ids`（去重、上限 50）后走 `claimById` 定向 CAS；drain 期间到达的 id 进 pending 队列，下一轮继续，不丢唤醒。`WORKER_JOBS_ROOT` 透传 `deps.jobsRoot`（CFS 挂载点）。
+- **唤醒载荷**（`apps/admin/src/lib/worker-notify.ts`）：`POST /wake` 带 `{ job_ids }`；发起转码与重启各自传入本次任务 id。**多个任务时逐任务各发一次**（一次唤醒 = 一次异步实例），http 模式忽略载荷、行为不变（多发几次只是多几轮空 drain）。
+- **日志尾部**（新增 `apps/worker/src/job-log.ts` + `packages/transcode` 的 `onStderrLine`）：worker 阶段日志与 ffmpeg stderr 逐行进环形缓冲（48KB / 单行 2KB 上限），每 2s 有变化才覆盖写；写库失败保持 dirty 下一轮重试。`transcode_jobs.log_tail MEDIUMTEXT` + `log_seq INTEGER`（expand 迁移）。
+- **管理端**：`GET /api/admin/jobs/{id}/logs?after=<seq>`（未变化返回 `tail: null`）+ 任务页「日志」抽屉；`lib/job-watchdog.ts` 读时巡检（仅 invoked、60s 节流、租约过期 5 分钟 / 排队 10 分钟 → FAILED）。
+- **测试**：`apps/worker/test/job-log.test.ts`（有变化才写 / 环形裁剪 / 单行上限 / 失败重试 / stop 收尾）、`http-mode.test.ts` 增补载荷与 pending 合并用例；`worker-notify.test.ts` 增补 JSON 载荷与 `invoked` 枚举。

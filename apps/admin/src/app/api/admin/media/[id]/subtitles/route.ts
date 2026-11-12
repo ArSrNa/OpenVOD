@@ -7,7 +7,7 @@
 //         → 落 media_subtitles（status=READY）→ 审计 subtitle.create
 // 说明：语言与校验失败原因直接回显（400）；同媒资同语言 409；媒资未入库 404。
 import { NextRequest, NextResponse } from "next/server";
-import { apiJson, auditAction, getAdminSession, unauthorized } from "@/lib/api";
+import { apiError, apiJson, auditAction, getAdminSession, unauthorized } from "@/lib/api";
 import {
   createSubtitle,
   defaultSubtitleDeps,
@@ -34,10 +34,7 @@ export async function POST(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
   const session = await getAdminSession(req);
   if (!session) return unauthorized();
   if (!req.body) {
-    return NextResponse.json(
-      { error: { code: "bad_request", message: "请求体为空（应携带 .vtt 字幕文件字节流）" } },
-      { status: 400 },
-    );
+    return apiError("bad_request", "请求体为空（应携带 .vtt 字幕文件字节流）", 400);
   }
   const params = req.nextUrl.searchParams;
   const isDefaultRaw = (params.get("is_default") ?? "").trim().toLowerCase();

@@ -8,7 +8,7 @@
 // 探测失败只告警（可手动「生成元数据」重跑），前端按递增间隔轮询详情直至 probe 就绪（lib/metadata-poll.ts）。
 // 大文件 S3 分片直传（presignPut multipart）留待后续（ADR-0005 上传路径演进）。
 import { after, NextRequest, NextResponse } from "next/server";
-import { apiJson, auditAction, getAdminSession, unauthorized } from "@/lib/api";
+import { apiError, apiJson, auditAction, getAdminSession, unauthorized } from "@/lib/api";
 import { mediaErrorResponse, uploadOriginal } from "@/lib/media";
 import { tryGenerateMetadata } from "@/lib/probe";
 
@@ -19,17 +19,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const session = await getAdminSession(req);
   if (!session) return unauthorized();
   if (!req.body) {
-    return NextResponse.json(
-      { error: { code: "bad_request", message: "请求体为空（应携带原始文件字节流）" } },
-      { status: 400 },
-    );
+    return apiError("bad_request", "请求体为空（应携带原始文件字节流）", 400);
   }
   const filename = req.nextUrl.searchParams.get("filename") ?? "";
   if (!filename) {
-    return NextResponse.json(
-      { error: { code: "bad_request", message: "缺少 filename 查询参数" } },
-      { status: 400 },
-    );
+    return apiError("bad_request", "缺少 filename 查询参数", 400);
   }
   try {
     const result = await uploadOriginal({

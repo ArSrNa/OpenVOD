@@ -6,5 +6,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   const db = await dbHealth();
-  return Response.json({ ok: true, db }, { status: 200 });
+  // 探活结果随时会变，且 next.config.ts 的 headers() 已覆盖 /healthz（这里显式写一遍，
+  // 避免日后调整 headers() 规则时探活被中间层缓存）
+  return Response.json({ ok: true, db }, { status: 200, headers: { "Cache-Control": "no-store" } });
 }

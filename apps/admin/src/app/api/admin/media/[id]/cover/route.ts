@@ -5,7 +5,7 @@
 // S3 预签名 GET 302 重定向（字节不经管理端，同 original/route.ts）。
 // 管理端私有内容：no-store，仅供 better-auth 会话（img 标签同源自动带 Cookie）。
 import { NextRequest, NextResponse } from "next/server";
-import { apiJson, auditAction, getAdminSession, unauthorized } from "@/lib/api";
+import { apiError, apiJson, auditAction, getAdminSession, unauthorized } from "@/lib/api";
 import { mediaErrorResponse, resolvePosterKey, uploadCover } from "@/lib/media";
 import { getStorage } from "@/lib/storage";
 
@@ -22,10 +22,7 @@ export async function GET(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
     const { id } = await ctx.params;
     const key = await resolvePosterKey(id);
     if (!key) {
-      return NextResponse.json(
-        { error: { code: "not_found", message: "该媒资尚未设置封面" } },
-        { status: 404 },
-      );
+      return apiError("not_found", "该媒资尚未设置封面", 404);
     }
     const url = await (await getStorage()).presignGet(key, PRESIGN_TTL_SEC);
     return NextResponse.redirect(url, {
@@ -41,17 +38,11 @@ export async function POST(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
   const session = await getAdminSession(req);
   if (!session) return unauthorized();
   if (!req.body) {
-    return NextResponse.json(
-      { error: { code: "bad_request", message: "请求体为空（应携带图片字节流）" } },
-      { status: 400 },
-    );
+    return apiError("bad_request", "请求体为空（应携带图片字节流）", 400);
   }
   const filename = req.nextUrl.searchParams.get("filename") ?? "";
   if (!filename) {
-    return NextResponse.json(
-      { error: { code: "bad_request", message: "缺少 filename 查询参数" } },
-      { status: 400 },
-    );
+    return apiError("bad_request", "缺少 filename 查询参数", 400);
   }
   try {
     const { id } = await ctx.params;

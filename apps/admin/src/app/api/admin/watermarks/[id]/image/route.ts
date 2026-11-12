@@ -3,7 +3,7 @@
 // GET：图片预览（列表缩略图 / 表单预览）—— S3 预签名 GET 302（字节不经管理端，同 cover 语义）；
 // 文字型模板或图片未上传 → 404。
 import { NextRequest, NextResponse } from "next/server";
-import { apiJson, auditAction, getAdminSession, unauthorized } from "@/lib/api";
+import { apiError, apiJson, auditAction, getAdminSession, unauthorized } from "@/lib/api";
 import { getStorage } from "@/lib/storage";
 import {
   resolveWatermarkImageKey,
@@ -25,10 +25,7 @@ export async function GET(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
     const { id } = await ctx.params;
     const key = await resolveWatermarkImageKey(id);
     if (!key) {
-      return NextResponse.json(
-        { error: { code: "not_found", message: "该水印模板没有图片资产" } },
-        { status: 404 },
-      );
+      return apiError("not_found", "该水印模板没有图片资产", 404);
     }
     const url = await (await getStorage()).presignGet(key, PRESIGN_TTL_SEC);
     return NextResponse.redirect(url, {
@@ -44,20 +41,14 @@ export async function PUT(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
   const session = await getAdminSession(req);
   if (!session) return unauthorized();
   if (!req.body) {
-    return NextResponse.json(
-      { error: { code: "bad_request", message: "请求体为空（应携带图片字节流）" } },
-      { status: 400 },
-    );
+    return apiError("bad_request", "请求体为空（应携带图片字节流）", 400);
   }
   try {
     const { id } = await ctx.params;
     // ≤2 MiB 上限内读入内存（魔数识别 + ffprobe 探测都需要完整字节）
     const bytes = new Uint8Array(await req.arrayBuffer());
     if (bytes.length > MAX_BYTES) {
-      return NextResponse.json(
-        { error: { code: "bad_request", message: "水印图片超过 2 MiB 上限" } },
-        { status: 400 },
-      );
+      return apiError("bad_request", "水印图片超过 2 MiB 上限", 400);
     }
     const item = await uploadWatermarkImage(id, bytes);
     await auditAction(req, session, "watermark.image_upload", id, {

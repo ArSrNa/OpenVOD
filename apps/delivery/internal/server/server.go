@@ -351,7 +351,7 @@ func (a *api) handlePlay(w http.ResponseWriter, r *http.Request) {
 	manifestURL := fmt.Sprintf("%s/v1/media/%s/manifest/master.m3u8?t=%s&tpl=%s",
 		a.publicBase(ctx), url.PathEscape(mediaID), url.QueryEscape(tok), url.QueryEscape(tpl))
 
-	subtitles, err := a.signSubtitleURLs(ctx, mediaID, sid, now, expiresAt)
+	subtitles, err := a.signSubtitleURLs(ctx, mediaID, now)
 	if err != nil {
 		a.o.Logger.Error("签发字幕凭证失败", "err", err, "media_id", mediaID)
 		writeError(w, http.StatusInternalServerError, contracts.Internal, "签发播放凭证失败")
@@ -433,15 +433,15 @@ func buildPlaybackTemplates(candidates []string, refs map[string]store.TemplateR
 /**
  * signSubtitleURLs 随 play 下发字幕轨道与签名 URL（spec.md §7.5）。
  *
- * 为什么字幕 URL 必须由 play 签发：字幕鉴权走 URL query token（Safari 原生 HLS 无法带请求头，
- * ADR-0006），而 token 必须绑定 `sid` 才可吊销 —— 只有会话上下文能签发。
- * 每条轨道共用同一枚 typ=v token（token 绑定 mid + sid，不绑定轨道），减少签名开销；
- * exp = min(now + PLAYBACK_SUBTITLE_TTL_SEC, 会话 exp)。
+ * 共享 token 形态（ADR-0009 2026-11-13 修订）：token 不绑会话（sid 省略），
+ * exp 取 PLAYBACK_SUBTITLE_TTL_SEC 的**窗口对齐**值（当前窗口末端，见 subtitleSharedExp）——
+ * 同一窗口内任意一次 play 产出**逐字相同**的 URL（跨会话 / 跨用户一致），CDN 缓存键因此稳定；
+ * URL 携带字幕内容版本 `?v=`（覆盖文本时 +1），版本变 = URL 变 → 缓存键隔离。
+ * 会话吊销不再即时收回字幕 URL，收敛依赖版本推进 + TTL 窗口：字幕是低敏公开文本，
+ * 分片 / 密钥仍逐会话签发（P0 纪律不动）。
  * 查询失败不致命：返回空列表（字幕是附加能力，不应让播放失败）。
  */
-func (a *api) signSubtitleURLs(
-	ctx context.Context, mediaID, sid string, now, sessionExp time.Time,
-) ([]contracts.PlaybackSubtitle, error) {
+func (a *api) signSubtitleURLs(ctx context.Context, mediaID string, now time.Time) ([]contracts.PlaybackSubtitle, error) {
 	rows, err := a.o.DB.ReadySubtitles(ctx, mediaID)
 	if err != nil {
 		a.o.Logger.Warn("查询字幕轨道失败", "err", err, "media_id", mediaID)
@@ -451,11 +451,8 @@ func (a *api) signSubtitleURLs(
 	if len(rows) == 0 {
 		return out, nil
 	}
-	exp := now.Add(time.Duration(a.o.Cfg.SubtitleTTLSec) * time.Second)
-	if exp.After(sessionExp) {
-		exp = sessionExp
-	}
-	tok, err := a.signToken(token.TypeSubtitle, mediaID, sid, exp)
+	exp := subtitleSharedExp(now, a.o.Cfg.SubtitleTTLSec)
+	tok, err := a.signToken(token.TypeSubtitle, mediaID, "", exp)
 	if err != nil {
 		return nil, err
 	}
@@ -465,12 +462,41 @@ func (a *api) signSubtitleURLs(
 			Lang:      rows[i].Lang,
 			Label:     rows[i].Label,
 			IsDefault: rows[i].IsDefault,
-			URL: fmt.Sprintf("%s/v1/media/%s/subtitles/%s.vtt?t=%s",
+			URL: fmt.Sprintf("%s/v1/media/%s/subtitles/%s.vtt?v=%d&t=%s",
 				a.publicBase(ctx), url.PathEscape(mediaID),
-				url.PathEscape(rows[i].ID), url.QueryEscape(tok)),
+				url.PathEscape(rows[i].ID), rows[i].ContentVersion, url.QueryEscape(tok)),
 		})
 	}
 	return out, nil
+}
+
+/**
+ * subtitleSharedExp 共享字幕 token 的窗口对齐 exp（纯函数，便于单测；ADR-0009 2026-11-13 修订）：
+ *   exp = now 向下对齐到 TTL 窗口起点 + 一个窗口（= 当前窗口末端）
+ * 恒有 exp > now（不会签出已过期 token）；同一窗口内任意时刻签发的 exp 逐字相同，
+ * token 与 URL 因此跨会话稳定 —— 这是 CDN 缓存命中的前提（形态同 ADR-0005 TypeA 的
+ * 缓存友好窗口对齐 / ADR-0019 url-sign 的 window_alignment）。
+ */
+func subtitleSharedExp(now time.Time, ttlSec int) time.Time {
+	if ttlSec <= 0 {
+		ttlSec = 1
+	}
+	window := time.Duration(ttlSec) * time.Second
+	return now.Truncate(window).Add(window)
+}
+
+/**
+ * subtitleCacheControl 字幕响应的缓存策略（纯函数，便于单测；ADR-0009 2026-11-13 修订）：
+ *   - 共享 token（URL 跨会话稳定）→ `public, max-age=<N>`（可进 CDN / 浏览器缓存）；
+ *   - 会话 token（URL 含逐会话 sid）→ `no-store`（缓存无意义且扩大暴露面）；
+ *   - maxAgeSec <= 0 = 显式关闭缓存（回退 no-store）。
+ * 错误响应不经过本函数，恒由 noStoreResponses 兜底 no-store。
+ */
+func subtitleCacheControl(shared bool, maxAgeSec int) string {
+	if !shared || maxAgeSec <= 0 {
+		return "no-store"
+	}
+	return fmt.Sprintf("public, max-age=%d", maxAgeSec)
 }
 
 /**
@@ -710,13 +736,18 @@ func (a *api) handleKey(w http.ResponseWriter, r *http.Request) {
  *
  * 校验顺序（顺序即安全边界）：
  *   1. trackId 形状白名单（路由层，防路径注入）→ 不符 404；
- *   2. token(v) + mid 绑定 + 会话未过期未吊销 → 未带 / 非法 / 已吊销 403（P0 门禁 assert-unsigned-403）；
+ *   2. token(v) + mid 绑定；共享 token（sid 省略）到此为止，会话 token 再查会话未吊销未过期
+ *      → 未带 / 非法 / 已吊销 403（P0 门禁 assert-unsigned-403）；
  *   3. DB 轨道（id + media_id + status=READY）→ 不存在 404；
- *   4. 按行内 storage_key 读对象（不按 URL 拼键，键可迁移）→ 缺失 404。
+ *   4. 内容版本校验：URL `?v=` 必须等于当前 content_version（共享 token 强制携带，
+ *      会话 token 携带时校验）→ 不符 403（版本过期的旧 URL 立即失效，spec.md §7.5）；
+ *   5. 按行内 storage_key 读对象（不按 URL 拼键，键可迁移）→ 缺失 404。
  *
  * 输出：两种驱动都由分发端代理输出。s3 若改走预签名 302，对象响应头（Cache-Control）
- * 与跨域策略都不受分发端控制 —— 而 `no-store` 是字幕「编辑后就地覆盖、下一次请求即生效」
- * 与 P0 缓存纪律的前提。字幕 ≤5 MiB（管理端上限），低于 P0 的 6MB 响应体约束。
+ * 与跨域策略都不受分发端控制。字幕 ≤5 MiB（管理端上限），低于 P0 的 6MB 响应体约束。
+ * 缓存策略见 subtitleCacheControl：共享 token 可缓存（max-age，ADR-0009 2026-11-13 修订），
+ * 会话 token 沿用 no-store；覆盖文本后旧 ?v= URL 在缓存 TTL 内可能返回旧文本
+ * （上限 = max-age，默认 600s）——需要立即生效以新 URL 重签（play / refresh）。
  */
 func (a *api) handleSubtitle(w http.ResponseWriter, r *http.Request) {
 	mediaID := chi.URLParam(r, "id")
@@ -725,7 +756,8 @@ func (a *api) handleSubtitle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, contracts.NotFound, "字幕轨道不存在")
 		return
 	}
-	if _, ok := a.authorize(w, r, token.TypeSubtitle, mediaID); !ok {
+	p, ok := a.authorize(w, r, token.TypeSubtitle, mediaID)
+	if !ok {
 		return
 	}
 	ctx := r.Context()
@@ -739,13 +771,25 @@ func (a *api) handleSubtitle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, contracts.Internal, "查询字幕失败")
 		return
 	}
+	// 内容版本校验（ADR-0009 2026-11-13 修订）：共享 URL 的缓存键含 ?v=，
+	// 版本不符 → 旧地址立即 403，播放端经重签（play / refresh）拿到新版本地址
+	if vRaw := r.URL.Query().Get("v"); vRaw == "" && p.Sid == "" {
+		writeError(w, http.StatusForbidden, contracts.BadToken, "共享 token 必须携带字幕内容版本参数 v")
+		return
+	} else if vRaw != "" {
+		if v, err := strconv.Atoi(vRaw); err != nil || v != row.ContentVersion {
+			writeError(w, http.StatusForbidden, contracts.BadToken, "字幕内容版本已更新，请重新播放获取新地址")
+			return
+		}
+	}
 	body, err := a.o.Blob.Get(ctx, row.StorageKey)
 	if err != nil {
 		writeError(w, http.StatusNotFound, contracts.NotFound, "字幕文件不存在（可能已被清理）")
 		return
 	}
 	w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store") // 与清单 / 密钥同纪律（ADR-0006 §5）
+	// 共享 token 的 URL 跨会话稳定 → 可缓存；会话 token 沿用 no-store（ADR-0006 §5 原纪律）
+	w.Header().Set("Cache-Control", subtitleCacheControl(p.Sid == "", a.o.Cfg.SubtitleCacheMaxAgeSec))
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
@@ -757,7 +801,8 @@ func (a *api) handleSubtitle(w http.ResponseWriter, r *http.Request) {
  * authorize 校验播放 token 与会话：
  *   - token：query `t` 优先，其次 header X-Playback-Token（用户诉求；Safari 原生只能走 query）
  *   - typ / mid 绑定（防跨媒资与跨用途重放，ADR-0006 §4）
- *   - 会话：未撤销且未过期（≤60s 收敛；v1 每请求查库）
+ *   - 会话：未撤销且未过期（≤60s 收敛；v1 每请求查库）——仅对绑 sid 的 token；
+ *     共享 token（sid 省略）不查会话，且仅限 typ=v 字幕（ADR-0009 2026-11-13 修订）
  */
 func (a *api) authorize(w http.ResponseWriter, r *http.Request, typ, mediaID string) (token.Payload, bool) {
 	raw := r.URL.Query().Get("t")
@@ -772,6 +817,15 @@ func (a *api) authorize(w http.ResponseWriter, r *http.Request, typ, mediaID str
 	if err != nil {
 		writeError(w, http.StatusForbidden, contracts.BadToken, err.Error())
 		return token.Payload{}, false
+	}
+	// 共享 token（sid 省略，ADR-0009 2026-11-13 修订）：不绑会话，验签即信任（typ+mid+exp），
+	// 仅限 typ=v 字幕 —— URL 跨会话稳定是 CDN 缓存的前提，吊销收敛于版本推进 + TTL 窗口。
+	if p.Sid == "" {
+		if typ != token.TypeSubtitle {
+			writeError(w, http.StatusForbidden, contracts.BadToken, "共享 token 仅限字幕资源")
+			return token.Payload{}, false
+		}
+		return p, true
 	}
 	alive, err := a.o.DB.SessionAlive(r.Context(), p.Sid, mediaID, a.o.Now())
 	if err != nil {

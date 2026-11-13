@@ -1,0 +1,48 @@
+# 仓库镜像：CNB → GitHub（https://github.com/ArSrNa/OpenVOD）
+#
+# 本文件自带 `main:` / `demo:` 的 push 流水线，由 .cnb.yml 顶层 include 合并进去。
+# 锚点必须和别名写在**同一个文件**里：CNB 的 include 是文本级合并，不支持跨文件 YAML 锚点
+# （写成 `.cnb.yml` 里 `<<: *sync-github` 会在解析阶段报 `unidentified alias`）。
+#
+# 触发范围：main / demo 任一分支 push → 强制同步**触发它的那条分支**到 GitHub 同名分支。
+# 不镜像其它分支和 tag：从 main 触发的运行若顺手同步 demo，会把 demo 的旧提交反向覆盖回去。
+
+# 凭据来自密钥仓库 git.yaml（GIT_ACCESS_TOKEN / GIT_USERNAME），只在推送这一步注入，
+# 不放到 Pipeline 级，免得同一次 push 里其它 job 的环境变量表也带上令牌。
+.sync-github: &sync-github
+  name: 同步到 GitHub（ArSrNa/OpenVOD）
+  # 推远端要写代码，用带 git 的仓库开发镜像，不能用 tag_push 那种纯 docker runner
+  docker:
+    image: docker.cnb.cool/arsrna/media/openvod/dev:latest
+  stages:
+    - name: 强制推送到 GitHub
+      imports:
+        - https://cnb.cool/arsrna/env/-/blob/main/git.yaml # GIT_USERNAME / GIT_ACCESS_TOKEN
+      script: |
+        set -e
+        : "${GIT_USERNAME:?密钥仓库 git.yaml 未提供 GIT_USERNAME}"
+        : "${GIT_ACCESS_TOKEN:?密钥仓库 git.yaml 未提供 GIT_ACCESS_TOKEN}"
+
+        git config --global user.name "$GIT_USERNAME"
+        git config --global user.email "${GIT_USERNAME}@users.noreply.github.com"
+
+        # 凭据只走 -c 的进程级 helper：不写进检出目录里那份会持久缓存的 .git/config。
+        # 第一条 `-c credential.helper=` 是清空原有列表（空值即重置），冲掉检出时写好的 CNB helper
+        # —— 不清的话 git 可能拿 CNB 的令牌去连 GitHub。第二条才从密钥仓库变量取值。
+        HELPER="!f() { echo username=\"$GIT_USERNAME\"; echo password=\"$GIT_ACCESS_TOKEN\"; }; f"
+
+        # --no-verify：跳过 LFS 的 pre-push 钩子（videos/mv.mp4 走 LFS）。
+        # 这里推的是提交对象，LFS 文件由 GitHub 按 pointer 自行拉取，不经过本次推送；
+        # 钩子留着反而会因构建机缺 LFS 对象或配额直接失败。
+        git -c credential.helper= -c credential.helper="$HELPER" \
+          push --force --no-verify https://github.com/ArSrNa/OpenVOD.git "HEAD:refs/heads/$CNB_BRANCH"
+
+        echo "已强制同步：$CNB_BRANCH → https://github.com/ArSrNa/OpenVOD"
+
+main:
+  push:
+    - <<: *sync-github
+
+demo:
+  push:
+    - <<: *sync-github

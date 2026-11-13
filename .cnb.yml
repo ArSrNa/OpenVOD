@@ -1,3 +1,8 @@
+# 仓库镜像（CNB → GitHub）的同步定义连同 `main:` / `demo:` 的 push 条目都在 .cnb/sync-github.yml，
+# 这里只 include：include 是文本级合并，锚点不能跨文件，所以引用必须留在被 include 的文件内。
+include:
+  - ./.cnb/sync-github.yml
+
 .devenv: &devenv
   docker:
     # build: .ide/Dockerfile
@@ -370,6 +375,10 @@ main:
             pattern: packages/player-sdk/coverage/lcov.info
             allowExts: ".ts"
             breakIfNoCoverage: true
+    # 每次 push 到 main 顺带强制同步到 GitHub 同名分支：那条 pipeline 在 .cnb/sync-github.yml 里，
+    # 由 include 合并到本文件的 `main.push`（和上一条是两条独立 pipeline）。
 
   auto_tag:
     - <<: *auto-tag
+
+# demo 分支的 push 同步也在 .cnb/sync-github.yml（见上）。

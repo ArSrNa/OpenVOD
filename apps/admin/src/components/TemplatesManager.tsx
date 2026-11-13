@@ -317,6 +317,7 @@ export function TemplatesManager() {
     }
   };
 
+  // 列宽合计 = 横向滚动阈值：窄屏下横向滚动，各列保持设定宽度不被挤成竖排（spec.md §3.0）
   const columns: ColumnsType<TemplateItem> = [
     {
       title: "模板名",
@@ -359,6 +360,7 @@ export function TemplatesManager() {
     {
       title: "参数",
       dataIndex: "params",
+      width: 360,
       render: (p: TemplateParams | null, row) =>
         row.keep_original ? (
           <Typography.Text type="secondary">源参数直出（仅封装 + 可选加密）</Typography.Text>
@@ -377,9 +379,10 @@ export function TemplatesManager() {
     {
       title: "更新时间",
       dataIndex: "updated_at",
-      width: 160,
+      width: 170,
+      ellipsis: true,
       render: (v: string) => (
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
           {formatTime(v)}
         </Typography.Text>
       ),
@@ -425,7 +428,7 @@ export function TemplatesManager() {
           loading={loading}
           pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 个模板` }}
           size="middle"
-          scroll={{ x: 1080, y: bodyHeight }}
+          scroll={{ x: 1440, y: bodyHeight }}
           locale={{ emptyText: <Empty description="暂无模板，点击「新建模板」创建" /> }}
         />
       </div>

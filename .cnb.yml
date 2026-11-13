@@ -348,9 +348,28 @@ $:
     # 独立 job 便于 SDK 发布失败时单独重试（或用「发布播放器SDK」按钮补发），不影响镜像推送。
     - <<: *publish-sdk
 
-# 默认分支名下的 auto_tag（CNB 按**分支名**匹配 auto_tag 的流水线配置，`$` 兜底会被忽略）。
-# 生效链路：Tag 列表页「自动生成 Tag」→ 本任务读根 package.json 的 version → 打同名 tag →
+# 默认分支名下的配置（CNB 按**分支名**匹配 auto_tag 的流水线配置，`$` 兜底会被忽略）。
+# auto_tag 生效链路：Tag 列表页「自动生成 Tag」→ 本任务读根 package.json 的 version → 打同名 tag →
 # 触发 tag_push（四镜像 + 播放器 SDK 发布；SDK 侧还会校验 tag 名与该 version 一致，不一致拒绝发布）。
 main:
+  # 默认触发（每次 push 到 main）跑播放器 SDK 单测并上报覆盖率——README 顶部「单测覆盖率」徽章的取数来源。
+  # tag_push 只在发版时跑，缺了这条徽章会一直是 unknown。
+  # 不加 key：与 *publish-sdk 保持同一个默认覆盖率数据（指定 key 会改写 meta，徽章读不到）。
+  # 只在 main 生效，不卡 PR；覆盖率红线不设，避免 SDK 覆盖率波动阻断无关提交。
+  push:
+    - name: 单测与覆盖率上报
+      docker:
+        image: docker.cnb.cool/arsrna/media/openvod/dev:latest
+      stages:
+        - <<: *install
+        - name: 单测与覆盖率
+          script: bun run --cwd packages/player-sdk test:coverage
+        - name: 覆盖率上报（CNB 洞察 / 徽章）
+          type: testing:coverage
+          options:
+            pattern: packages/player-sdk/coverage/lcov.info
+            allowExts: ".ts"
+            breakIfNoCoverage: true
+
   auto_tag:
     - <<: *auto-tag

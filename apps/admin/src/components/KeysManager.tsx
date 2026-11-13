@@ -247,6 +247,18 @@ export function KeysManager() {
 
   const pendingCount = mk ? mk.versions.filter((v) => v.ver !== mk.active_ver).reduce((a, v) => a + v.keys, 0) : 0;
 
+  // 「轮换 MK」只做一件事：把旧版本封装的 CEK 收敛到当前版本。
+  // 因此没有旧版本密钥时无可执行对象——把原因说清楚，避免按钮灰着让人以为坏了。
+  const rotateDisabledReason = !mk
+    ? mkError
+      ? "MASTER_KEYS 不可用，无法轮换"
+      : "MK 状态读取中"
+    : pendingCount === 0
+      ? mk.total_keys === 0
+        ? "暂无密钥，无需轮换"
+        : `全部密钥已封装在当前版本 v${mk.active_ver}，无需轮换`
+      : null;
+
   const columns: ColumnsType<KeyItem> = [
     { title: "媒资 ID", dataIndex: "media_id", width: 120 },
     {
@@ -371,7 +383,7 @@ export function KeysManager() {
             description={
               pendingCount > 0
                 ? `有 ${pendingCount} 条密钥仍封装在旧版本下，执行「轮换 MK」后即可收敛（不需要重转码，因此不会打断播放）。`
-                : "所有密钥均封装在当前版本下，无需轮换。"
+                : "所有密钥均封装在当前版本下，无需轮换。要换用新 MK，需先在 MASTER_KEYS 追加新版本（保留旧版本）并重启管理端。"
             }
           />
         )
@@ -381,21 +393,33 @@ export function KeysManager() {
         <Button icon={<ReloadOutlined />} onClick={() => void reload()} loading={loading}>
           刷新
         </Button>
-        <Popconfirm
-          title="轮换主密钥（MK）"
-          description="将旧版本封装的全部 CEK 重新封装到当前版本，不重转码。轮换前请确认 MASTER_KEYS 已保留旧版本。"
-          onConfirm={() => void rotate()}
-          disabled={!mk || pendingCount === 0}
-        >
-          <Button
-            type="primary"
-            icon={<SyncOutlined />}
-            loading={rotating}
-            disabled={!mk || pendingCount === 0}
+        {rotateDisabledReason ? (
+          <Tooltip
+            title={
+              <>
+                {rotateDisabledReason}
+                <br />
+                要换用新 MK：在 MASTER_KEYS 追加新版本号（保留旧版本），重启管理端后本按钮即可用。
+              </>
+            }
           >
-            轮换 MK
-          </Button>
-        </Popconfirm>
+            <span style={{ display: "inline-block" }}>
+              <Button type="primary" icon={<SyncOutlined />} disabled style={{ pointerEvents: "none" }}>
+                轮换 MK
+              </Button>
+            </span>
+          </Tooltip>
+        ) : (
+          <Popconfirm
+            title="轮换主密钥（MK）"
+            description="将旧版本封装的全部 CEK 重新封装到当前版本，不重转码。轮换前请确认 MASTER_KEYS 已保留旧版本。"
+            onConfirm={() => void rotate()}
+          >
+            <Button type="primary" icon={<SyncOutlined />} loading={rotating}>
+              轮换 MK
+            </Button>
+          </Popconfirm>
+        )}
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           每媒资一份独立密钥，明文密钥仅由分发端鉴权后下发。
         </Typography.Text>

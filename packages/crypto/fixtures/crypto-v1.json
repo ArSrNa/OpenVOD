@@ -17,6 +17,17 @@
     },
     "token": "eyJ2ZXIiOjEsInR5cCI6ImsiLCJtaWQiOiJtZWRpYV90ZXN0XzAxIiwic2lkIjoic2Vzc190ZXN0XzAxIiwiZXhwIjoxODkzNDU2MDAwLCJraWQiOiJrX3Rlc3RfMDEifQ.4621Fbg6g0AQ4Mk0tpnvSSGU0oYEvLYJcuUnnkI2sTs"
   },
+  "token_shared": {
+    "key_hex": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "payload": {
+      "ver": 1,
+      "typ": "v",
+      "mid": "media_test_01",
+      "exp": 1893456000,
+      "kid": "k_test_01"
+    },
+    "token": "eyJ2ZXIiOjEsInR5cCI6InYiLCJtaWQiOiJtZWRpYV90ZXN0XzAxIiwiZXhwIjoxODkzNDU2MDAwLCJraWQiOiJrX3Rlc3RfMDEifQ.a7I5EHuLS0qgMO6xedF-cIcFQOcA58bCER9jv_om46E"
+  },
   "typea": {
     "key": "typea_test_key",
     "uri": "/hls/media_test_01/720p/seg-0.ts",

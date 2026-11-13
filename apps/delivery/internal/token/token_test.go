@@ -18,10 +18,15 @@ type fixture struct {
 		WrappedHex   string `json:"wrapped_hex"`
 	} `json:"wrap"`
 	Token struct {
-		KeyHex  string `json:"key_hex"`
+		KeyHex  string  `json:"key_hex"`
 		Payload Payload `json:"payload"`
-		Token   string `json:"token"`
+		Token   string  `json:"token"`
 	} `json:"token"`
+	TokenShared struct {
+		KeyHex  string  `json:"key_hex"`
+		Payload Payload `json:"payload"`
+		Token   string  `json:"token"`
+	} `json:"token_shared"`
 	TypeA struct {
 		Key       string `json:"key"`
 		URI       string `json:"uri"`
@@ -59,12 +64,40 @@ func TestTokenSignMatchesFixture(t *testing.T) {
 	}
 }
 
+// TestTokenSharedFormMatchesFixture 共享 token（sid 省略）互通（ADR-0009 2026-11-13 修订）：
+// 序列化必须为字段整体缺失（非空串）——与 TS JSON.stringify 丢弃 undefined 逐字一致。
+func TestTokenSharedFormMatchesFixture(t *testing.T) {
+	fx := loadFixture(t)
+	if fx.TokenShared.Payload.Sid != "" {
+		t.Fatalf("共享 token 的 Sid 应为空，got %q", fx.TokenShared.Payload.Sid)
+	}
+	got, err := Sign(fx.TokenShared.Payload, mustHex(t, fx.TokenShared.KeyHex))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != fx.TokenShared.Token {
+		t.Fatalf("TS/Go 共享 token 漂移：\n got=%s\nwant=%s", got, fx.TokenShared.Token)
+	}
+	keys := []SigningKey{{Kid: fx.TokenShared.Payload.Kid, Key: mustHex(t, fx.TokenShared.KeyHex)}}
+	p, err := Verify(fx.TokenShared.Token, keys, VerifyOptions{
+		Typ:    TypeSubtitle,
+		Mid:    fx.TokenShared.Payload.Mid,
+		NowSec: fx.TokenShared.Payload.Exp - 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Sid != "" {
+		t.Fatalf("验签后 Sid = %q, want 空", p.Sid)
+	}
+}
+
 func TestTokenVerify(t *testing.T) {
 	fx := loadFixture(t)
 	keys := []SigningKey{{Kid: fx.Token.Payload.Kid, Key: mustHex(t, fx.Token.KeyHex)}}
 	p, err := Verify(fx.Token.Token, keys, VerifyOptions{
-		Typ:   TypeKey,
-		Mid:   fx.Token.Payload.Mid,
+		Typ:    TypeKey,
+		Mid:    fx.Token.Payload.Mid,
 		NowSec: fx.Token.Payload.Exp - 1,
 	})
 	if err != nil {

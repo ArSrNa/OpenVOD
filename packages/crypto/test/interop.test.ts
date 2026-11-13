@@ -33,6 +33,19 @@ describe("crypto 互通向量", () => {
     expect(got.sid).toBe(fx.token.payload.sid);
   });
 
+  it.skipIf(!existsSync(fixturePath))("共享 token（sid 省略）与 fixtures 一致", () => {
+    const fx = JSON.parse(readFileSync(fixturePath, "utf8"));
+    const key = Buffer.from(fx.token_shared.key_hex, "hex");
+    // 序列化必须为字段整体缺失（非空串）——与 Go omitempty 逐字一致（ADR-0009）
+    expect(signToken(fx.token_shared.payload, key)).toBe(fx.token_shared.token);
+    const got = verifyToken(fx.token_shared.token, [{ kid: fx.token_shared.payload.kid, key }], {
+      typ: fx.token_shared.payload.typ,
+      mid: fx.token_shared.payload.mid,
+      nowSec: fx.token_shared.payload.exp - 1,
+    });
+    expect(got.sid).toBeUndefined();
+  });
+
   it.skipIf(!existsSync(fixturePath))("TypeA hash 与 fixtures 一致", () => {
     const fx = JSON.parse(readFileSync(fixturePath, "utf8"));
     expect(typeAHash(fx.typea.uri, fx.typea.timestamp, fx.typea.rand, fx.typea.uid, fx.typea.key)).toBe(

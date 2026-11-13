@@ -1,6 +1,12 @@
-# TODO
-
 # OpenVOD
+
+[![push 构建](https://cnb.cool/arsrna/media/openvod/-/badge/git/latest/ci/status/push?branch=main)](https://cnb.cool/arsrna/media/openvod/-/pipeline)
+[![tag_push 发版](https://cnb.cool/arsrna/media/openvod/-/badge/git/latest/ci/status/tag_push)](https://cnb.cool/arsrna/media/openvod/-/pipeline)
+[![单测覆盖率](https://cnb.cool/arsrna/media/openvod/-/badge/git/latest/testing/unit/coverage)](https://cnb.cool/arsrna/media/openvod/-/insight)
+[![npm](https://img.shields.io/npm/v/openvod-jssdk?label=openvod-jssdk)](https://www.npmjs.com/package/openvod-jssdk)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
+[![Stars](https://cnb.cool/arsrna/media/openvod/-/badge/star)](https://cnb.cool/arsrna/media/openvod)
+[![Forks](https://cnb.cool/arsrna/media/openvod/-/badge/fork)](https://cnb.cool/arsrna/media/openvod)
 
 ![](images/index.png)
 

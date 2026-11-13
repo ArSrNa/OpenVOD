@@ -47,8 +47,10 @@
 
 ### 0.3 其它通用纪律
 
-- **缓存**：管理端 `apiJson` / `apiError` 一律附 `Cache-Control: no-store`；分发端 m3u8 / 密钥 / 字幕三类响应
-  必须 `no-store`（P0 纪律，CI 门禁 `assert-unsigned-403` / `assert-no-store`）。JSON 响应（healthz / login / media / play）不设 `Cache-Control`。
+- **缓存**：管理端 `apiJson` / `apiError` 一律附 `Cache-Control: no-store`；分发端 m3u8 / 密钥响应
+  必须 `no-store`（P0 纪律，CI 门禁 `assert-unsigned-403` / `assert-no-store`）；字幕响应按 token 形态区分
+  （ADR-0009 2026-11-13 修订）：共享 token（URL 带 `?v=`）→ `public, max-age=<N>`（默认 600s），会话 token
+  → `no-store`；错误响应恒 `no-store`。JSON 响应（healthz / login / media / play）不设 `Cache-Control`。
 - **请求体**：分发端 JSON body 上限 **64 KiB**；管理端设置写入上限 **64 KiB**；字幕文件 ≤ **5 MiB**。
 - **时间**：ISO 8601 字符串（管理端 DTO 为 `toISOString()`；分发端 `expires_at` 为 RFC3339 UTC）。
 - **CORS**：分发端由 `DELIVERY_CORS_ORIGINS`（默认 `*`，逗号分隔）控制；允许头
@@ -201,12 +203,12 @@ DELETE /api/admin/categories/cother00000000000000000    # 默认分类
 
 | 端点 | 请求 | 成功响应 | 主要错误 |
 |---|---|---|---|
-| `GET /api/admin/media/{id}/subtitles` | — | `200 {items[]}`；轨道 = `{id, lang, label, is_default, status, bytes, storage_key, storage_ok\|null, created_at, updated_at}` | `400` ID 形状；`404` 媒资未入库 |
+| `GET /api/admin/media/{id}/subtitles` | — | `200 {items[]}`；轨道 = `{id, lang, label, is_default, status, bytes, content_version, storage_key, storage_ok\|null, created_at, updated_at}` | `400` ID 形状；`404` 媒资未入库 |
 | `POST /api/admin/media/{id}/subtitles?lang=<BCP-47>&label=<名>&is_default=<true\|1>` | **原始字幕字节流**（`.vtt` 或 `.srt`，SRT 自动转 VTT，≤5 MiB） | `201 {item}` | `400` 空体 / 语言标签非法 / VTT 校验失败；`409` 同媒资同语言；`404` 媒资未入库 |
 | `PATCH /api/admin/media/{id}/subtitles/{trackId}` | `{label?, lang?, is_default?}`（至少一字段） | `200 {item}` | `400`；`409` 改语言撞轨；`404` 轨道不存在 |
 | `DELETE /api/admin/media/{id}/subtitles/{trackId}` | — | `200 {removed: true, item}` | `404` |
 | `GET /api/admin/media/{id}/subtitles/{trackId}/content` | — | `200` 原始字节，`Content-Type: text/vtt; charset=utf-8`，`no-store` | `404` 轨道 / 对象缺失 |
-| `PUT /api/admin/media/{id}/subtitles/{trackId}/content` | **原始字幕字节流**（同校验管道） | `200 {item}`（就地覆盖同一对象，键不变） | `400` 校验失败；`404` |
+| `PUT /api/admin/media/{id}/subtitles/{trackId}/content` | **原始字幕字节流**（同校验管道） | `200 {item}`（就地覆盖同一对象，键不变；`content_version` +1，ADR-0009 2026-11-13 修订） | `400` 校验失败；`404` |
 
 语言按 BCP-47（输入兼容 `zh_CN` / `en_US`，服务端归一化）；首条轨道自动成为默认轨；`trackId` 为 cuid 形状。
 
@@ -449,7 +451,7 @@ JWT 为 ES256（P-256）compact JWS，header `{alg,typ,kid}`，claims `{iss,sub,
 |---|---|
 | 鉴权 | JWT（见 2.1） |
 | 请求 body | **可选**（`Content-Length > 0` 才解析）：`{force_new?: bool, template_id?: string\|null}`；`template_id` 缺省/`null` = 自动选择，`""` = 显式请求旧布局产物（`proceed/{id}/`），非空必须是模板 cuid |
-| 成功 | `200 {sid, manifest_url, expires_at, template_id, subtitles[], templates[]}`；`sid` = `ps_` + 24 hex；`manifest_url` 已带 `typ=m` 签名 token 与 `tpl`；字幕 `url` 带 `typ=v` 签名 token（同一枚 token 覆盖全部轨道）；`templates[]` 见下（spec.md §11.1） |
+| 成功 | `200 {sid, manifest_url, expires_at, template_id, subtitles[], templates[]}`；`sid` = `ps_` + 24 hex；`manifest_url` 已带 `typ=m` 签名 token 与 `tpl`；字幕 `url` 带 `typ=v` **共享 token**（不绑会话、exp 窗口对齐；同一枚 token 覆盖全部轨道，URL 另带 `?v=<content_version>`，ADR-0009 2026-11-13 修订）；`templates[]` 见下（spec.md §11.1） |
 | 幂等 | 非 `force_new` 时先复用同用户同媒资的未过期未吊销会话 |
 | 并发上限 | 新建会话前检查 `users.max_concurrent_sessions`（0 = 不限），超限 → `409 session_limit` |
 | 失败 | `400` body 非法；`404` 媒资不存在；`409 not_playable`（非 READY / 无任何可播放产物 / 指定模板无产物）；`409 session_limit`；`500`。**多套产物未指定 `template_id` 不再 409**（2026-10-13）：默认模板优先，无默认则自动选 `templates[]` 首项（spec.md §6.3） |
@@ -478,7 +480,7 @@ MF=$(curl -s -X POST $D/v1/media/<媒资id>/play -H "authorization: Bearer $TOKE
 {
   "sid": "ps_2f0c…", "manifest_url": "https://…/manifest/master.m3u8?t=…&tpl=cabc…",
   "expires_at": "2026-10-12T12:00:00Z", "template_id": "cabc…",
-  "subtitles": [{ "id": "cxyz…", "lang": "zh-CN", "label": "中文", "is_default": true, "url": "https://…/subtitles/cxyz….vtt?t=…" }],
+  "subtitles": [{ "id": "cxyz…", "lang": "zh-CN", "label": "中文", "is_default": true, "url": "https://…/subtitles/cxyz….vtt?v=1&t=…" }],
   "templates": [
     { "id": "cabc…", "name": "原画加密", "is_default": true },
     { "id": "cdef…", "name": "720p 加密", "is_default": false }
@@ -490,10 +492,13 @@ MF=$(curl -s -X POST $D/v1/media/<媒资id>/play -H "authorization: Bearer $TOKE
 
 签名 token：`b64url(JSON{ver,typ,mid,sid,exp,kid}) + "." + b64url(HMAC-SHA256)`，`ver=1`；
 `typ ∈ {m 清单, s 分片, k 密钥, v 字幕}`（v1 中分片走 S3 预签名直出，`typ=s` 已定义未使用）。
+`sid` 绑定播放会话（可吊销）；**字幕共享 token 省略 `sid`**（payload 字段整体缺失，不绑会话、
+exp 窗口对齐，ADR-0009 2026-11-13 修订）。
 传递：query `t` 优先，其次 header `X-Playback-Token`。
 
 **通用失败**：缺 token / 格式非法 / kid 未知 / 验签失败 / 过期 / `typ` 不符 / `mid` 不符 →
-`403 bad_token`；会话已过期或吊销 → `403 bad_token`「播放会话已过期或被吊销」；会话查询 DB 错误 → `500`。
+`403 bad_token`；会话已过期或吊销 → `403 bad_token`「播放会话已过期或被吊销」；会话查询 DB 错误 → `500`；
+共享 token（sid 省略）用于非字幕资源 → `403 bad_token`「共享 token 仅限字幕资源」。
 `tpl` 参数（清单路由）：空 = 旧布局；非空须匹配 `^c[a-z0-9]{20,}$`，否则 `400 bad_request`。
 
 | 端点 | 鉴权 | 响应 | 失败 |
@@ -501,7 +506,7 @@ MF=$(curl -s -X POST $D/v1/media/<媒资id>/play -H "authorization: Bearer $TOKE
 | `GET /v1/media/{id}/manifest/master.m3u8?t=<m>&tpl=<可选>` | token `m` | `200` 改写后主清单文本，`Content-Type: application/vnd.apple.mpegurl; charset=utf-8`，`Cache-Control: no-store`；VARIANT 行 URI → `{PUBLIC_BASE_URL}/v1/media/{id}/manifest/<相对路径>?t=<新 m token>&tpl=…` | `404` 主清单不存在（产物已清理） |
 | `GET /v1/media/{id}/manifest/*?t=<m>&tpl=<可选>` | token `m` | `200` 改写后子清单（通配段为子清单相对路径，如 `720p/index.m3u8`）；`EXT-X-KEY` URI → `/v1/media/{id}/key?t=<k token>`；**分片 URI → 对象存储预签名 GET 直出**（可经 `STORAGE_CDN_BASE_URL` 换 origin，字节不经分发端） | 路径白名单不符 → `404`（先于鉴权）；`404` 子清单不存在 |
 | `GET /v1/media/{id}/key?t=<k>` | token `k` | `200` **裸 16 字节 CEK**（`application/octet-stream`，`no-store`，`Content-Length: 16`）；kid / method / iv 不下发 | `404` 该媒资无密钥；`500` MK 缺版本 / 密钥不可用 |
-| `GET /v1/media/{id}/subtitles/{trackId}.vtt?t=<v>` | token `v` | `200` WebVTT 文本（`text/vtt; charset=utf-8`，`no-store`）；按 DB 行内 `storage_key` 取对象 | `trackId` 形状不符 → `404`（先于鉴权）；未就绪/已删除 → `404` |
+| `GET /v1/media/{id}/subtitles/{trackId}.vtt?v=<n>&t=<v>` | token `v` | `200` WebVTT 文本（`text/vtt; charset=utf-8`）；按 DB 行内 `storage_key` 取对象；缓存策略按 token 形态：共享 token → `public, max-age=<N>`（默认 600），会话 token → `no-store`；`?v=` 必须等于当前 `content_version` | `trackId` 形状不符 → `404`（先于鉴权）；未就绪/已删除 → `404`；共享 token 缺 `?v=` 或版本不符 → `403 bad_token` |
 
 ```bash
 ffprobe "$MF" && ffmpeg -i "$MF" -c copy /tmp/out.mp4     # 真播放器视角（自动取密钥 + 本地解密）

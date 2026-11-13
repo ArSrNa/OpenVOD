@@ -99,7 +99,7 @@
 
 - ✅ 已完成：**管理端字幕管理**（`/api/admin/media/{id}/subtitles` 列表 / 新建、`/{trackId}` 编辑与删除、`/{trackId}/content` 覆盖文本；界面为侧边栏「字幕管理」页 `/subtitles`（选媒资 + `subtitleCount` 标注）；与媒资页「更多 → 字幕管理」抽屉**共用同一轨道面板**，含**字幕预览**——弹窗播放 original 原视频并挂上该轨 WebVTT（与媒资预览同一 Video.js 皮肤，原生 `<track>`，字幕菜单可切换））——服务端结构化校验（UTF-8 / `WEBVTT` 头 / cue 时间轴，只校验不重排）+ **`.srt` 自动转 VTT 存储**（`apps/admin/src/lib/vtt.ts` 的 `toVttText`）；语言 BCP-47 归一化（兼容 `zh_CN` 写法）+ 同媒资语言唯一（DB 唯一约束 `(media_id, lang)` + 迁移 `20260920120000_media_subtitles_lang_unique`）+ 首条自动默认 + 默认轨事务互斥；落键 `proceed/{id}/subtitles/{trackId}.vtt`（trackId 服务端生成，即 `media_subtitles.id`）；媒资页「更多 → 字幕管理」抽屉；字幕操作审计（`subtitle.create` / `subtitle.update` / `subtitle.delete`）。
 - ✅ 已完成：**分发端字幕下发**（spec.md §7.5）——`play` 响应附 `subtitles[]`（经 `typ=v` 签名 URL，`exp = min(now + PLAYBACK_SUBTITLE_TTL_SEC, 会话 exp)`；token 必须绑会话才可吊销）；`GET /v1/media/{id}/subtitles/{trackId}.vtt` 验签 + 会话有效 + `status=READY` → 按 `storage_key` 代理输出（`text/vtt`、`no-store`）；无签名 403；字幕不入 HLS 清单（播放端外挂轨道）。
-- ⏳ 未完成：**字幕进 CDN 缓存——P0，待实现（2026-11-13 用户定）**（前置条件：引入内容版本号 / 共享 token 形态）；HLS 内嵌字幕轨（`EXT-X-MEDIA` + 分段 playlist，todo）；可视化时间轴编辑器（todo）。
+- ✅ 已完成（2026-11-13，ADR-0009 修订）：**字幕进 CDN 缓存**——`media_subtitles.content_version`（覆盖文本 +1）+ 共享 token（`typ=v` 不绑会话、`exp` 按 `PLAYBACK_SUBTITLE_TTL_SEC` 窗口对齐，同一窗口内 play 产出逐字相同的 URL）→ 共享 URL 跨会话稳定，响应 `public, max-age=<PLAYBACK_SUBTITLE_CACHE_MAX_AGE_SEC>`（默认 600s，可关）；URL 携带 `?v=<版本>`，旧 URL 由分发端校验 403；会话 token 沿用 `no-store`，分片 / 密钥仍逐会话（P0 不动）；HLS 内嵌字幕轨（`EXT-X-MEDIA` + 分段 playlist，todo）；可视化时间轴编辑器（todo）。
 
 ### 上传页与上传任务（2026-10-01 用户定；权威规则见 spec.md §9）
 

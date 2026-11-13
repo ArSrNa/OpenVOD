@@ -1,3 +1,7 @@
+# 仓库镜像（CNB → GitHub）的同步定义放在 .cnb/sync-github.yml，这里只 include 并在 push 下引用。
+include:
+  - ./.cnb/sync-github.yml
+
 .devenv: &devenv
   docker:
     # build: .ide/Dockerfile
@@ -370,6 +374,15 @@ main:
             pattern: packages/player-sdk/coverage/lcov.info
             allowExts: ".ts"
             breakIfNoCoverage: true
+    # 每次 push 到 main 顺带强制同步到 GitHub 同名分支（定义见 .cnb/sync-github.yml）。
+    # 和上一条是两条独立 pipeline：覆盖率失败不挡同步，同步失败也不影响徽章取数。
+    - <<: *sync-github
 
   auto_tag:
     - <<: *auto-tag
+
+# demo 分支：push 时强制同步到 GitHub 的 demo 分支。此前 demo 没有分支级配置，
+# push 落到 `$` 兜底（那里只有页面按钮事件），所以这次单独加一段。
+demo:
+  push:
+    - <<: *sync-github

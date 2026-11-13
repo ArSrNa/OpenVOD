@@ -1,275 +1,248 @@
 # openvod-jssdk
 
-OpenVOD 播放器接入 SDK（v1）：把「登录 → 媒资 → 播放会话 → 签名 URL → 续签 → 换清晰度」的接入逻辑收敛为唯一公共 API，
-宿主只负责播放器元素与 UI。**零运行时依赖**（仅 `fetch`，可注入），浏览器 / Node 18+ / React Native 同一份实现。
+OpenVOD 播放器接入 SDK。它帮你把「登录 → 拿媒资列表 → 发起播放 → 拿到播放地址 → 播放中自动续期」这些事都做好，
+你只需要负责把播放地址交给 `<video>` 播放，以及处理界面上的事。
 
-权威设计：`docs/vod/player-sdk-intent.md`（定位与范围）、`docs/vod/player-sdk-spec.md`（接口与语义）。
-接口参考：`docs/vod/api.md §2`（分发端 HTTP API）。首个消费方：`apps/player`。
+可以在浏览器、Node 18+、React Native 里使用，没有任何依赖。
 
 ## 安装
 
 ```bash
-# npm 官方
 npm i openvod-jssdk
-
-# CNB 制品库（组织级 npm 制品库；地址在「制品库 → 设置 → 基础设置」查看）
-npm i openvod-jssdk --registry=https://npm.cnb.cool/<组织>/<制品库>/-/packages/
-# 长期使用建议写进项目 .npmrc：
-# registry=https://npm.cnb.cool/<组织>/<制品库>/-/packages/
-# always-auth=true
-# //npm.cnb.cool/<组织>/<制品库>/-/packages/:_authToken=${CNB_TOKEN}
 ```
 
-发布产物为 **ESM + CJS + 打包后的 `.d.ts`**，零运行时依赖（连 `@openvod/*` 私有包也不需要——公共 DTO 类型
-在 `src/types.ts` 是自包含镜像，一致性由 `bun run typecheck` 的编译期断言守住）。
+如果用 CNB 制品库：
 
-## 设计边界（不变量）
+```bash
+npm i openvod-jssdk --registry=https://npm.cnb.cool/arsrna/media/openvod/-/packages/
+```
 
-| 编号 | 不变量 |
-|---|---|
-| N1 | SDK **永不接触视频字节与密钥材料**：不请求 `/key`、不下载分片、不持有 CEK（解密在播放器 / 浏览器本地完成） |
-| N2 | 全部签名 URL **一律来自 `play` 响应原样透出**，SDK 不生成 / 不校验 / 不拼接 |
-| N3 | 业务语义以服务端为准：`limit` 回退、模板自动选择、会话复用、`expires_at` 判定都不在客户端复制 |
-| N4 | **错误保真**：服务端错误码 / 文案 / HTTP 状态原样透出，SDK 只附加 `hint` 排查建议 |
-| N5 | 重登一律经配置的凭据源重新 `login`（v1 无 refresh token） |
+长期使用建议写进项目的 `.npmrc`：
+
+```
+registry=https://npm.cnb.cool/arsrna/media/openvod/-/packages/
+always-auth=true
+//npm.cnb.cool/arsrna/media/openvod/-/packages/:_authToken=${CNB_TOKEN}
+```
 
 ## 快速开始
+
+SDK 创建时要告诉它两件事：服务地址（`baseUrl`），以及用什么方式登录。登录方式有四种，按你的场景选一种：
+
+### 方式一：用户名密码（最简单）
+
+SDK 自己负责登录和续登，适合快速跑通：
 
 ```ts
 import { createPlayerSdk } from "openvod-jssdk";
 
-// ① 口令模式（SDK 负责 login / JWT 缓存 / 到期重登）
 const sdk = createPlayerSdk({
-  baseUrl: "https://vod.example.com", // delivery 基址（http/https，自动去尾斜杠）
+  baseUrl: "https://vod.example.com",
   credential: { mode: "password", username: "viewer", password: "******" },
 });
+```
 
-// ② tokenProvider 模式（宿主自治登录，推荐 Web 宿主经自己的后端换 JWT，口令不下发浏览器）
-const sdk2 = createPlayerSdk({
+### 方式二：由你的后端提供 token（网页端推荐）
+
+不要把用户密码放进浏览器。让用户先登录你的网站，你的后端把 token 发给前端，SDK 每次需要时找你要：
+
+```ts
+const sdk = createPlayerSdk({
   baseUrl: "https://vod.example.com",
   credential: {
     mode: "tokenProvider",
     getToken: async () => {
-      const res = await fetch("/api/session");           // 宿主的后端路由
+      const res = await fetch("/api/session"); // 你自己的后端接口
       const body = await res.json();
       return { access_token: body.access_token, expires_at: body.expires_at };
     },
   },
 });
+```
 
-// ③ static 模式（宿主已有 JWT 且自行负责续期）：无重登能力，过期即抛错 + auth:changed{expired}
-const sdk3 = createPlayerSdk({
+### 方式三：直接给一个现成的 token
+
+你自己负责 token 的更新。token 过期后 SDK 不会重新登录，只能报错：
+
+```ts
+const sdk = createPlayerSdk({
   baseUrl: "https://vod.example.com",
-  credential: { mode: "static", token: jwtFromHost, expires_at: "2026-10-17T08:00:00Z" }, // expires_at 可省（缺省缓存至 401）
+  credential: { mode: "static", token: jwtFromHost, expires_at: "2026-10-17T08:00:00Z" },
 });
-
-// ④ attach 模式（不配置 credential）：仅接管已有签名 URL，零请求
-const sdk4 = createPlayerSdk({ baseUrl: "https://vod.example.com" });
-const attached = sdk4.attachPlayback({ media_id: "55395830", manifest_url: signedUrlFromServer });
 ```
 
-### 生命周期时序
+### 方式四：不登录，只播放一个现成的地址
 
-```
-宿主                           SDK                                    delivery
- │ createPlayerSdk(config) ──▶ 同步构造（零网络请求）
- │ sdk.listMedia() ─────────▶ getAccessToken ── login（或 getToken） ──▶ POST /v1/auth/login
- │                        ◀── JWT 缓存（leeway 内零请求；401 → 重登一次并重试）
- │ sdk.play(id) ────────────▶ 会话缓存命中？ ── 命中 → 零请求返回 handle
- │                        │                          未命中/将过期 → POST /v1/media/{id}/play
- │                        ◀── handle{ sid, manifest_url, expires_at, template_id, templates, subtitles }
- │ video.src = manifest_url ─▶ （播放器自行取 /key 与分片；SDK 不介入）
- │                        ├─ 到期前 refreshLeewaySec：自动 play 重签 ─▶ emit playback:refreshed{auto}
- │ sdk.on("playback:refreshed") ─ 宿主换源（保留进度，见下）
- │ handle.switchTemplate(id) ▶ POST play(template_id) → 原位更新 ─▶ emit playback:template_changed
- │ handle.dispose() / sdk.dispose() ▶ 停定时器 + 本地失效（服务端会话按 TTL 过期）
-```
-
-### 从列表到播放（完整生命周期）
+如果你已经从别处拿到了签名好的播放地址，SDK 可以直接接管它，不会发任何请求：
 
 ```ts
-const page = await sdk.listMedia({ limit: 50 });     // 仅 READY 媒资；next_cursor v1 恒 null
-const detail = await sdk.getMedia("55395830");       // probe / poster / custom（公开白名单）
-const custom = parseCustomMetadata(detail.custom);   // { category?, description?, tags? }（脏数据容错）
-
-const handle = await sdk.play("55395830");           // 建 / 复用播放会话，签发签名主清单 URL
-video.src = handle.manifest_url;                     // 清单 → 密钥 → 分片全链路已带签名
-
-// 清晰度：handle.templates 是「该媒资实际存在的模板产物」，不是全部模板
-const options = handle.templates.map((t) => ({ label: templateLabel(t), value: t.id }));
-await handle.switchTemplate("ctemplate00000000000002"); // 复用会话换源；返回值仍是同一 handle
-video.src = handle.manifest_url;                        // 换源后读最新字段（见下方「可变视图」）
-
-// 字幕：URL 是 typ=v 签名地址；403 时 SDK 自动重签一次
-const tracks = handle.subtitles;
-const vtt = await handle.fetchSubtitleText(tracks[0]);
-
-// 播放中 token 到期：SDK 自动重签并通知宿主换源
-const off = sdk.on("playback:refreshed", (event) => {
-  video.src = event.manifest_url;                   // 事件 payload 与字段逐字一致
-});
-
-handle.dispose();                                    // 停自动续签 + 本地失效（不释放服务端会话）
+const sdk = createPlayerSdk({ baseUrl: "https://vod.example.com" });
+const handle = sdk.attachPlayback({ media_id: "55395830", manifest_url: signedUrlFromServer });
 ```
 
-### 变更订阅与生命周期
+## 从列表到播放
 
 ```ts
-const off = sdk.on((event) => console.log(event.type, event)); // 全量订阅
-sdk.on("playback:template_changed", (e) => {/* 切清晰度成功 */});
-sdk.on("error", (e) => {/* e.operation：login / list_media / get_media / play / refresh / switch_template / subtitle / auto_refresh */});
-sdk.dispose();        // 清全部定时器与缓存（服务端会话按 TTL 自然过期）
+// 拿媒资列表（只会返回已经转码完成、可以播放的媒资）
+const page = await sdk.listMedia({ limit: 50 });
+
+// 拿单个媒资详情（封面、描述、标签等）
+const detail = await sdk.getMedia("55395830");
+
+// 发起播放，拿到播放句柄
+const handle = await sdk.play("55395830");
+
+// 把地址交给播放器，之后清单、分片、解密密钥的请求都会自动带上签名
+video.src = handle.manifest_url;
 ```
 
-## API 速览（完整签名见 spec §2.3）
-
-| 调用 | 说明 |
-|---|---|
-| `sdk.auth.getAccessToken({ force? })` | 取有效 JWT（缓存命中零请求；到期前按 leeway 重登；401 兜底强制重登） |
-| `sdk.auth.setCredential(source \| null)` | 运行时切换身份：清 token / 会话缓存 / 定时器，旧句柄全部 `disposed` |
-| `sdk.listMedia({ limit?, signal? })` | 媒资列表（`limit` 原样传给服务端，由服务端裁决） |
-| `sdk.getMedia(id, { signal? })` | 媒资详情（非 READY 也返回，`playable=false`） |
-| `sdk.play(id, { templateId?, forceNew?, signal? })` | 建 / 复用会话；**本地缓存新鲜时零请求**；并发同语义调用 single-flight |
-| `sdk.attachPlayback(descriptor)` | 接管已有签名 URL（零请求；无凭据时 `refresh` / `switchTemplate` 抛 `sdk_no_credential`） |
-| `sdk.fetchSubtitleText(track)` | 拉 VTT 文本（自动定位所属句柄以支持 403 重签重试） |
-| `handle.switchTemplate(id)` | 复用会话换源（`id === 当前 template_id` 时空操作；失败不打断当前播放） |
-| `handle.refresh({ force? })` | 重新签发；`force: true` 强制请求（用于「重新播放」） |
-| `handle.fetchSubtitleText(track)` | 句柄内字幕文本（403 → 重签 → 新 URL 重试一次） |
-| `handle.dispose()` | 停定时器 + 句柄失效（服务端无释放端点） |
-| `sdk.dispose()` | 清全部定时器与缓存；销毁后所有入口抛 `sdk_disposed` |
-
-### 配置项（`PlayerSdkConfig`）
-
-| 字段 | 默认 | 说明 |
-|---|---|---|
-| `baseUrl` | 必填 | delivery 基址，仅 http/https；非法抛 `sdk_invalid_config` |
-| `credential` | 无 | 见上文三种模式 + attach |
-| `fetch` | 全局 `fetch` | 注入自定义实现（RN / 测试 / 代理） |
-| `timeoutMs` | `10000` | 单请求超时 |
-| `retries` | `0` | **幂等 GET** 的网络层重试次数（5xx / 网络失败；POST 不重试） |
-| `jwtRefreshLeewaySec` | `300` | JWT 到期前多久重登 |
-| `refreshLeewaySec` | `300` | 会话 / 清单 token 到期前多久自动重签 |
-| `autoRefresh` | `true` | 关掉后只提供手动 `refresh()` |
-| `storage` | 无（纯内存） | 注入 JWT 持久化（仅存 `{ access_token, expires_at, identity }`，**不存口令 / 播放 URL**）。安全建议：**不推荐 `localStorage`**；浏览器用内存或 `sessionStorage`，移动端用 Keychain / Keystore 等安全存储 |
-| `onEvent` | 无 | 全局事件监听（等价 `sdk.on(listener)`） |
-
-## 错误处理
+### 切换清晰度
 
 ```ts
-import { DeliveryError, PlayerSdkError, describeError } from "openvod-jssdk";
+// handle.templates 是这个媒资实际有的清晰度选项
+const options = handle.templates.map((t) => ({ label: t.name, value: t.id }));
 
-try {
-  await sdk.play(mediaId);
-} catch (e) {
-  if (e instanceof DeliveryError) {
-    e.code;    // api.md §0.2 错误码（类型来自契约 ErrorCode）
-    e.status;  // HTTP 状态；0 = 网络 / 超时 / 取消
-    e.message; // 服务端文案原样（N4）
-    e.hint;    // SDK 排查建议（describeError(code)）
-  } else if (e instanceof PlayerSdkError) {
-    e.code;    // sdk_invalid_config | sdk_no_credential | sdk_disposed | sdk_bad_response
-  }
-}
+// 切换后播放地址会变，需要重新赋给播放器（见下文「换源时保留播放进度」）
+await handle.switchTemplate("ctemplate00000000000002");
+video.src = handle.manifest_url;
 ```
 
-高频错误：
+### 字幕
 
-| 场景 | 表现 | 处理 |
-|---|---|---|
-| 分发端未启动 / CORS 未放行 | `DeliveryError{code:"internal", status:0}` | 检查 `DELIVERY_CORS_ORIGINS` 是否放行宿主源站 |
-| 账号被禁 / 口令已变 | `unauthorized`（重登一次后仍 401）+ `auth:changed{expired}` | 引导重新登录或 `setCredential()` |
-| 播放器内清单 / 密钥 / 分片 403 | 播放中断（SDK 无法感知播放器内部请求） | 调 `handle.refresh({ force: true })` 换源 |
-| 并发会话达上限 | `session_limit`（**`forceNew` 不绕过上限**） | 等旧会话过期或管理端调大 `max_concurrent_sessions` |
-| 媒资未就绪 / 模板无产物 | `not_playable` | 回列表或从 `handle.templates` 重选 |
+```ts
+const tracks = handle.subtitles;               // 可用的字幕轨道
+const vtt = await handle.fetchSubtitleText(tracks[0]); // 拿到字幕文本
+```
 
-## 两段必备的宿主代码
+## 播放中你需要处理的两件事
 
-### 换源保留进度（自动续签 / 切清晰度通用）
+### 1. token 快过期时，SDK 会自动换新地址，你要负责换源
 
-`switchTemplate` / `refresh` 会换掉 `manifest_url`（新 token），播放器换源后应恢复进度：
+播放地址里的签名是有有效期的。快到期时 SDK 会自动请求一个新地址，并发出 `playback:refreshed` 事件。
+**新地址不会自动生效**，你需要监听事件、换源，并恢复播放进度：
 
 ```ts
 let resume: { time: number; wasPlaying: boolean } | null = null;
 
 sdk.on("playback:refreshed", (event) => {
+  // 先记下当前的播放进度和播放状态
   resume = { time: video.currentTime, wasPlaying: !video.paused };
-  video.src = event.manifest_url;                  // 换源（hls.js 需 destroy + attachMedia 重建）
+  // 换成新地址（如果用 hls.js，需要销毁重建实例）
+  video.src = event.manifest_url;
 });
 
 video.addEventListener("loadedmetadata", () => {
   if (!resume) return;
-  video.currentTime = resume.time;                 // 恢复失败请静默从头，不要抛给用户
+  video.currentTime = resume.time;              // 恢复进度，失败就从头播，别报错打断用户
   if (resume.wasPlaying) void video.play().catch(() => {});
   resume = null;
 });
 ```
 
-### 播放器内 403 处置（清单 / 密钥 / 分片）
+切换清晰度时也一样：`switchTemplate` 会换地址并触发 `playback:template_changed` 事件，同样需要换源和恢复进度。
 
-浏览器原生 HLS 与 hls.js 的分片 / 密钥请求 SDK 无法感知（SDK 不接触视频字节，N1）。播放器报错或长时间
-黑屏时，用它换一套新 token 再重载：
+### 2. 播放器里出现 403 时，手动换一套新签名
+
+播放器内部请求分片、密钥时报 403（常见于播放暂停太久、签名已过期），SDK 感知不到这些请求，
+需要你手动重签一次再换源：
 
 ```ts
 async function recoverPlayback(errorCode?: number) {
-  if (errorCode !== 403) return;                   // 只在 403 bad_token 场景重签
-  await handle.refresh({ force: true });           // 复用会话重签（不新建会话、不消耗并发额度）
-  video.src = handle.manifest_url;                 // 再换源；必要时 resume 进度
+  if (errorCode !== 403) return;
+  await handle.refresh({ force: true });  // 复用当前会话重签，不会新开会话
+  video.src = handle.manifest_url;
 }
 ```
 
-## 排错清单
+## 配置项
 
-| 现象 | 排查顺序 |
+```ts
+const sdk = createPlayerSdk({
+  baseUrl: "https://vod.example.com",  // 必填，服务地址
+  credential: { /* 见「快速开始」四种方式 */ },
+  fetch: myFetch,          // 可选：自定义请求实现（React Native、测试、代理场景）
+  timeoutMs: 10000,        // 单个请求的超时时间
+  retries: 0,              // 列表、详情这类查询请求失败时自动重试几次（只重试查询，不重试播放）
+  jwtRefreshLeewaySec: 300,   // 登录凭证到期前多久自动重新登录
+  refreshLeewaySec: 300,      // 播放地址到期前多久自动换新
+  autoRefresh: true,       // 设为 false 则不自动换新，只能手动调 handle.refresh()
+  storage: myStorage,      // 可选：把登录凭证存起来（默认只存在内存里，关页面就没了）
+  onEvent: (e) => {},      // 可选：监听所有事件，等价于 sdk.on(listener)
+});
+```
+
+关于 `storage` 的安全提醒：**不建议用 `localStorage` 存登录凭证**。
+浏览器里用内存或 `sessionStorage`，App 里用系统安全存储（iOS Keychain / Android Keystore）。
+
+## 事件
+
+```ts
+// 监听单个事件，返回的函数用来取消监听
+const off = sdk.on("playback:refreshed", (e) => {});
+off();
+
+// 或者监听全部事件
+const offAll = sdk.on((event) => console.log(event.type, event));
+offAll();
+```
+
+| 事件 | 什么时候发生 |
 |---|---|
-| 列表页报 `internal / status 0` | ① 分发端是否启动：`curl <baseUrl>/healthz`；② 宿主源站是否在 `DELIVERY_CORS_ORIGINS`（宿主自建同源代理时可免，如 `apps/player` 的 `/api/delivery`）；③ `baseUrl` 从浏览器是否可达 |
-| 列表能出、点进播放黑屏 | ① token 是否过期（`handle.expires_at`）；② 桶（COS / RustFS）是否放行宿主源站 CORS（分片直连对象存储）；③ 产物是否完整（管理端产物列表） |
-| 播到一半 403 / 后段失败 | token 与分片预签名过期：调大 `refreshLeewaySec` 观察自动重签，或按上文「播放器内 403 处置」手动重签 |
-| `session_limit`（409） | 同账号并发会话达上限（`forceNew` **不绕过**）：等 TTL 过期或管理端调大 `max_concurrent_sessions` |
-| `not_playable`（409） | 媒资未就绪或所选模板无产物：回列表，或从 `handle.templates` 重选 |
-| `auth:changed{expired}` | 账号被禁 / 口令已变：`setCredential()` 换凭据，或引导重新登录 |
-| React 视图不更新 | `handle` 是可变视图：`switchTemplate` / `refresh` 后需重读字段重建快照（见「换源保留进度」） |
+| `playback:refreshed` | 播放地址快过期，SDK 自动换了新地址（你需要换源） |
+| `playback:template_changed` | 切换清晰度成功（你需要换源） |
+| `auth:changed` | 登录状态变了，比如凭证过期、账号被禁 |
+| `error` | 出错了，`e.operation` 会告诉你是哪一步出的问题 |
 
-## 已知约束与宿主职责
+## 错误处理
 
-- **`PlaybackHandle` 是可变视图**：`switchTemplate` / `refresh` 原位更新并返回**同一实例**。React 用快照驱动渲染
-  （参考 `apps/player/src/components/PlayView.tsx` 的 `snapshot(handle)`），不要靠引用比较触发重渲染。
-- **换源是宿主职责**：SDK 只发事件（`playback:refreshed` / `playback:template_changed`），把新 `manifest_url`
-  赋给播放器元素由宿主完成；换源后的进度保留同样由宿主实现。
-- **字幕挂载与渲染**：SDK 只给轨道数据与 VTT 文本，不做解析 / 样式 / 重排。
-- **自动续签失败**：先等 30s 重试一次，仍失败发 `error{operation:"auto_refresh"}` 并停止（防故障放大）。
-- **多标签 / 多账号**：`storage` 默认不启用（纯内存，关标签即失效）；启用时仅按 `identity` 校验，切换身份自动清除。
-- 客户端不复制服务端策略：`limit` 非法回退、模板自动选择、会话并发上限一律由服务端裁决。
+```ts
+import { DeliveryError, PlayerSdkError } from "openvod-jssdk";
 
-## 开发
-
-```bash
-bun test packages/player-sdk                  # 单测矩阵（注入 fetch + 假时钟，无真实网络）
-bun run --cwd packages/player-sdk test:coverage   # 同上 + 覆盖率（text + coverage/lcov.info）
-bun run --cwd packages/player-sdk typecheck       # tsc（含契约镜像的编译期一致性断言）
-bun run --cwd packages/player-sdk build           # tsup → dist/{index.js,index.cjs,index.d.ts}
+try {
+  await sdk.play(mediaId);
+} catch (e) {
+  if (e instanceof DeliveryError) {
+    e.code;    // 服务端返回的错误码，如 "session_limit"
+    e.status;  // HTTP 状态码；0 表示网络不通、超时或请求被取消
+    e.message; // 服务端返回的原始错误说明
+    e.hint;    // SDK 附带的排查建议
+  } else if (e instanceof PlayerSdkError) {
+    e.code;    // SDK 自己的问题，如配置不对、没配登录方式、SDK 已销毁
+  }
+}
 ```
 
-- 源码：`src/{index,config,client,auth,media,playback,subtitles,events,errors,types}.ts`
-- `src/types.ts` 是公共 DTO 的**自包含镜像**（发布包零依赖，声明文件不得出现私有包 import）；
-  与 `packages/contracts` 的一致性由 `test/contract-parity.ts`（编译期，随 `typecheck`）+ `test/errors.test.ts`
-  （运行时逐字比对 ERROR_CODES）守住。
-- 新增能力必须同步：`docs/vod/player-sdk-spec.md`（接口语义）→ 单测（T 编号）→ 本 README。
+常见错误：
 
-## 发布（npm 官方 + CNB 制品库）
+| 错误 | 意思 | 怎么办 |
+|---|---|---|
+| `internal` + status 0 | 连不上服务，或服务没开 CORS | 见下方「常见问题」 |
+| `unauthorized` | 账号被禁或密码改了 | 引导用户重新登录 |
+| `session_limit` | 这个账号同时播放的设备数到上限了 | 等旧会话过期，或在管理台调大上限 |
+| `not_playable` | 媒资还没转码完，或所选清晰度没有产物 | 回列表刷新，或换个清晰度 |
+| 播放器里 403 | 播放地址里的签名过期了 | 调 `handle.refresh({ force: true })` 后换源 |
 
-```bash
-bun run --cwd packages/player-sdk publish:dry    # 演练：构建 + 打包清单（不联网、无需令牌）
-bun run --cwd packages/player-sdk publish:npm    # 只发 npm 官方
-bun run --cwd packages/player-sdk publish:cnb    # 只发 CNB 制品库
-bun run --cwd packages/player-sdk publish:both   # 两个都发（= 发版流水线用的命令）
+## 常见问题
+
+**列表页报错，什么都出不来？**
+1. 先确认服务能访问：浏览器打开 `<baseUrl>/healthz`。
+2. 如果是网页直连，确认服务端的 CORS 配置里加了你网站的域名。
+
+**列表能出来，点进去播放黑屏？**
+1. 检查播放地址是否过期（`handle.expires_at`）。
+2. 视频文件是从对象存储直接拉取的，确认对象存储的 CORS 配置放行了你的域名。
+3. 确认这个媒资的转码产物是完整的（去管理台看产物列表）。
+
+**播到一半突然失败？**
+多半是签名过期了，参考上文「播放器里出现 403 时」手动重签。
+
+**React 里改了清晰度但界面没变？**
+`handle` 里的字段会被 SDK 原地更新，但 React 检测不到这种变化。
+切换后自己读一遍 `handle` 的最新字段、存成新的 state 就好。
+
+## 用完记得清理
+
+```ts
+handle.dispose();  // 停止这个播放的自动续签（服务端会话会自己过期）
+sdk.dispose();     // 清掉 SDK 的全部定时器和缓存，之后所有调用都会报错
 ```
-
-- **版本号唯一真源是根 `package.json` 的 `version`**（本包刻意不声明 `version`，仓库守卫见
-  `apps/admin/test/version-source.test.ts`）；脚本读它并注入发布清单，`--version` 可显式覆盖（补发历史版本）。
-- 发布清单在 `.run/sdk-publish/` 暂存生成：`exports` 指向 `dist/`（仓库内仍指向 `src/`，供 workspace 直引）；
-  脚本还会断言产物自包含（4 个产物文件不得 import 私有包）。
-- 令牌只经环境变量传入、临时 `.npmrc` 权限 600 且用后即删：`NPM_TOKEN`（npm 官方）、
-  `CNB_NPM_TOKEN`（CNB，流水线内缺省回退内置 `CNB_TOKEN`）、`CNB_NPM_REGISTRY`（制品库地址）。
-- **CI**：`.cnb.yml` 的 `.publish-sdk` 任务在 **`tag_push`** 时自动执行（也可用仓库页「发布播放器SDK」按钮手动触发）：
-  单测覆盖率 → `testing:coverage` 上报 CNB 洞察/徽章（红线 95%）→ 发布到两个制品库；
-  `NPM_TOKEN` 经密钥仓库 `arsrna/env` 的 `npm.yml` 注入。tag 名与根版本不一致时脚本会拒绝发布。

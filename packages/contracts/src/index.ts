@@ -673,6 +673,8 @@ export const SubtitleTrackDTO = z.object({
   is_default: z.boolean(),
   status: z.enum(SUBTITLE_STATUSES),
   bytes: z.number().int(),
+  /** 内容版本号（ADR-0009 2026-11-13 修订）：覆盖文本 +1；字幕签名 URL 携带 ?v= 该值 */
+  content_version: z.number().int(),
   /** 相对存储键 proceed/{mediaId}/subtitles/{trackId}.vtt */
   storage_key: z.string(),
   /** 对应对象是否存在（存储不可用时为 null） */

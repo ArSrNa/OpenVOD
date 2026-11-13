@@ -25,6 +25,17 @@ const payload = {
   kid: "k_test_01",
 };
 
+// 共享 token（ADR-0009 2026-11-13 修订）：sid 省略 = 不绑会话（字幕 CDN 缓存形态）。
+// JSON.stringify 丢弃 undefined → 字段整体缺失，与 Go omitempty 序列化逐字一致。
+const sharedPayload = {
+  ver: 1 as const,
+  typ: "v" as const,
+  mid: "media_test_01",
+  sid: undefined,
+  exp: 1893456000, // 2030-01-01
+  kid: "k_test_01",
+} as const;
+
 const typeA = {
   key: "typea_test_key",
   uri: "/hls/media_test_01/720p/seg-0.ts",
@@ -46,6 +57,12 @@ const fixture = {
     key_hex: tokenKey.toString("hex"),
     payload,
     token: signToken(payload, tokenKey),
+  },
+  // 共享 token（sid 省略；字幕 CDN 缓存形态，ADR-0009 2026-11-13 修订）
+  token_shared: {
+    key_hex: tokenKey.toString("hex"),
+    payload: sharedPayload,
+    token: signToken(sharedPayload, tokenKey),
   },
   // EdgeOne TypeA（Go 侧对照，ADR-0005）
   typea: {

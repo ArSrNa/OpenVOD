@@ -59,6 +59,7 @@ function makeDeps(over: Partial<SubtitleDeps> = {}) {
         status: "READY",
         storageKey: data.storageKey,
         bytes: data.bytes,
+        contentVersion: 1, // 新建轨道即 v=1（schema 默认值；ADR-0009 2026-11-13 修订）
         createdAt: NOW,
         updatedAt: NOW,
       };
@@ -76,6 +77,7 @@ function makeDeps(over: Partial<SubtitleDeps> = {}) {
       if (data.label !== undefined) row.label = data.label;
       if (data.isDefault !== undefined) row.isDefault = data.isDefault;
       if (data.bytes !== undefined) row.bytes = data.bytes;
+      if (data.contentVersion?.increment) row.contentVersion += data.contentVersion.increment;
       return row;
     },
     deleteTrack: async (id) => {
@@ -282,6 +284,16 @@ describe("replaceSubtitleContent", () => {
     expect(objects.size).toBe(1);
   });
 
+  it("覆盖文本推进内容版本号（?v= 进 URL，CDN 缓存键隔离；ADR-0009 2026-11-13 修订）", async () => {
+    const { deps } = makeDeps();
+    const track = await createSubtitle("00000042", createInput(), deps);
+    expect(track.content_version).toBe(1);
+
+    await replaceSubtitleContent("00000042", track.id, enc("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nv2\n"), deps);
+    const v2 = await replaceSubtitleContent("00000042", track.id, enc("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nv3\n"), deps);
+    expect(v2.content_version).toBe(3);
+  });
+
   it("校验失败 → 400 且不覆盖旧内容", async () => {
     const { deps, objects } = makeDeps();
     const track = await createSubtitle("00000042", createInput(), deps);
@@ -290,6 +302,9 @@ describe("replaceSubtitleContent", () => {
       400,
     );
     expect(dec(objects.get(track.storage_key))).toBe(VTT);
+    // 校验失败不落库 → 版本不推进（先校验后写入的顺序保证）
+    const rows = await listSubtitles("00000042", deps);
+    expect(rows.items[0]?.content_version).toBe(1);
   });
 });
 

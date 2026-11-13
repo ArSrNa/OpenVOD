@@ -2,6 +2,9 @@
 //   token  = b64url(JSON(payload)) + "." + b64url(HMAC-SHA256(signing_key, payload_bytes))
 //   payload = { ver, typ, mid, sid, exp, kid }（字段顺序即规范，双端一致）
 // 自包含无状态：热路径验签零 DB 往返；typ+mid 防跨媒资重放；sid 绑定会话可吊销。
+// 共享形态（ADR-0009 2026-11-13 修订）：`sid` 省略 = 不绑会话的共享 token，
+// 仅供 typ=v 字幕使用（URL 跨会话稳定 → CDN 可缓存）；序列化时字段必须整体缺失（非空串），
+// TS 由 JSON.stringify 丢弃 undefined 保证，Go 由 omitempty 保证。
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { TokenType } from "@openvod/shared";
 
@@ -9,7 +12,8 @@ export interface TokenPayload {
   ver: 1;
   typ: TokenType;
   mid: string;
-  sid: string;
+  /** 会话 id；省略 = 共享 token（不绑会话，仅 typ=v 字幕） */
+  sid?: string;
   /** Unix 秒 */
   exp: number;
   kid: string;

@@ -18,43 +18,44 @@ import (
 
 // 键名注册表（与 packages/shared SETTING_KEYS 手工对齐；Go 侧无生成物）
 const (
-	KeySetupCompleted       = "setup_completed"
-	KeyS3Endpoint           = "s3_endpoint"
-	KeyS3Region             = "s3_region"
-	KeyS3Bucket             = "s3_bucket"
-	KeyS3AccessKeyID        = "s3_access_key_id"
-	KeyS3SecretAccessKey    = "s3_secret_access_key" // 密钥：MK 封装
-	KeyS3ForcePathStyle     = "s3_force_path_style"
-	KeyStorageRootPrefix    = "storage_root_prefix"
-	KeyStorageCDNBaseURL    = "storage_cdn_base_url"
-	KeyStorageSignMode      = "storage_sign_mode"            // ADR-0019：s3_presign | cdn_url_auth | custom
-	KeyStorageCDNAuthKey    = "storage_cdn_auth_key"         // 密钥：MK 封装（cdn_url_auth 必填）
-	KeyStorageCDNAuthTTL    = "storage_cdn_auth_ttl_sec"     // ADR-0019：鉴权窗口（秒，默认 3600）
-	KeyStorageCDNAuthType   = "storage_cdn_auth_type"        // ADR-0019：EO Token 鉴权方式（a | b | c | d | v，默认 a）
-	KeyStorageCDNAuthParam  = "storage_cdn_auth_param"       // ADR-0019：方式 A 的鉴权参数名（默认 sign）
-	KeyStorageCDNTokenParam = "storage_cdn_auth_token_param" // ADR-0019：方式 D 的签名参数名（默认 token）
-	KeyStorageCDNTimeParam  = "storage_cdn_auth_time_param"  // ADR-0019：方式 D 的时间戳参数名（默认 t）
-	KeyStorageCustomSigner  = "storage_custom_signer"        // ADR-0019：custom 模式提供者名
-	KeyURLSignKeyHex        = "url_sign_key_hex"             // 密钥：MK 封装
-	KeyURLSignKeyKid        = "url_sign_key_kid"
-	KeyJWTTTLSec            = "jwt_ttl_sec"
-	KeySessionTTLSec        = "playback_session_ttl_sec"
-	KeyManifestTTLSec       = "playback_manifest_ttl_sec"
-	KeySubtitleTTLSec       = "playback_subtitle_ttl_sec"
-	KeyCORSOrigins          = "cors_origins"
-	KeyPlaybackBaseURL      = "playback_base_url"
-	KeyWorkerPollMs         = "worker_poll_interval_ms"
-	KeyWorkerLeaseMs        = "worker_lease_ms"
-	KeyWorkerMaxAttempts    = "worker_max_attempts"
-	KeyAdminBaseURL         = "admin_base_url"
-	KeyAdminTrustedOrigins  = "admin_trusted_origins"
-	KeyAdminSessionTTL      = "admin_session_ttl_sec"
-	KeyMediaIDLength        = "media_id_length"
-	KeyDeliveryPreviewUser  = "delivery_preview_username"
-	KeyDeliveryPreviewPwd   = "delivery_preview_password" // 密钥：MK 封装
-	KeyOIDCIssuer           = "oidc_issuer"
-	KeyOIDCClientID         = "oidc_client_id"
-	KeyOIDCClientSecret     = "oidc_client_secret" // 密钥：MK 封装
+	KeySetupCompleted         = "setup_completed"
+	KeyS3Endpoint             = "s3_endpoint"
+	KeyS3Region               = "s3_region"
+	KeyS3Bucket               = "s3_bucket"
+	KeyS3AccessKeyID          = "s3_access_key_id"
+	KeyS3SecretAccessKey      = "s3_secret_access_key" // 密钥：MK 封装
+	KeyS3ForcePathStyle       = "s3_force_path_style"
+	KeyStorageRootPrefix      = "storage_root_prefix"
+	KeyStorageCDNBaseURL      = "storage_cdn_base_url"
+	KeyStorageSignMode        = "storage_sign_mode"            // ADR-0019：s3_presign | cdn_url_auth | custom
+	KeyStorageCDNAuthKey      = "storage_cdn_auth_key"         // 密钥：MK 封装（cdn_url_auth 必填）
+	KeyStorageCDNAuthTTL      = "storage_cdn_auth_ttl_sec"     // ADR-0019：鉴权窗口（秒，默认 3600）
+	KeyStorageCDNAuthType     = "storage_cdn_auth_type"        // ADR-0019：EO Token 鉴权方式（a | b | c | d | v，默认 a）
+	KeyStorageCDNAuthParam    = "storage_cdn_auth_param"       // ADR-0019：方式 A 的鉴权参数名（默认 sign）
+	KeyStorageCDNTokenParam   = "storage_cdn_auth_token_param" // ADR-0019：方式 D 的签名参数名（默认 token）
+	KeyStorageCDNTimeParam    = "storage_cdn_auth_time_param"  // ADR-0019：方式 D 的时间戳参数名（默认 t）
+	KeyStorageCustomSigner    = "storage_custom_signer"        // ADR-0019：custom 模式提供者名
+	KeyURLSignKeyHex          = "url_sign_key_hex"             // 密钥：MK 封装
+	KeyURLSignKeyKid          = "url_sign_key_kid"
+	KeyJWTTTLSec              = "jwt_ttl_sec"
+	KeySessionTTLSec          = "playback_session_ttl_sec"
+	KeyManifestTTLSec         = "playback_manifest_ttl_sec"
+	KeySubtitleTTLSec         = "playback_subtitle_ttl_sec"
+	KeySubtitleCacheMaxAgeSec = "playback_subtitle_cache_max_age_sec"
+	KeyCORSOrigins            = "cors_origins"
+	KeyPlaybackBaseURL        = "playback_base_url"
+	KeyWorkerPollMs           = "worker_poll_interval_ms"
+	KeyWorkerLeaseMs          = "worker_lease_ms"
+	KeyWorkerMaxAttempts      = "worker_max_attempts"
+	KeyAdminBaseURL           = "admin_base_url"
+	KeyAdminTrustedOrigins    = "admin_trusted_origins"
+	KeyAdminSessionTTL        = "admin_session_ttl_sec"
+	KeyMediaIDLength          = "media_id_length"
+	KeyDeliveryPreviewUser    = "delivery_preview_username"
+	KeyDeliveryPreviewPwd     = "delivery_preview_password" // 密钥：MK 封装
+	KeyOIDCIssuer             = "oidc_issuer"
+	KeyOIDCClientID           = "oidc_client_id"
+	KeyOIDCClientSecret       = "oidc_client_secret" // 密钥：MK 封装
 )
 
 // 分发端只消费这些键；不解封管理端/OIDC/预览账号的私密设置，避免无关配置损坏影响播放。
@@ -67,7 +68,8 @@ var deliveryKeys = map[string]bool{
 	KeyStorageCustomSigner: true,
 	KeyURLSignKeyHex:       true, KeyURLSignKeyKid: true,
 	KeyJWTTTLSec: true, KeySessionTTLSec: true, KeyManifestTTLSec: true, KeySubtitleTTLSec: true,
-	KeyCORSOrigins: true, KeyPlaybackBaseURL: true,
+	KeySubtitleCacheMaxAgeSec: true,
+	KeyCORSOrigins:            true, KeyPlaybackBaseURL: true,
 }
 
 // secretKeys 仅列分发端实际使用的密钥键（读取时 MK 解封）。
@@ -225,6 +227,7 @@ func (s *Snapshot) ApplyTo(cfg *config.Config) error {
 	cfg.SessionTTLSec = s.Int(KeySessionTTLSec, cfg.SessionTTLSec)
 	cfg.ManifestTTLSec = s.Int(KeyManifestTTLSec, cfg.ManifestTTLSec)
 	cfg.SubtitleTTLSec = s.Int(KeySubtitleTTLSec, cfg.SubtitleTTLSec)
+	cfg.SubtitleCacheMaxAgeSec = s.Int(KeySubtitleCacheMaxAgeSec, cfg.SubtitleCacheMaxAgeSec)
 
 	// ---- CORS ----
 	if v := s.Get(KeyCORSOrigins); v != "" {

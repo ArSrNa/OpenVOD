@@ -44,6 +44,7 @@ var sqliteDDL = []string{
 		is_default BOOLEAN NOT NULL DEFAULT false,
 		status TEXT NOT NULL,
 		storage_key TEXT NOT NULL,
+		content_version INTEGER NOT NULL DEFAULT 1,
 		created_at DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL
 	)`,

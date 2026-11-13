@@ -1,7 +1,11 @@
 // Package token 分发端签名 token（ADR-0006 §4）
-//   token  = b64url(JSON(payload)) + "." + b64url(HMAC-SHA256(key, payload))
-//   payload = {ver, typ, mid, sid, exp, kid}（字段顺序即规范）
+//
+//	token  = b64url(JSON(payload)) + "." + b64url(HMAC-SHA256(key, payload))
+//	payload = {ver, typ, mid, sid, exp, kid}（字段顺序即规范）
+//
 // 与 packages/crypto/src/token.ts 互通，向量见 packages/crypto/fixtures/crypto-v1.json。
+// 共享形态（ADR-0009 2026-11-13 修订）：Sid 省略（omitempty，字段整体缺失）= 不绑会话的
+// 共享 token，仅供 typ=v 字幕使用（URL 跨会话稳定 → CDN 可缓存）；其余 typ 必须带 Sid。
 package token
 
 import (
@@ -28,7 +32,7 @@ type Payload struct {
 	Ver int    `json:"ver"`
 	Typ string `json:"typ"`
 	Mid string `json:"mid"`
-	Sid string `json:"sid"`
+	Sid string `json:"sid,omitempty"` // 空串序列化为字段缺失（共享 token，字幕专用）
 	Exp int64  `json:"exp"`
 	Kid string `json:"kid"`
 }
@@ -50,9 +54,9 @@ func Sign(p Payload, key []byte) (string, error) {
 }
 
 type VerifyOptions struct {
-	Typ   string // 校验 typ（key 接口必须 typ=k）
-	Mid   string // 校验媒资绑定，防跨媒资重放
-	NowSec int64 // 缺省取当前时间
+	Typ    string // 校验 typ（key 接口必须 typ=k）
+	Mid    string // 校验媒资绑定，防跨媒资重放
+	NowSec int64  // 缺省取当前时间
 }
 
 func Verify(token string, keys []SigningKey, opts VerifyOptions) (Payload, error) {

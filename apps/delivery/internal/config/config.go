@@ -77,22 +77,27 @@ type Config struct {
 	JWTTTLSec      int
 	SessionTTLSec  int
 	ManifestTTLSec int
-	// 字幕 token 有效期上限（spec.md §7.5）：实际 exp 取与会话 exp 的较小值
+	// 字幕 token 有效期窗口（spec.md §7.5）：共享 token 的 exp 取窗口对齐（当前窗口末端），
+	// 同窗口内重复 play 产出逐字相同的 token → URL 跨会话稳定可缓存（ADR-0009 2026-11-13 修订）
 	SubtitleTTLSec int
+	// 字幕共享 URL 的缓存时长（Cache-Control: public, max-age=；ADR-0009 2026-11-13 修订）：
+	// 0 = 关闭缓存（回退 no-store）；错误响应恒 no-store
+	SubtitleCacheMaxAgeSec int
 }
 
 // Load 读取环境变量；部署形态见 ADR-0003（EdgeOne CF 环境注入 / SCF 容器 env）。
 func Load() (*Config, error) {
 	cfg := &Config{
-		Env:            getEnv("APP_ENV", "dev"),
-		Listen:         getEnv("DELIVERY_LISTEN", ":9000"), // SCF Web 函数固定监听 9000
-		URLSignKeyKid:  getEnv("URL_SIGN_KEY_KID", "urlsign-v1"),
-		MasterKeys:     map[int][]byte{},
-		JWTIssuer:      getEnv("DELIVERY_JWT_ISSUER", "openvod-delivery"),
-		JWTTTLSec:      getEnvInt("DELIVERY_JWT_TTL_SEC", 24*3600),
-		SessionTTLSec:  getEnvInt("PLAYBACK_SESSION_TTL_SEC", 4*3600),
-		ManifestTTLSec: getEnvInt("PLAYBACK_MANIFEST_TTL_SEC", 4*3600),
-		SubtitleTTLSec: getEnvInt("PLAYBACK_SUBTITLE_TTL_SEC", 24*3600),
+		Env:                    getEnv("APP_ENV", "dev"),
+		Listen:                 getEnv("DELIVERY_LISTEN", ":9000"), // SCF Web 函数固定监听 9000
+		URLSignKeyKid:          getEnv("URL_SIGN_KEY_KID", "urlsign-v1"),
+		MasterKeys:             map[int][]byte{},
+		JWTIssuer:              getEnv("DELIVERY_JWT_ISSUER", "openvod-delivery"),
+		JWTTTLSec:              getEnvInt("DELIVERY_JWT_TTL_SEC", 24*3600),
+		SessionTTLSec:          getEnvInt("PLAYBACK_SESSION_TTL_SEC", 4*3600),
+		ManifestTTLSec:         getEnvInt("PLAYBACK_MANIFEST_TTL_SEC", 4*3600),
+		SubtitleTTLSec:         getEnvInt("PLAYBACK_SUBTITLE_TTL_SEC", 24*3600),
+		SubtitleCacheMaxAgeSec: getEnvInt("PLAYBACK_SUBTITLE_CACHE_MAX_AGE_SEC", 600),
 	}
 
 	db, err := ParseDatabaseURL(os.Getenv("DATABASE_URL"))

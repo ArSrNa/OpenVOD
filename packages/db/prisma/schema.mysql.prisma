@@ -250,17 +250,20 @@ model MediaCategory {
 
 /// WebVTT 字幕轨道（ADR-0009）
 model MediaSubtitle {
-  id         String         @id @default(cuid())
-  mediaId    String         @map("media_id")
-  lang       String
-  label      String
-  isDefault  Boolean        @default(false) @map("is_default")
-  status     SubtitleStatus @default(PROCESSING)
-  storageKey String         @map("storage_key")
-  bytes      Int            @default(0)
-  createdBy  String?        @map("created_by")
-  createdAt  DateTime       @default(now()) @map("created_at")
-  updatedAt  DateTime       @updatedAt @map("updated_at")
+  id             String         @id @default(cuid())
+  mediaId        String         @map("media_id")
+  lang           String
+  label          String
+  isDefault      Boolean        @default(false) @map("is_default")
+  status         SubtitleStatus @default(PROCESSING)
+  storageKey     String         @map("storage_key")
+  bytes          Int            @default(0)
+  /// 内容版本号（ADR-0009 2026-11-13 修订）：文本覆盖时 +1；进入字幕签名 URL（?v=），
+  /// 版本变 = URL 变 → CDN 缓存键隔离，覆盖后旧地址由分发端 403
+  contentVersion Int            @default(1) @map("content_version")
+  createdBy      String?        @map("created_by")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
 
   media Media @relation(fields: [mediaId], references: [id], onDelete: Cascade)
 
@@ -282,6 +285,9 @@ model TranscodeJob {
   templateId String?   @map("template_id")
   /// 发起时模板快照（ADR-0014 防漂移：模板后续修改/删除不影响已入队任务）
   templateSnapshot Json? @map("template_snapshot")
+  /// CEK 轮换计划密钥（spec.md §4.4，2026-11-13）：发起轮换时生成一次，本批全部轮换任务共用
+  /// 同一把新 CEK（仅 MK 封装形态落库，明文绝不入库）；产物上传成功后以此整行替换 hls_keys
+  keyPlan    Json?     @map("key_plan")
   attempts   Int       @default(0)
   /// Worker 心跳续期；崩溃后过期重派
   leaseUntil DateTime? @map("lease_until")

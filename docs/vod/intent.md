@@ -80,13 +80,13 @@
 **实现状态（2026-09-18，M2 转码到加密竖切；端点明细见 spec.md §2.1、执行规则见 §5）**
 
 - ✅ 已完成：**管理端发起**（「更多 → 转码」弹窗**多选**模板 → `POST /media/{id}/transcode`（`template_ids[]`）：校验媒资 / 原始文件 / 每个模板 / 加密必须 HLS / 同媒资**同模板**无未终结任务 → 每个模板各**快照**入队一条任务，`audit_logs`）；**转码任务页**（`/jobs` + `GET /api/admin/jobs` 与 SSE `/api/admin/jobs/stream`：状态 / 模板名（取快照）/ 尝试次数 / 耗时 / 失败原因，任务变化由服务端主动推送——客户端零轮询、断线自动重连；支持**停止 / 重启**：排队任务可取消、worker 失联任务可终止、失败任务可重新入队，spec.md §5.1）；**Worker 执行主干**（CAS 认领 + lease 心跳 + 尝试上限 → ffprobe 探测 → 模板快照编译 argv（三维度均不低于源的档位自动跳过；全档跳过则按源规格兜底出一档）→ 逐档 ffmpeg（可选 AES-128）→ 整体上传 `proceed/{id}/{模板id}/` → 生成主清单 → **上传成功后**落 `hls_keys` → 媒资 `READY` → 清理临时目录）；**陈旧产物清理**（重转码后只删**本模板子树**内本次未产出的旧档位 / 旧分片）；**多模板并存**（同一媒资多套模板产物互不覆盖、共用一份 CEK）；**失败语义**（此前已 `READY` 则保持 READY，否则 `FAILED`；`last_error` 可查）。
-- ⏳ 未完成：抽帧生成 poster（ADR-0008 步骤 5，v1 封面为手动上传 / 浏览器截帧，spec.md §2.3）；字幕与元数据链路（M4）。
+- ~~抽帧生成 poster~~ **决定不做（2026-11-13 用户定，close）**：v1 封面保持手动上传 / 浏览器截帧双模式（spec.md §2.3），Worker 不做服务端抽帧；字幕与元数据链路（M4）已实现（2026-09-20）。
 
 **实现状态（2026-09-18，密钥管理竖切；端点明细见 spec.md §2.1、规范见 §4）**
 
 - ✅ 已完成：**每媒资一份密钥的 DB 保证**（`hls_keys.media_id` 唯一约束 + 一对一关系，迁移 `20260918220000_hls_keys_media_unique`）；**密钥材料纯函数**（`@openvod/crypto`：`createMediaKey` / `openMediaKey` / `resealMediaKey` / `pickWrappingMasterKey`，13 项单测含往返解封、错误 MK、篡改、轮换幂等）；**密钥管理 API**（`/api/admin/keys` 列表、`/{mediaId}` 详情与删除、`/mk` 版本状态、`/rotate-mk` 轮换，全部不返回密钥材料）；**密钥管理页面**（`/keys`：列表 + 顶栏 MK 版本用量 + 详情 / 删除 / 轮换）；密钥操作审计（`key.delete` / `key.rotate_mk`）。
 - ✅ 已完成（2026-09-18，Worker 密钥落地）：`apps/worker/src` 的 `media-keys.ts`（`generateMediaKey` 只生成不落库 / `persistMediaKey` 产物上传成功后才落库）、`media-key-store.ts`（Prisma **事务内先删旧行再写新行**——唯一约束使「先插后删」不可行；失败整体回滚、旧密钥行原样保留）、`key-files.ts`（key_info + 16B 裸字节 CEK 临时文件 + 幂等清理）；Worker 启动 MASTER_KEYS 自检；**7 项测试**含 DB 事务回滚安全性与 ffmpeg 端到端（产物用生成的 CEK 可解出 TS 同步字节）；顺带修复 `buildKeyInfoFile` 第三行 `0x` 前缀导致 ffmpeg 加密失败的真 bug（清单出现 `IV=0x0x…`）。
-- ⏳ 未完成：CEK 轮换 = 重转码该媒资全部模板产物（ADR-0006 §6）；分发端侧演进项见下方 M3 状态。
+- ⏳ 未完成：CEK 轮换 = 重转码该媒资全部模板产物（ADR-0006 §6）——**P0，待实现（2026-11-13 用户定）**；分发端侧演进项见下方 M3 状态。
 
 **实现状态（2026-09-18，M3 播放链路竖切；端点与规则见 spec.md §6）**
 
@@ -99,7 +99,7 @@
 
 - ✅ 已完成：**管理端字幕管理**（`/api/admin/media/{id}/subtitles` 列表 / 新建、`/{trackId}` 编辑与删除、`/{trackId}/content` 覆盖文本；界面为侧边栏「字幕管理」页 `/subtitles`（选媒资 + `subtitleCount` 标注）；与媒资页「更多 → 字幕管理」抽屉**共用同一轨道面板**，含**字幕预览**——弹窗播放 original 原视频并挂上该轨 WebVTT（与媒资预览同一 Video.js 皮肤，原生 `<track>`，字幕菜单可切换））——服务端结构化校验（UTF-8 / `WEBVTT` 头 / cue 时间轴，只校验不重排）+ **`.srt` 自动转 VTT 存储**（`apps/admin/src/lib/vtt.ts` 的 `toVttText`）；语言 BCP-47 归一化（兼容 `zh_CN` 写法）+ 同媒资语言唯一（DB 唯一约束 `(media_id, lang)` + 迁移 `20260920120000_media_subtitles_lang_unique`）+ 首条自动默认 + 默认轨事务互斥；落键 `proceed/{id}/subtitles/{trackId}.vtt`（trackId 服务端生成，即 `media_subtitles.id`）；媒资页「更多 → 字幕管理」抽屉；字幕操作审计（`subtitle.create` / `subtitle.update` / `subtitle.delete`）。
 - ✅ 已完成：**分发端字幕下发**（spec.md §7.5）——`play` 响应附 `subtitles[]`（经 `typ=v` 签名 URL，`exp = min(now + PLAYBACK_SUBTITLE_TTL_SEC, 会话 exp)`；token 必须绑会话才可吊销）；`GET /v1/media/{id}/subtitles/{trackId}.vtt` 验签 + 会话有效 + `status=READY` → 按 `storage_key` 代理输出（`text/vtt`、`no-store`）；无签名 403；字幕不入 HLS 清单（播放端外挂轨道）。
-- ⏳ 未完成（演进项）：字幕进 CDN 缓存（需内容版本号 / 共享 token 形态）；HLS 内嵌字幕轨（`EXT-X-MEDIA` + 分段 playlist）；可视化时间轴编辑器。
+- ✅ 已完成（2026-11-13，ADR-0009 修订）：**字幕进 CDN 缓存**——`media_subtitles.content_version`（覆盖文本 +1）+ 共享 token（`typ=v` 不绑会话、`exp` 按 `PLAYBACK_SUBTITLE_TTL_SEC` 窗口对齐，同一窗口内 play 产出逐字相同的 URL）→ 共享 URL 跨会话稳定，响应 `public, max-age=<PLAYBACK_SUBTITLE_CACHE_MAX_AGE_SEC>`（默认 600s，可关）；URL 携带 `?v=<版本>`，旧 URL 由分发端校验 403；会话 token 沿用 `no-store`，分片 / 密钥仍逐会话（P0 不动）；HLS 内嵌字幕轨（`EXT-X-MEDIA` + 分段 playlist，todo）；可视化时间轴编辑器（todo）。
 
 ### 上传页与上传任务（2026-10-01 用户定；权威规则见 spec.md §9）
 
@@ -113,9 +113,9 @@
 - **全局可见**：App 右上角在存在进行中任务时显示「x 个上传任务进行中」，点击直达上传页；无进行中任务时不展示；
 - **v1 边界（非目标）**：不做断点续传 / 分片直传 / 刷新与关闭页面后的任务恢复（刷新即中断，仅在有进行中任务时给出浏览器原生的离开确认提示）；不新增服务端上传任务表，上传协议与端点不变（spec.md §2）。
 
-**实现状态（2026-10-01）**
+**实现状态（2026-11-13 回填：已完成）**
 
-- ⏳ 未完成：独立上传页与上传任务队列（spec.md §9）；媒资列表内联上传入口（按钮 + 进度）将随之上收。
+- ✅ 已完成：独立上传页 `/media/upload` 与上传任务队列（spec.md §9）：客户端单例队列 / 拖入多文件 / 并发上限 2 / 元数据阶段并入任务 / 全局进行中任务提示；媒资列表内联上传入口已上收（按钮跳转上传页）。
 
 ### 封面设置（媒资管理，2026-09-18 用户定）
 
@@ -168,7 +168,7 @@
 **实现状态（2026-09-24，分类 / 描述 / 标签竖切）**
 
 - ✅ 已完成：`media_categories` 表（无限层级邻接表 + 同级唯一 + `SetNull` 引用）与 `media` 的 `category_id` / `description` / `tags`（迁移 `20260924120000_media_categories`，双方言 schema 与 parity 门禁同步）；**默认分类「其他」**（`is_system` + 幂等补建 + 历史行回填，迁移 `20260924130000_default_category` / `20260924140000_backfill_default_category`；上传即落库、留空 = 「其他」、读取空值回退、不可删除、删除分类时迁入）；`/api/admin/categories`（列表含直属媒资计数（含子孙计数为 API 保留字段，UI 不展示）、新建、更新、删除，含同级重名与环路校验、删除保护、投影刷新）；`PATCH /api/admin/media/{id}` 扩展为「重命名 + 自定义元数据」；`custom_data` 稀疏投影与 `metadata/{id}/custom.json` 导出；分发端 `custom` 公开白名单（列表 + 详情，含 Go 单测）；管理端「分类管理」页 `/categories`（默认分类带标记、删除禁用）、媒资页「更多 → 分类与标签」与详情弹窗展示 / 编辑（TreeSelect 选分类 + 描述 + 标签）。
-- ⏳ 未完成（演进项）：分类路径物化列（深树查询与移动优化）、标签实体化与治理（重命名 / 合并 / 统计）、投影刷新任务化（超大规模分类的改名 / 移动）、`/v1/media` 按分类 / 标签筛选、分类改名后已签发 token 的输出即时性（当前随投影刷新时机）。
+- ⏳ 未完成（演进项）：分类路径物化列（深树查询与移动优化）、标签实体化与治理（重命名 / 合并 / 统计）、投影刷新任务化（超大规模分类的改名 / 移动）、`/v1/media` 按分类 / 标签筛选（**P1，待实现，2026-11-13 用户定**）、分类改名后已签发 token 的输出即时性（当前随投影刷新时机）。
 
 ### 控制台总览（管理端主页，2026-09-18 用户定）
 
@@ -331,7 +331,7 @@ M3/M4 播放链路（login / 播放会话 / 清单改写 / 密钥 / 字幕）已
 播放链路（M3/M4）已跑通，但每个播放端接入方都要重写同一套「login → play → 401/403 恢复 → 会话复用」逻辑（`apps/player` 的 `lib/delivery.ts` 是第一次重写，第二次就会漂移）。新增**播放器 SDK**（`packages/player-sdk`）：TS/Web、零运行时依赖、播放器无关（只输出签名 URL / 元数据 / 事件）——初始化只填 delivery 地址 + 播放账号即可拿到签名主清单 URL；**自动续期 / 重签**（JWT 过期自动重登、会话 / token 过期自动重新 play）与**清晰度切换**（`templates[]` 复用会话换源）由 SDK 治理；四种鉴权模式（用户名口令 / tokenProvider / static JWT / attach 已有 URL）与多账号热切换；零后端改动，P0 纪律不放松（SDK 永不接触 CEK / 分片字节 / 签名密钥）。
 
 - **设计边界（用户 2026-10-13 拍板）**：v1 仅 TS/Web 核心包——不含播放器适配器 / UI 组件、诊断提示系统、进度持久化 / 服务端续播、npm 公开发布（均为演进项）；
-- **实现状态（2026-10-16）**：✅ S1 / S2 / S4 已完成——`packages/player-sdk`（零运行时依赖 TS 包，`bun test packages/player-sdk` 单测矩阵 T1~T18 共 30 项全绿）+ `apps/player` 以 tokenProvider 接入（删除 `lib/delivery.ts`，页面仅保留 React 状态层）+ 包内 `README.md`；S3（体验环境端到端集成验收）待按 player-sdk-spec.md §12.2 执行。
+- **实现状态（2026-10-16）**：✅ S1 / S2 / S4 已完成——`packages/player-sdk`（零运行时依赖 TS 包，`bun test packages/player-sdk` 单测矩阵 T1~T18 共 30 项全绿）+ `apps/player` 以 tokenProvider 接入（删除 `lib/delivery.ts`，页面仅保留 React 状态层）+ 包内 `README.md`；S3（体验环境端到端集成验收）已完成（2026-11-13 维护者按 player-sdk-spec.md §12.2 自行执行通过）。
 
 ### 非功能目标
 

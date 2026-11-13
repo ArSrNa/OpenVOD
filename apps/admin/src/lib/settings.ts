@@ -256,6 +256,14 @@ const PLAIN_META: Record<string, { env?: string; validate: Validator } | undefin
       SETTING_TTL_LIMITS[SETTING_KEYS.playbackSubtitleTtlSec].max,
     ),
   },
+  [SETTING_KEYS.playbackSubtitleCacheMaxAgeSec]: {
+    env: "PLAYBACK_SUBTITLE_CACHE_MAX_AGE_SEC",
+    validate: intValidator(
+      "字幕缓存时长",
+      SETTING_TTL_LIMITS[SETTING_KEYS.playbackSubtitleCacheMaxAgeSec].min,
+      SETTING_TTL_LIMITS[SETTING_KEYS.playbackSubtitleCacheMaxAgeSec].max,
+    ),
+  },
   [SETTING_KEYS.corsOrigins]: { env: "DELIVERY_CORS_ORIGINS", validate: corsOriginsValidator() },
   [SETTING_KEYS.workerMode]: {
     env: "WORKER_MODE",

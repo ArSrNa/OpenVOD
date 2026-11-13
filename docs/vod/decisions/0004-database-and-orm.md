@@ -57,3 +57,4 @@
 - 分开部署（ADR-0011）下两应用对同一 schema 演进：迁移仅由 `packages/db` 执行且必须向后兼容（expand-contract，先加后删）；分发端使用独立受限 DB 账号（约定表只读 + `playback_sessions` 读写）。
 - SQLite 与「跨机器分开部署」互斥：仅限单机自托管同卷共享；跨机 / 云函数部署必须 MySQL（ADR-0011 约束 3）。
 - 2026-10-17：Go 分发端已支持 SQLite（`modernc.org/sqlite`，单机同卷形态），并按 Prisma 的物理存储对齐时间 / 布尔类型；三端可共用一个 `DATABASE_URL`，详见 ADR-0011 修订。
+- **2026-11-13：ORM 长远目标改为 Drizzle（用户决策：更轻量、更适合 serverless）。迁移方案、准入门槛与不变量见 ADR-0020；在迁移动工前，本文的 Prisma 决策继续有效。**

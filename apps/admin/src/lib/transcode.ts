@@ -96,7 +96,7 @@ export async function submitTranscode(
       listActiveJobs: (id) =>
         db.transcodeJob.findMany({
           where: { mediaId: id, status: { in: ACTIVE_JOB_STATUSES } },
-          select: { id: true, templateId: true },
+          select: { id: true, templateId: true, keyPlan: true },
         }),
       // 每个模板各入队一条任务；整批同一事务内创建
       createJobs: (rows: SubmitJobRow[]) =>

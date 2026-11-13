@@ -1,13 +1,14 @@
 "use client";
 
 // 密钥管理页（/keys，spec.md §4.3；ADR-0006）：
-// 列表（每媒资一份密钥）+ 详情 + 删除 + MK 轮换。
+// 列表（每媒资一份密钥）+ 详情 + 删除 + MK 轮换 + CEK 轮换（重转码，spec.md §4.4）。
 // 红线：页面**不展示任何明文 / 封装密钥**；这里只有 kid / method / iv / mk_ver 等元数据。
 import {
   DeleteOutlined,
   InfoCircleOutlined,
   KeyOutlined,
   ReloadOutlined,
+  SwapOutlined,
   SyncOutlined,
 } from "@ant-design/icons";
 import { ProCard } from "@ant-design/pro-components";
@@ -160,7 +161,103 @@ export function KeysManager() {
     }
   };
 
+  // ---- CEK 轮换（spec.md §4.4：重转码该媒资全部加密产物；与 MK 轮换不同，会有短时维护窗口） ----
+  const [cekRotatingFor, setCekRotatingFor] = useState<string | null>(null);
+
+  const rotateCek = async (item: KeyItem) => {
+    setCekRotatingFor(item.media_id);
+    try {
+      const res = await fetch(`/api/admin/keys/${item.media_id}/rotate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) throw new Error(await parseError(res));
+      const r = (await res.json()) as {
+        kid: string;
+        jobs: Array<{ job_id: string; template_name: string }>;
+        skipped: Array<{ template_name: string | null; reason: string }>;
+      };
+      modal.success({
+        title: "CEK 轮换已发起",
+        width: 520,
+        content: (
+          <div>
+            <p>
+              新密钥 <Typography.Text code>{r.kid.slice(0, 16)}…</Typography.Text>，已为{" "}
+              {r.jobs.length} 套加密产物入队重转码（全部共用同一把新密钥）。任务完成后旧密钥失效。
+            </p>
+            {r.skipped.length > 0 && (
+              <Alert
+                type="warning"
+                showIcon
+                message={`${r.skipped.length} 套产物未入队`}
+                description={
+                  <ul style={{ margin: 0, paddingLeft: 18 }}>
+                    {r.skipped.map((s, i) => (
+                      <li key={i}>{s.reason}</li>
+                    ))}
+                  </ul>
+                }
+                style={{ marginTop: 8 }}
+              />
+            )}
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              进度请在「转码任务」页查看。
+            </Typography.Text>
+          </div>
+        ),
+      });
+      setDetail(null);
+      await reload();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setCekRotatingFor(null);
+    }
+  };
+
+  /** CEK 轮换确认弹窗：说明重转码语义与维护窗口（spec.md §4.4） */
+  const confirmRotateCek = (item: KeyItem) => {
+    modal.confirm({
+      title: `轮换媒资 ${item.media_id} 的 CEK？`,
+      width: 520,
+      okText: "发起轮换",
+      content: (
+        <div>
+          <p>
+            将为该媒资生成一把<strong>新密钥</strong>，并对其<strong>全部加密产物重新转码</strong>
+            （每个有产物的加密模板各一条任务）。
+          </p>
+          <Alert
+            type="warning"
+            showIcon
+            message="短时维护窗口"
+            description="全部任务完成前，该媒资可能部分可播、部分不可播（新密钥落库后旧产物无法解密）；失败的任务可重启重试，重启不会换第二把密钥。播放期间请谨慎操作。"
+            style={{ marginTop: 4 }}
+          />
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            对比：「轮换 MK」只重封装、不动媒体字节，无需重转码。
+          </Typography.Text>
+        </div>
+      ),
+      onOk: () => void rotateCek(item),
+    });
+  };
+
   const pendingCount = mk ? mk.versions.filter((v) => v.ver !== mk.active_ver).reduce((a, v) => a + v.keys, 0) : 0;
+
+  // 「轮换 MK」只做一件事：把旧版本封装的 CEK 收敛到当前版本。
+  // 因此没有旧版本密钥时无可执行对象——把原因说清楚，避免按钮灰着让人以为坏了。
+  const rotateDisabledReason = !mk
+    ? mkError
+      ? "MASTER_KEYS 不可用，无法轮换"
+      : "MK 状态读取中"
+    : pendingCount === 0
+      ? mk.total_keys === 0
+        ? "暂无密钥，无需轮换"
+        : `全部密钥已封装在当前版本 v${mk.active_ver}，无需轮换`
+      : null;
 
   const columns: ColumnsType<KeyItem> = [
     { title: "媒资 ID", dataIndex: "media_id", width: 120 },
@@ -221,11 +318,20 @@ export function KeysManager() {
     {
       title: "操作",
       key: "actions",
-      width: 140,
+      width: 190,
       render: (_, row) => (
         <Space size={4}>
           <Button type="link" size="small" icon={<InfoCircleOutlined />} onClick={() => void openDetail(row)}>
             详情
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            icon={<SwapOutlined />}
+            loading={cekRotatingFor === row.media_id}
+            onClick={() => confirmRotateCek(row)}
+          >
+            轮换
           </Button>
           <Popconfirm
             title="删除该媒资密钥"
@@ -277,7 +383,7 @@ export function KeysManager() {
             description={
               pendingCount > 0
                 ? `有 ${pendingCount} 条密钥仍封装在旧版本下，执行「轮换 MK」后即可收敛（不需要重转码，因此不会打断播放）。`
-                : "所有密钥均封装在当前版本下，无需轮换。"
+                : "所有密钥均封装在当前版本下，无需轮换。要换用新 MK，需先在 MASTER_KEYS 追加新版本（保留旧版本）并重启管理端。"
             }
           />
         )
@@ -287,21 +393,33 @@ export function KeysManager() {
         <Button icon={<ReloadOutlined />} onClick={() => void reload()} loading={loading}>
           刷新
         </Button>
-        <Popconfirm
-          title="轮换主密钥（MK）"
-          description="将旧版本封装的全部 CEK 重新封装到当前版本，不重转码。轮换前请确认 MASTER_KEYS 已保留旧版本。"
-          onConfirm={() => void rotate()}
-          disabled={!mk || pendingCount === 0}
-        >
-          <Button
-            type="primary"
-            icon={<SyncOutlined />}
-            loading={rotating}
-            disabled={!mk || pendingCount === 0}
+        {rotateDisabledReason ? (
+          <Tooltip
+            title={
+              <>
+                {rotateDisabledReason}
+                <br />
+                要换用新 MK：在 MASTER_KEYS 追加新版本号（保留旧版本），重启管理端后本按钮即可用。
+              </>
+            }
           >
-            轮换 MK
-          </Button>
-        </Popconfirm>
+            <span style={{ display: "inline-block" }}>
+              <Button type="primary" icon={<SyncOutlined />} disabled style={{ pointerEvents: "none" }}>
+                轮换 MK
+              </Button>
+            </span>
+          </Tooltip>
+        ) : (
+          <Popconfirm
+            title="轮换主密钥（MK）"
+            description="将旧版本封装的全部 CEK 重新封装到当前版本，不重转码。轮换前请确认 MASTER_KEYS 已保留旧版本。"
+            onConfirm={() => void rotate()}
+          >
+            <Button type="primary" icon={<SyncOutlined />} loading={rotating}>
+              轮换 MK
+            </Button>
+          </Popconfirm>
+        )}
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           每媒资一份独立密钥，明文密钥仅由分发端鉴权后下发。
         </Typography.Text>
@@ -315,7 +433,7 @@ export function KeysManager() {
           loading={loading}
           pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 个密钥` }}
           size="middle"
-          scroll={{ x: 1240, y: bodyHeight }}
+          scroll={{ x: 1290, y: bodyHeight }}
           locale={{
             emptyText: (
               <Empty

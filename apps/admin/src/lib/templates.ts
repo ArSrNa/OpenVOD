@@ -40,8 +40,9 @@ type TemplateRow = {
   updatedAt: Date;
 };
 
-/** DB 行 → DTO（camelCase → snake_case；params JSON 透传，Worker 侧再校验） */
-function toDto(row: TemplateRow): z.infer<typeof TranscodeTemplateDTO> {
+/** DB 行 → DTO（camelCase → snake_case；params JSON 透传，Worker 侧再校验）。
+ *  导出复用：CEK 轮换（lib/keys-rotate 装配）需要把模板行转成同一 DTO 形状（findTemplate）。 */
+export function templateRowToDto(row: TemplateRow): z.infer<typeof TranscodeTemplateDTO> {
   return {
     id: row.id,
     name: row.name,
@@ -111,13 +112,13 @@ async function assertWatermarkLink(watermarkId: string | null | undefined, keepO
 
 export async function listTemplates(): Promise<{ total: number; items: z.infer<typeof TranscodeTemplateDTO>[] }> {
   const rows = await db.transcodeTemplate.findMany({ orderBy: { createdAt: "desc" } });
-  return { total: rows.length, items: rows.map(toDto) };
+  return { total: rows.length, items: rows.map(templateRowToDto) };
 }
 
 export async function getTemplate(id: string): Promise<z.infer<typeof TranscodeTemplateDTO>> {
   const row = await db.transcodeTemplate.findUnique({ where: { id } });
   if (!row) throw new TemplateError("not_found", `模板不存在：${id}`, 404);
-  return toDto(row);
+  return templateRowToDto(row);
 }
 
 // ---- 创建 ----
@@ -146,7 +147,7 @@ export async function createTemplate(
         watermarkId: input.keep_original ? null : (input.watermark_id ?? null),
       },
     });
-    return toDto(row);
+    return templateRowToDto(row);
   } catch (e) {
     if (isUniqueViolation(e)) {
       throw new TemplateError("bad_request", `模板名已存在：${input.name}`, 409);
@@ -203,7 +204,7 @@ export async function updateTemplate(
 
   try {
     const row = await db.transcodeTemplate.update({ where: { id }, data });
-    return toDto(row);
+    return templateRowToDto(row);
   } catch (e) {
     if (isRecordNotFound(e)) {
       throw new TemplateError("not_found", `模板不存在：${id}`, 404);

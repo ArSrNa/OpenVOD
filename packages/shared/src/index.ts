@@ -299,6 +299,8 @@ export const DEFAULTS = {
   playbackSessionTtlSec: 4 * 3600,
   manifestTtlSec: 4 * 3600,
   subtitleTtlSec: 24 * 3600,
+  /** 字幕共享 URL 的缓存 max-age（秒，ADR-0009 2026-11-13 修订）；0 = 关闭缓存（no-store） */
+  subtitleCacheMaxAgeSec: 600,
   hlsTimeSec: 6,
 } as const;
 
@@ -342,6 +344,7 @@ export const SETTING_KEYS = {
   playbackSessionTtlSec: "playback_session_ttl_sec",
   playbackManifestTtlSec: "playback_manifest_ttl_sec",
   playbackSubtitleTtlSec: "playback_subtitle_ttl_sec",
+  playbackSubtitleCacheMaxAgeSec: "playback_subtitle_cache_max_age_sec",
   corsOrigins: "cors_origins",
   // ---- worker（ADR-0017：双模式 + HTTP 门铃） ----
   workerMode: "worker_mode",
@@ -398,6 +401,7 @@ export const SETTING_DEFAULTS: Record<string, string> = {
   [SETTING_KEYS.playbackSessionTtlSec]: String(DEFAULTS.playbackSessionTtlSec),
   [SETTING_KEYS.playbackManifestTtlSec]: String(DEFAULTS.manifestTtlSec),
   [SETTING_KEYS.playbackSubtitleTtlSec]: String(DEFAULTS.subtitleTtlSec),
+  [SETTING_KEYS.playbackSubtitleCacheMaxAgeSec]: String(DEFAULTS.subtitleCacheMaxAgeSec),
   [SETTING_KEYS.corsOrigins]: "*",
   [SETTING_KEYS.workerMode]: "resident",
   [SETTING_KEYS.workerPollIntervalMs]: "2000",
@@ -414,6 +418,8 @@ export const SETTING_TTL_LIMITS = {
   // 同时用于 S3 SigV4 预签名，其有效期上限为 7 天。
   [SETTING_KEYS.playbackManifestTtlSec]: { min: 60, max: 7 * 24 * 3600 },
   [SETTING_KEYS.playbackSubtitleTtlSec]: { min: 60, max: 30 * 24 * 3600 },
+  // 字幕缓存 max-age：0 = 关闭缓存（no-store），上限 7 天（防误配成"永久缓存"）
+  [SETTING_KEYS.playbackSubtitleCacheMaxAgeSec]: { min: 0, max: 7 * 24 * 3600 },
   // CDN URL 鉴权窗口（ADR-0019）：与 SigV4 同受 7 天上限（防误配成"永久 CDN URL"）
   [SETTING_KEYS.storageCdnAuthTtlSec]: { min: 60, max: 7 * 24 * 3600 },
   [SETTING_KEYS.adminSessionTtlSec]: { min: 600, max: 30 * 24 * 3600 },

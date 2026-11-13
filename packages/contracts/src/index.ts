@@ -531,6 +531,39 @@ export const WorkerWakeRequest = z.object({
   job_ids: z.array(z.string().min(1)).max(TRANSCODE_SUBMIT_MAX_TEMPLATES).optional(),
 });
 
+/**
+ * CEK 轮换计划密钥（spec.md §4.4，2026-11-13）：发起轮换时由管理端生成**一次**，
+ * 固化进该批**全部**轮换任务的 `transcode_jobs.key_plan`。
+ * 所有任务（含重启 / 乱序执行）都用同一把新 CEK 产出与落库 → 幂等、失败可安全重启。
+ * 仅含 MK 封装形态（wrapped_cek），明文 CEK 绝不落库（spec.md §4.1）；
+ * 该快照只进任务行，绝不进任何管理端响应 DTO。
+ */
+export const MediaKeyPlanSnapshot = z.object({
+  kid: z.string(),
+  method: z.string(),
+  /** 显式 IV（纯 hex，无 0x） */
+  iv: z.string(),
+  /** MK(AES-256-GCM) 封装的 CEK（hex） */
+  wrapped_cek: z.string(),
+  mk_ver: z.number().int(),
+});
+
+/** CEK 轮换：单条已入队的重转码任务（一个加密模板一条） */
+export const RotateCekJob = z.object({
+  job_id: z.string(),
+  template_id: z.string(),
+  template_name: z.string(),
+  status: z.enum(JOB_STATUSES),
+});
+
+/** CEK 轮换：未入队的产物说明（模板缺失 / 未加密 / 旧布局等，供 UI 明示） */
+export const RotateCekSkipped = z.object({
+  template_id: z.string().nullable(),
+  template_name: z.string().nullable(),
+  /** 跳过原因（面向管理员） */
+  reason: z.string(),
+});
+
 // ---- 密钥管理（spec.md §4.3；ADR-0006） ----
 // 仅管理端消费：分发端 /key 返回裸字节（octet-stream）、Go 侧不消费任何 DTO，
 // 故本节**不进 gen-json.ts 清单、不生成 Go struct**（同转码模板，ADR-0014）。
@@ -574,6 +607,19 @@ export const RotateMasterKeysResponse = z.object({
   to_ver: z.number().int(),
   /** 失败明细（仅 kid / media_id 与原因，不含密钥材料；最多返回 20 条） */
   errors: z.array(z.object({ media_id: z.string(), kid: z.string(), message: z.string() })).max(20),
+});
+
+/** CEK 轮换请求（spec.md §4.4）：无参数，路径即定位媒资 */
+export const RotateCekRequest = z.object({});
+
+export const RotateCekResponse = z.object({
+  media_id: z.string(),
+  /** 新密钥 kid（仅标识符，供确认反馈；不含任何密钥材料） */
+  kid: z.string(),
+  /** 已入队的重转码任务（每个有产物的加密模板一条，共用 key_plan 里同一把新 CEK） */
+  jobs: z.array(RotateCekJob),
+  /** 有产物但未入队的模板（模板已删 / 未加密 / 旧布局），UI 明示 */
+  skipped: z.array(RotateCekSkipped),
 });
 
 // ---- 播放端用户管理（ADR-0004 users 表 / ADR-0007 账户域） ----
@@ -673,6 +719,8 @@ export const SubtitleTrackDTO = z.object({
   is_default: z.boolean(),
   status: z.enum(SUBTITLE_STATUSES),
   bytes: z.number().int(),
+  /** 内容版本号（ADR-0009 2026-11-13 修订）：覆盖文本 +1；字幕签名 URL 携带 ?v= 该值 */
+  content_version: z.number().int(),
   /** 相对存储键 proceed/{mediaId}/subtitles/{trackId}.vtt */
   storage_key: z.string(),
   /** 对应对象是否存在（存储不可用时为 null） */

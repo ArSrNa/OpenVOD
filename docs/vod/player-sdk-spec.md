@@ -407,7 +407,7 @@ export type PlayerSdkEvent =
 > **实现落点（2026-10-16）**：S1 源码在 `packages/player-sdk/src/`（含自包含公共类型 `src/types.ts`）；
 > §12.1 单测矩阵 T1~T18 落在 `packages/player-sdk/test/{auth,playback,media-errors,sdk-surface}.test.ts`（`bun test packages/player-sdk`，35 项全绿，行覆盖率 ~98.8%）；
 > S2 消费方改造见 `apps/player/src/lib/sdk.ts`（tokenProvider）+ `components/PlayView.tsx` / `app/page.tsx`，`lib/delivery.ts` 已删除；
-> S4 交付物 README 见 `packages/player-sdk/README.md`；发布与覆盖率见 §12.5。**S3（体验环境端到端）待维护者按 §12.2 执行。**
+> S4 交付物 README 见 `packages/player-sdk/README.md`；发布与覆盖率见 §12.5；**S3（体验环境端到端）已完成——2026-11-13 维护者按 §12.2 自行执行通过。**
 
 ### 12.1 单测矩阵（注入 fetch stub + 假时钟）
 

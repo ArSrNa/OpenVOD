@@ -13,9 +13,6 @@ branch:
       - name: 构建admin（Docker）
         description: 构建 apps/admin 镜像并推送到 CNB 制品库（ADR-0013 管理端容器）
         event: web_trigger_admin_docker
-      - name: 构建admin（腾讯云CCR）
-        description: 构建 apps/admin 镜像并以 docker 媒体类型推送到 ccr.ccs.tencentyun.com/tcb-<CCR_UIN>-iydy/openvod:admin（凭据取密钥仓库 ccr.yaml）
-        event: web_trigger_admin_ccr
       - name: 构建worker（Docker）
         description: 构建 apps/worker 镜像并推送到 CNB 制品库（含 ffmpeg/ffprobe）
         event: web_trigger_worker_docker

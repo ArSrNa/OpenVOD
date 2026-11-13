@@ -61,7 +61,8 @@ DELIVERY_JWT_ISSUER="openvod-delivery"
 DELIVERY_JWT_TTL_SEC="86400"          # JWT 有效期（秒），默认 24h
 PLAYBACK_SESSION_TTL_SEC="14400"      # 播放会话有效期（秒）
 PLAYBACK_MANIFEST_TTL_SEC="14400"     # 清单 token / 预签名有效期上限（token exp ≤ 会话 exp）
-PLAYBACK_SUBTITLE_TTL_SEC="86400"     # 字幕 token 有效期上限
+PLAYBACK_SUBTITLE_TTL_SEC="86400"     # 字幕共享 token 有效期窗口（exp 取窗口末端）
+PLAYBACK_SUBTITLE_CACHE_MAX_AGE_SEC="600"  # 字幕共享 URL 缓存时长（public, max-age）；0 = 关闭（no-store）
 DELIVERY_CORS_ORIGINS="*"             # 允许跨域的源，逗号分隔；* = 全部
 
 # ---- 对象存储（S3 兼容：COS / MinIO 等；ADR-0005 2026-09-22 修订：仅 S3，local 驱动已移除）----
@@ -87,7 +88,8 @@ STORAGE_CDN_BASE_URL=""               # 加速域名（仅替换 GET 预签名 U
 | `DELIVERY_JWT_TTL_SEC` | 否 | `86400` | JWT 有效期（ADR-0007：默认 24h，无 refresh） |
 | `PLAYBACK_SESSION_TTL_SEC` | 否 | `14400` | 播放会话有效期 |
 | `PLAYBACK_MANIFEST_TTL_SEC` | 否 | `14400` | 清单 token / 预签名有效期上限（token exp ≤ 会话 exp） |
-| `PLAYBACK_SUBTITLE_TTL_SEC` | 否 | `86400` | 字幕 token 有效期上限（实际 exp 取与会话 exp 较小值） |
+| `PLAYBACK_SUBTITLE_TTL_SEC` | 否 | `86400` | 字幕共享 token 有效期窗口（exp 取当前窗口末端，同一窗口内 URL 稳定；ADR-0009 2026-11-13 修订） |
+| `PLAYBACK_SUBTITLE_CACHE_MAX_AGE_SEC` | 否 | `600` | 字幕共享 URL 缓存时长（`Cache-Control: public, max-age=`）；0 = 关闭缓存（`no-store`）；错误响应恒 no-store |
 | `DELIVERY_CORS_ORIGINS` | 否 | `*` | 允许跨域的源（管理端预览用；逗号分隔） |
 | `APP_ENV` | 否 | `dev` | 运行环境标识 |
 | `STORAGE_ROOT_PREFIX` | 否 | 空 | 全局 root 前缀（spec.md §1.1），空 = 桶顶层 |

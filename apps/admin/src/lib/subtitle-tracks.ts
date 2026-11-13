@@ -33,6 +33,8 @@ export interface SubtitleRow {
   status: string;
   storageKey: string;
   bytes: number;
+  /** 内容版本号（ADR-0009 2026-11-13 修订）：覆盖文本 +1，进入字幕签名 URL ?v= */
+  contentVersion: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -48,12 +50,13 @@ export interface SubtitleCreateData {
   createdBy: string | null;
 }
 
-/** 更新字段（缺省 = 不修改） */
+/** 更新字段（缺省 = 不修改）；contentVersion 传 Prisma `{ increment: n }` 形态 */
 export interface SubtitleUpdateData {
   lang?: string;
   label?: string;
   isDefault?: boolean;
   bytes?: number;
+  contentVersion?: { increment: number };
 }
 
 export interface SubtitleDeps {
@@ -123,6 +126,7 @@ async function toDto(row: SubtitleRow, deps: SubtitleDeps): Promise<SubtitleTrac
     is_default: row.isDefault,
     status: row.status as SubtitleTrackDto["status"],
     bytes: row.bytes,
+    content_version: row.contentVersion,
     storage_key: row.storageKey,
     storage_ok: await deps.objectExists(row.storageKey),
     created_at: row.createdAt.toISOString(),
@@ -272,6 +276,8 @@ export async function readSubtitleContent(
 
 // ---- 覆盖文本（就地覆盖同一对象，trackId 与键不变；spec.md §7.2） ----
 // 同样接受 .vtt / .srt（SRT 自动转 VTT 后覆盖），见 lib/vtt.ts 的 toVttText。
+// 内容版本号 +1（ADR-0009 2026-11-13 修订）：字幕 URL 携带 ?v=，版本变 = URL 变，
+// CDN 缓存键隔离；旧 URL 由分发端校验版本不符 403（客户端经重签拿到新地址）。
 
 export async function replaceSubtitleContent(
   mediaId: string,
@@ -286,7 +292,12 @@ export async function replaceSubtitleContent(
 
   const body = new TextEncoder().encode(wrapVtt(() => toVttText(bytes)));
   await deps.putObject(row.storageKey, body);
-  const updated = await deps.updateTrack(trackId, mediaId, { bytes: body.length }, false);
+  const updated = await deps.updateTrack(
+    trackId,
+    mediaId,
+    { bytes: body.length, contentVersion: { increment: 1 } },
+    false,
+  );
   return await toDto(updated, deps);
 }
 

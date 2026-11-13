@@ -31,6 +31,7 @@ function mapRow(r: any): SubtitleRow {
     status: r.status,
     storageKey: r.storageKey,
     bytes: r.bytes,
+    contentVersion: r.contentVersion,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   };

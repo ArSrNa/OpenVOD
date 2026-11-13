@@ -140,7 +140,7 @@ root 下按资产类别分四个分区，互不嵌套：
 
 ### 2.1.2 系统设置（system_settings，2026-09-22 按 ADR-0015 修订）
 
-继续使用现有 key-value 表，不新增配置表或配置文件。页面为 `/settings/playback`、`/settings/storage`、`/settings/security`、`/settings/worker`，分别承载播放策略/预览账号、S3 存储、安全/登录、Worker/新媒资 ID 参数；转码模板保持独立。
+继续使用现有 key-value 表，不新增配置表或配置文件。页面为 `/settings/playback`、`/settings/storage`、`/settings/security`、`/settings/worker`，分别承载播放策略/预览账号、S3 存储、安全/登录、Worker/新媒资 ID 参数；转码模板保持独立。另有 `/settings/appearance`（2026-11-13 新增）：只切换管理端浅色 / 深色 / 跟随系统，属于**浏览器本地偏好**（`localStorage`，键 `openvod.theme.mode`），不读写 `system_settings`、无 API，因此不受 revision / 审计约束，也不同步给其他管理员。
 
 - **边界**：数据库连接、provider、端口与 MK 根密钥只能由 env 提供。其它登记项按 DB > env > 默认解析。S3 SK、URL 签名密钥、会话密钥、OIDC secret、预览口令仅以 MK 封装值落库。
 - **API**：GET `?group=...` 返回 `{group, revision, fields, restart_required}`；每个 field 包含 `key/label/value/source/secret/configured/overridden`。密钥 `value=null`，不返回明文或密文。PUT `{group, revision, values}`；值为字符串，未提交键保持不变，空串删除覆盖并回退 env/默认。
@@ -245,7 +245,8 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 - 任一步失败：事务整体回滚，**旧密钥行原样保留**（不会出现「既无新也无旧」的空洞）——已有测试覆盖（kid 撞车场景）；
 - 因此**绝不能提前落库**：若在转码前落库，一次失败的转码就会换掉该媒资密钥，使既有加密产物永久无法解密；
 - **多模板产物共用一份 CEK**（§1.3：`proceed/{id}/{templateId}/` 可并存多套）：加密任务先 `resolveMediaKey` 解封复用已有密钥，只有该媒资**从未加密过**时才生成新密钥 → 用模板 B 转码不会让模板 A 的密文失效；
-- 因此 **CEK 轮换（重加密）= 重转码该媒资的全部模板产物**，单模板重转码不换密钥；也不做同媒资多版本密钥并存 / 双 kid 宽限。
+- 因此 **CEK 轮换（重加密）= 重转码该媒资的全部加密模板产物**，单模板重转码不换密钥；也不做同媒资多版本密钥并存 / 双 kid 宽限。
+- **CEK 轮换的任务编排（2026-11-13 实现，spec.md §4.4）**：管理端发起时生成**一次**新密钥材料，把 MK 封装形态固化进本批全部轮换任务的 `transcode_jobs.key_plan`（`MediaKeyPlanSnapshot`：kid / method / iv / wrapped_cek / mk_ver）；Worker 对 `key_plan` 非空的任务**不再走 resolveMediaKey 复用**，而是解封计划密钥（`materializeMediaKey`）转码，产物上传成功后照常整行替换 `hls_keys`。由此：① 幂等——重启 / 乱序 / 分批完成都用同一把新 CEK，不会出现「重启后换第二把密钥导致已完成产物作废」；② 失败安全——全部任务完成前 `hls_keys` 不被触碰，旧产物照常可播；③ 明文红线不破——`key_plan` 与 `hls_keys.wrapped_cek` 同一信任域，明文 CEK 绝不落库。轮换进行中该媒资冻结：普通转码发起与再次轮换均 409。
 
 ### 4.3 管理端密钥接口（只读 + 生命周期操作）
 
@@ -256,6 +257,7 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 | `/api/admin/keys/{mediaId}` | DELETE | 删除该媒资密钥行；**存在未过期播放会话时 409 拒绝**（避免打断在播会话），先吊销会话再删 |
 | `/api/admin/keys/mk` | GET | MK 版本状态：当前封装版本（`MASTER_KEYS` 最大版本）+ 各版本密钥用量 + 密钥总数 |
 | `/api/admin/keys/rotate-mk` | POST | MK 轮换：按行自身 `mk_ver` 解封、以当前版本重新封装（可传 `from_ver` 限定来源版本）；**无需重转码**。v1 同步逐行执行，超大数据量演进为任务化分批 |
+| `/api/admin/keys/{mediaId}/rotate` | POST | **CEK 轮换（2026-11-13）**：重转码该媒资**全部加密模板产物**（§4.4）。校验：媒资有密钥行（404）、无任何进行中任务（409，普通转码与轮换互斥）、有加密产物（400）→ 生成**一次**新密钥（`createMediaKey`，明文即弃、只留 MK 封装形态）→ 固化进本批**全部**轮换任务的 `transcode_jobs.key_plan`，每个有产物的**加密**模板各入队一条任务（整批同一事务；模板快照结构同普通转码）。模板已删 / 未加密 / 旧布局产物记入 `skipped`（不整批失败），一个都不可轮换时 400。返回 202 `{media_id, kid, jobs[], skipped[]}`；落 `audit_logs`（`key.rotate_cek`）。响应**绝不含密钥材料**（kid 为标识符，`wrapped_cek` 只在任务行内） |
 
 **P0 红线（评审与测试用例）**：
 
@@ -269,7 +271,7 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 | 对象 | 方式 | 影响 |
 |---|---|---|
 | MK | 在 `MASTER_KEYS` 新增版本号（旧版本保留）+ 管理端「轮换 MK」（`POST /api/admin/keys/rotate-mk`）重封装 | 无需重转码；轮换期间播放不受影响（先解封再重封装，字节未变） |
-| CEK | 重转码该媒资的**全部**模板产物（单模板重转码会复用现有 CEK，不换密钥，§4.2） | 该媒资短时维护窗口 |
+| CEK | **管理端「轮换」（`POST /api/admin/keys/{mediaId}/rotate`，2026-11-13 已实现）**：生成一次计划密钥固化进本批全部轮换任务（`key_plan`），对每个有产物的**加密**模板各入队一条重转码任务（§4.2）。单模板普通重转码会复用现有 CEK，不换密钥 | 该媒资短时维护窗口：新密钥落库后旧产物不可解密，直至该模板的重转码任务完成；失败任务可重启（复用同一把计划密钥，幂等收敛） |
 | 播放会话 | 置 `revoked_at` | 新清单 / 密钥请求立即拒绝（≤60s 收敛）；已下载分片在 token exp 内仍可播（接受，ADR-0006 §6） |
 
 ### 4.5 相关环境变量
@@ -541,7 +543,7 @@ t = ⌊(now + ttl) / ttl⌋ · ttl + ttl           # V：过期时刻；不论�
 - ~~SQLite 自托管驱动~~ —— **已实现（2026-10-17，ADR-0011 修订）**：`modernc.org/sqlite` 纯 Go 驱动，单机同卷形态与 admin / worker 共用 `DATABASE_URL`（`file:` 连接串），时间 / 布尔按 Prisma 物理存储对齐；跨机 / 云函数仍必须 MySQL；
 - ~~`custom_data` **公开白名单**~~ —— **已实现（2026-09-24，ADR-0016 / §8.4）**：`custom` 按白名单输出 `category` / `description` / `tags`（管理端写入投影，分发端做类型校验后下发），其余键一律丢弃；`poster_url` 已随仅-S3 决策全量预签名直出；
 - **cursor 分页**（ADR-0010 契约）：`GET /v1/media` 当前只支持 `limit`（缺省 50 / 上限 200）、`next_cursor` 恒为 `null`，媒资规模需要时再实现；
-- 字幕链路（M4）**已实现（2026-09-20）**：规范见 §7.5；字幕进 CDN 缓存（ADR-0009 原始设想）仍为演进项，前置条件是引入内容版本号 / 共享 token 形态。
+- 字幕链路（M4）**已实现（2026-09-20）**：规范见 §7.5；~~字幕进 CDN 缓存（ADR-0009 原始设想）~~ —— **已实现（2026-11-13，ADR-0009 修订）**：内容版本号（`media_subtitles.content_version`，覆盖文本 +1）+ 共享 token（不绑会话、exp 窗口对齐）→ 共享 URL 跨会话稳定可缓存（`public, max-age`，默认 600s），分片 / 密钥仍逐会话（P0 不动）。
 
 **部署前置（非未完成项）**：管理端「产物 → 播放」由浏览器直连对象存储拉分片（仅 S3 形态），要求**对象桶 CORS 放行管理端源站**（与封面截帧同一前提，§2.3）——未配置时表现为「有总时长但一直转圈」（分片请求被浏览器拦截），播放弹窗会在等待超时后给出该提示。播放器为 Video.js v10（与媒资预览同一皮肤），HLS 由 `@videojs/hlsjs-video`（hls.js / MSE）承载，Safari 由 Video.js 自行回退原生 HLS。
 
@@ -560,14 +562,14 @@ t = ⌊(now + ttl) / ttl⌋ · ttl + ttl           # V：过期时刻；不论�
 - **`label`（展示名）**：必填，1–64 字符（播放器字幕菜单展示；不参与选轨逻辑）；
 - **`is_default`（默认轨）**：每媒资**至多一条**默认轨；首条上传的轨道自动置默认；显式设默认时在事务内把该媒资其它轨道置 `false`（MySQL / SQLite 均无「部分唯一索引」，故为应用层事务保证）；
 - **`status`**：`PROCESSING` / `READY` / `FAILED` 取值保留（Prisma `SubtitleStatus`），但 **v1 上传为同步校验** —— 通过即写 `READY`；失败直接 400 且**不落库、不落存储**（不留 `FAILED` 残留行）。`PROCESSING` / `FAILED` 留给未来异步链路（语音转写 / 机器翻译）；
-- 其余列：`storage_key`（不含 root 的相对对象键）、`bytes`（对象字节数）、`created_by`（管理端账号 id）。
+- 其余列：`storage_key`（不含 root 的相对对象键）、`bytes`（对象字节数）、`content_version`（内容版本号，默认 1，覆盖文本 +1；ADR-0009 2026-11-13 修订）、`created_by`（管理端账号 id）。
 
 ### 7.2 存储与生命周期
 
 - 落键 `proceed/{mediaId}/subtitles/{trackId}.vtt`：`subtitles` 是 `proceed/{id}/` 下的**保留段**（`PROCEED_RESERVED_SEGMENTS`）—— 不参与模板产物分组（§1.4 的 `products[]`）、不被「按模板删除产物」（§2.1）清理、也不随重转码变化；
 - **写入顺序**：先 `put` 对象、再落 DB 行（与封面上传同序）；对象写入失败 → 不落库，返回 500；
 - **存储对象恒为 WebVTT**（`{trackId}.vtt`）：`.srt` 仅作输入，在上传 / 覆盖时转换（§7.3），不落 SRT 对象；
-- **文本编辑 = 就地覆盖同一对象**（trackId 与键不变）；分发端字幕响应 `no-store`（§7.5），编辑后下一次请求即取到新文本；
+- **文本编辑 = 就地覆盖同一对象 + 内容版本 +1**（trackId 与键不变；ADR-0009 2026-11-13 修订）：字幕 URL 携带 `?v=<content_version>`，版本变 = URL 变 → CDN 缓存键隔离；已签发的旧 `?v=` URL 由分发端 403（§7.5），缓存 TTL 内可能返回旧文本（上限 = max-age，默认 600s）；
 - **删除轨道 = 先删对象、再删 DB 行**（与媒资删除同序，幂等可重试）：对象已不存在视为成功；删默认轨后**不自动改派**新默认轨（允许暂时无默认，避免意料外的轨道切换）；
 - **媒资删除**：`proceed/{id}/` 整子树删除自然覆盖字幕对象，`media_subtitles` 随 `media` 级联删除（§2.1）；
 - 单文件上限 `SUBTITLE_MAX_BYTES` = **5 MiB**（远低于 P0 的 6MB 响应体上限，MB 级长片字幕足够）。
@@ -611,18 +613,19 @@ t = ⌊(now + ttl) / ttl⌋ · ttl + ttl           # V：过期时刻；不论�
 | 端点 | 鉴权 | 说明 |
 |---|---|---|
 | `GET /v1/media/{id}` | JWT | 详情 `subtitles[]`（`MediaSubtitleDTO`：id / lang / label / is_default）——**不含 URL**（URL 需会话 token）；已实现（查 `status=READY`） |
-| `POST /v1/media/{id}/play` | JWT | 响应新增 `subtitles[]` = `{id, lang, label, is_default, url}`：`url` = `{DELIVERY_PUBLIC_BASE_URL}/v1/media/{id}/subtitles/{trackId}.vtt?t=<typ=v token>`，`exp = min(now + PLAYBACK_SUBTITLE_TTL_SEC, 会话 exp)`。理由：字幕鉴权必须走 URL query token（Safari 原生 HLS 无法带请求头，ADR-0006），而 token 必须绑定 `sid` 才可吊销 —— 只有会话上下文（play）能签发，故随 play 一并下发，播放端零额外往返 |
+| `POST /v1/media/{id}/play` | JWT | 响应新增 `subtitles[]` = `{id, lang, label, is_default, url}`：`url` = `{DELIVERY_PUBLIC_BASE_URL}/v1/media/{id}/subtitles/{trackId}.vtt?v=<content_version>&t=<typ=v 共享 token>`。**共享 token（ADR-0009 2026-11-13 修订）**：不绑会话（payload `sid` 省略），`exp` 取 `PLAYBACK_SUBTITLE_TTL_SEC` 的**窗口对齐值**（当前窗口末端，`exp = ⌊now/TTL⌋·TTL + TTL`）—— 同一窗口内任意一次 play 产出**逐字相同**的 URL（跨会话 / 跨用户一致）→ CDN 缓存键稳定。理由：字幕鉴权必须走 URL query token（Safari 原生 HLS 无法带请求头，ADR-0006）；共享形态 + 内容版本使 URL 可缓存，吊销收敛于版本推进 + TTL 窗口（低敏公开文本，分片 / 密钥仍逐会话，P0 不动）。播放端零额外往返 |
 | `GET /v1/media/{id}/subtitles/{trackId}.vtt` | token(v) | 取 VTT 文本（下述规则） |
 
 `.vtt` 端点执行规则（顺序即安全边界）：
 
 1. `trackId` 形状白名单（cuid 形状）→ 不符 404（路由层先拦）；
-2. `authorize(typ=v, mid={id})`：token 校验（query `t` 优先，其次 `X-Playback-Token`）+ `mid` 绑定 + 会话未过期未吊销 —— 未携带 / 非法 / 已吊销 → 403 `bad_token`（纳入 `assert-unsigned-403` 门禁）；
+2. `authorize(typ=v, mid={id})`：token 校验（query `t` 优先，其次 `X-Playback-Token`）+ `mid` 绑定；**共享 token（sid 省略）到此为止**（验签即信任，不查会话），会话 token（sid 非空）再查会话未过期未吊销 —— 未携带 / 非法 / 已吊销 → 403 `bad_token`（纳入 `assert-unsigned-403` 门禁）；
 3. DB 查轨道 `id=trackId AND media_id={id} AND status=READY`；不存在 → 404 `not_found`；
-4. 读对象以行内 `storage_key` 为准（**不按 URL 拼键**，保持键可迁移）；对象缺失 → 404；
-5. 输出：**由分发端代理输出**（`blob.Get` 读整对象写出，v1 仅 S3 形态）—— 若改走预签名 302，对象响应头（`no-store`）与跨域策略都不受分发端控制，而 `no-store` 是「就地覆盖、下一次请求即生效」的前提；P0 的「分片字节不经过函数」只约束分片，字幕不适用（≤5 MiB，低于 6MB 响应体上限）；
-6. 响应头 `Content-Type: text/vtt; charset=utf-8`、`Cache-Control: no-store`（与清单 / 密钥同纪律：token 逐会话签发、文本可被就地覆盖，缓存会读到陈旧字幕）；ADR-0009 的「CDN 可缓存」列为**演进项**，前置条件是引入内容版本号 / 共享 token 形态；
-7. **不入 HLS 清单**：v1 由播放端外挂轨道（`<track>` / hls.js `addTextTrack`）引用 `play` 返回的 URL；`EXT-X-MEDIA TYPE=SUBTITLES` 需分段 playlist，列为演进项（ADR-0009）。
+4. **内容版本校验（ADR-0009 2026-11-13 修订）**：URL `?v=` 必须等于行 `content_version`（共享 token 强制携带，缺失 → 403；会话 token 携带时同样校验）→ 不符 403 `bad_token`（版本过期的旧 URL 立即失效，播放端经重签拿到新地址）；
+5. 读对象以行内 `storage_key` 为准（**不按 URL 拼键**，保持键可迁移）；对象缺失 → 404；
+6. 输出：**由分发端代理输出**（`blob.Get` 读整对象写出，v1 仅 S3 形态）—— 若改走预签名 302，对象响应头（`Cache-Control`）与跨域策略都不受分发端控制；P0 的「分片字节不经过函数」只约束分片，字幕不适用（≤5 MiB，低于 6MB 响应体上限）；
+7. 响应头 `Content-Type: text/vtt; charset=utf-8`、`Cache-Control` **按 token 形态区分**（ADR-0009 2026-11-13 修订）：共享 token → `public, max-age=<PLAYBACK_SUBTITLE_CACHE_MAX_AGE_SEC>`（默认 600；0 = 关闭回退 `no-store`）；会话 token → `no-store`（2026-09-20~2026-11-12 期间全量 no-store 的原纪律，仅对旧形态保留）；**错误响应恒 `no-store`**（清单 / 密钥 no-store 纪律不变，ADR-0006 §5）。已知取舍：覆盖文本后旧 `?v=` URL 在缓存 TTL 内可能返回旧文本（上限 = max-age），需要立即生效以新 URL 重签（play / SDK `refresh`）；
+8. **不入 HLS 清单**：v1 由播放端外挂轨道（`<track>` / hls.js `addTextTrack`）引用 `play` 返回的 URL；`EXT-X-MEDIA TYPE=SUBTITLES` 需分段 playlist，列为演进项（ADR-0009）。
 
 分发端受限 DB 账号对 `media_subtitles` 只需**只读**（ADR-0011），本链路无 DB 写入。
 

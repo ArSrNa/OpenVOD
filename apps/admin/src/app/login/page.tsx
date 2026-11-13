@@ -1,7 +1,7 @@
 "use client";
 
 import { Button, Card, Form, Input, Tabs, Typography } from "antd";
-import { App as AntApp } from "antd";
+import { App as AntApp, theme } from "antd";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { GENERIC_OIDC_PROVIDER_ID, authClient } from "@/lib/auth-client";
@@ -14,6 +14,8 @@ interface Values {
 
 function LoginInner() {
   const { message } = AntApp.useApp();
+  // 底色跟 antd 主题走（深色模式下不再是一块固定的浅灰）
+  const { token } = theme.useToken();
   const router = useRouter();
   const [loading, setLoading] = useState(false);
 
@@ -70,7 +72,7 @@ function LoginInner() {
   );
 
   return (
-    <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "#f5f6f8" }}>
+    <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: token.colorBgLayout }}>
       <Card style={{ width: 380 }}>
         <Typography.Title level={4} style={{ textAlign: "center", marginTop: 4 }}>
           OpenVOD 管理端

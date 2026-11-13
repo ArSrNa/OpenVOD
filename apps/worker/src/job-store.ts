@@ -19,6 +19,8 @@ export interface TranscodeJobRow {
   templateId: string | null;
   /** 发起时的模板快照（ADR-0014 防漂移） */
   templateSnapshot: unknown;
+  /** CEK 轮换计划密钥（spec.md §4.4）：非空 = 本任务是轮换任务，用计划密钥而非复用 hls_keys */
+  keyPlan: unknown;
   attempts: number;
   startedAt: Date | null;
 }
@@ -52,6 +54,7 @@ function toRow(row: {
   status: string;
   templateId: string | null;
   templateSnapshot: unknown;
+  keyPlan: unknown;
   attempts: number;
   startedAt: Date | null;
 }): TranscodeJobRow {
@@ -61,6 +64,7 @@ function toRow(row: {
     status: row.status as JobStatusName,
     templateId: row.templateId,
     templateSnapshot: row.templateSnapshot,
+    keyPlan: row.keyPlan,
     attempts: row.attempts,
     startedAt: row.startedAt,
   };
@@ -154,6 +158,7 @@ export function createPrismaTranscodeJobStore(): TranscodeJobStore {
           status: true,
           templateId: true,
           templateSnapshot: true,
+          keyPlan: true,
           attempts: true,
           startedAt: true,
         },

@@ -159,7 +159,6 @@ CNB 云原生开发环境实测要点（2026-09-22）：
 | 按钮 | 事件键 | 产物 |
 |---|---|---|
 | 构建admin（Docker） | `web_trigger_admin_docker` | `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/admin:latest` |
-| 构建admin（腾讯云CCR） | `web_trigger_admin_ccr` | `ccr.ccs.tencentyun.com/tcb-${CCR_UIN}-iydy/openvod:admin`（凭据取密钥仓库 `ccr.yaml`，见下） |
 | 构建worker（Docker） | `web_trigger_worker_docker` | `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/worker:latest` |
 | 构建worker（腾讯云CCR） | `web_trigger_worker_ccr` | `ccr.ccs.tencentyun.com/tcb-${CCR_UIN}-iydy/openvod:worker`（凭据取密钥仓库 `ccr.yaml`，见下） |
 | 构建player（Docker） | `web_trigger_player_docker` | `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/player:latest` |
@@ -169,11 +168,12 @@ CNB 云原生开发环境实测要点（2026-09-22）：
 `tag_push` 流水线（`$` 兜底分支）单流水线串行构建四个运行镜像，任一 stage 失败即中断、
 不留「半个版本」；产物同时保留 `:latest` 与本次 tag 两个标签，制品库可直接按 tag 回滚。
 
-### 同步到腾讯云 CCR（`web_trigger_admin_ccr` / `web_trigger_worker_ccr`）
+### 同步到腾讯云 CCR（`web_trigger_worker_ccr`）
 
-除 CNB 制品库外，admin 与 worker 镜像还可另推一份到腾讯云**容器镜像服务 CCR**（`ccr.ccs.tencentyun.com`），
-仓库地址 `tcb-${CCR_UIN}-iydy/openvod`，**标签按应用名区分**（admin → `:admin`，worker → `:worker`）。
-实现见 `.cnb.yml` 的 `.push-admin-ccr` / `.push-worker-ccr` 两个锚点，各自一个 stage 内「登录 → 构建 → 推送」：
+除 CNB 制品库外，worker 镜像还可另推一份到腾讯云**容器镜像服务 CCR**（`ccr.ccs.tencentyun.com`），
+仓库地址 `tcb-${CCR_UIN}-iydy/openvod`，标签为 `:worker`。
+实现见 `.cnb.yml` 的 `.push-worker-ccr` 锚点，一个 stage 内「登录 → 构建 → 推送」：
+（admin 的 CCR 同步流水线已移除，admin 只推 CNB 制品库。）
 
 ```bash
 # 凭据：密钥仓库 https://cnb.cool/arsrna/env/-/blob/main/ccr.yaml（CCR_UIN / CCR_PASSWORD）
@@ -190,8 +190,7 @@ docker buildx imagetools inspect ccr.ccs.tencentyun.com/tcb-${CCR_UIN}-iydy/open
   --format '{{.Manifest.MediaType}}'   # 期望 application/vnd.docker.distribution.manifest.v2+json
 ```
 
-worker 镜像含 `ffmpeg` 与 `fonts-noto-cjk`（层明显大于 admin），首次推送耗时会比 admin 长；
-两条流水线**互相独立**——一侧失败（如 CCR 凭据过期）不牵连另一侧，也各自重试。
+worker 镜像含 `ffmpeg` 与 `fonts-noto-cjk`，层较大，首次推送耗时较长。
 
 要点：
 
@@ -202,7 +201,6 @@ worker 镜像含 `ffmpeg` 与 `fonts-noto-cjk`（层明显大于 admin），首�
   **`--output type=docker` + `docker push` 不能保证 schema2**：Docker 29 起默认使用 containerd 镜像存储
   （`Storage Driver: overlayfs` / `io.containerd.snapshotter.v1`），镜像以 OCI 形态存储、push 时不做
   schema2 转换——实测推上去的是 OCI index，CCR 控制台里就显示 `OCI-Image-v1`。
-  `.push-admin-ccr` 仍是旧写法，首次推 admin 前应先按上面的 worker 写法改掉（curl/`imagetools` 断言同理）。
 - **架构对齐腾讯云**：显式 `--platform linux/amd64`（TKE / SCF 均为 x86）；构建机若为 arm64 需 buildx + QEMU，
   否则直接报 `no match for platform`（宁可构建失败，也不要把 arm64 镜像推上去）。
 - **命名空间 / 仓库要先存在**：CCR 控制台里没有 `tcb-<UIN>-iydy` 命名空间或 `openvod` 仓库时，

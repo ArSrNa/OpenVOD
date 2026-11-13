@@ -24,7 +24,7 @@ export class TranscodeSubmitError extends Error {
 }
 
 /** 快照中的水印段（contracts WatermarkSnapshot：自包含，图片元数据一并固化） */
-type SnapshotWatermark = z.infer<typeof WatermarkSnapshot>;
+export type SnapshotWatermark = z.infer<typeof WatermarkSnapshot>;
 
 /** 待写入 transcode_jobs 的一行（模板快照已就绪） */
 export interface SubmitJobRow {
@@ -53,8 +53,8 @@ export interface SubmitTranscodeDeps {
   getTemplate(id: string): Promise<z.infer<typeof TranscodeTemplateDTO>>;
   /** 取水印模板（模板已关联水印时调用；不存在应抛带 code/status 的业务错误） */
   getWatermark(id: string): Promise<z.infer<typeof WatermarkTemplateDTO>>;
-  /** 查询该媒资未终结任务（同模板冲突判定用） */
-  listActiveJobs(mediaId: string): Promise<Array<{ id: string; templateId: string | null }>>;
+  /** 查询该媒资未终结任务（同模板冲突判定用）；`keyPlan` 非空 = 该任务是 CEK 轮换任务（spec.md §4.4） */
+  listActiveJobs(mediaId: string): Promise<Array<{ id: string; templateId: string | null; keyPlan?: unknown }>>;
   /** 批量创建任务（同一事务）；返回顺序须与入参一致 */
   createJobs(rows: SubmitJobRow[]): Promise<Array<{ id: string }>>;
 }
@@ -73,8 +73,9 @@ function watermarkSnapshotOf(watermark: z.infer<typeof WatermarkTemplateDTO>): S
   };
 }
 
-/** 模板快照（ADR-0014 防漂移）：Worker 只吃快照，模板后续改删不影响本任务 */
-function snapshotOf(
+/** 模板快照（ADR-0014 防漂移）：Worker 只吃快照，模板后续改删不影响本任务。
+ *  导出复用：CEK 轮换（lib/keys-rotate）的轮换任务快照结构与普通转码完全一致。 */
+export function snapshotOf(
   template: z.infer<typeof TranscodeTemplateDTO>,
   watermark: SnapshotWatermark | null,
 ): SubmitJobRow["templateSnapshot"] {
@@ -168,6 +169,14 @@ export async function submitTranscodeWithDeps(
 
   // 冲突检查：同一媒资 + **同一模板** 只允许一个未终结任务（不同模板产物分树存放，可并行，spec.md §5.1）
   const running = await deps.listActiveJobs(mediaId);
+  // CEK 轮换进行中 → 整个媒资冻结：普通任务会复用旧 CEK 产出新密文，轮换落库后即失效（spec.md §4.4）
+  if (running.some((r) => r.keyPlan != null)) {
+    throw new TranscodeSubmitError(
+      "bad_request",
+      `媒资正在进行 CEK 密钥轮换（重转码），请等待轮换任务完成后再发起转码`,
+      409,
+    );
+  }
   const runningByTemplate = new Map(running.map((r) => [r.templateId ?? "", r.id]));
   const conflicts = templates.filter((t) => runningByTemplate.has(t.id));
   if (conflicts.length) {

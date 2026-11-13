@@ -27,7 +27,7 @@ const GROUPS: { key: string; title: string; items: OssItem[] }[] = [
       { name: "@ant-design/nextjs-registry", homepage: "https://github.com/ant-design/ant-design", version: "^1.1.0", license: "MIT", usage: "antd 的 App Router SSR 注册表" },
       { name: "@ant-design/v5-patch-for-react-19", homepage: "https://github.com/ant-design/ant-design", version: "^1.0.3", license: "MIT", usage: "antd v5 适配 React 19 的兼容补丁" },
       { name: "@tanstack/react-query", homepage: "https://github.com/TanStack/query", version: "^5.62.0", license: "MIT", usage: "服务端状态与数据请求" },
-      { name: "better-auth", homepage: "https://github.com/better-auth/better-auth", version: "^1.2.0", license: "MIT", usage: "管理端鉴权（OIDC + 邮箱密码，ADR-0013）" },
+      { name: "better-auth", homepage: "https://github.com/better-auth/better-auth", version: "^1.2.0", license: "MIT", usage: "管理端鉴权（OIDC + 邮箱密码）" },
     ],
   },
   {
@@ -52,7 +52,7 @@ const GROUPS: { key: string; title: string; items: OssItem[] }[] = [
     key: "runtime",
     title: "运行时与媒体工具链",
     items: [
-      { name: "Node.js", homepage: "https://github.com/nodejs/node", version: "22+", license: "MIT（内含 V8 / OpenSSL 等 BSD、Apache-2.0 组件）", usage: "管理端生产运行时（ADR-0013 单容器）" },
+      { name: "Node.js", homepage: "https://github.com/nodejs/node", version: "22+", license: "MIT（内含 V8 / OpenSSL 等 BSD、Apache-2.0 组件）", usage: "管理端生产运行时" },
       { name: "Bun", homepage: "https://github.com/oven-sh/bun", version: "≥1.4", license: "MIT（捆绑 JavaScriptCore / WebKit 等 LGPL-2.1、BSD 组件）", usage: "转码 Worker 运行时 / 仓库脚本" },
       { name: "FFmpeg（ffmpeg / ffprobe）", homepage: "https://ffmpeg.org/", version: "6.x", license: "LGPL-2.1+（启用 GPL 组件的构建为 GPL）", usage: "HLS 转码加密与媒体信息探测" },
     ],

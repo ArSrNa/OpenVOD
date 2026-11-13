@@ -250,17 +250,20 @@ model MediaCategory {
 
 /// WebVTT 字幕轨道（ADR-0009）
 model MediaSubtitle {
-  id         String         @id @default(cuid())
-  mediaId    String         @map("media_id")
-  lang       String
-  label      String
-  isDefault  Boolean        @default(false) @map("is_default")
-  status     SubtitleStatus @default(PROCESSING)
-  storageKey String         @map("storage_key")
-  bytes      Int            @default(0)
-  createdBy  String?        @map("created_by")
-  createdAt  DateTime       @default(now()) @map("created_at")
-  updatedAt  DateTime       @updatedAt @map("updated_at")
+  id             String         @id @default(cuid())
+  mediaId        String         @map("media_id")
+  lang           String
+  label          String
+  isDefault      Boolean        @default(false) @map("is_default")
+  status         SubtitleStatus @default(PROCESSING)
+  storageKey     String         @map("storage_key")
+  bytes          Int            @default(0)
+  /// 内容版本号（ADR-0009 2026-11-13 修订）：文本覆盖时 +1；进入字幕签名 URL（?v=），
+  /// 版本变 = URL 变 → CDN 缓存键隔离，覆盖后旧地址由分发端 403
+  contentVersion Int            @default(1) @map("content_version")
+  createdBy      String?        @map("created_by")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
 
   media Media @relation(fields: [mediaId], references: [id], onDelete: Cascade)
 

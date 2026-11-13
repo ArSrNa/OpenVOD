@@ -1,6 +1,6 @@
 "use client";
 
-import { Alert, Button, Card, Form, Input, Steps, Switch, Typography, App as AntApp } from "antd";
+import { Alert, Button, Card, Form, Input, Steps, Switch, Typography, App as AntApp, theme } from "antd";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
@@ -35,6 +35,8 @@ type EnvCheck =
 
 export function SetupWizard() {
     const { message } = AntApp.useApp();
+    // 底色跟 antd 主题走（深色模式下不再是一块固定的浅灰）
+    const { token } = theme.useToken();
     const router = useRouter();
     const [form] = Form.useForm<SetupForm>();
     const [step, setStep] = useState(0);
@@ -121,7 +123,7 @@ export function SetupWizard() {
     };
 
     return (
-        <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "#f5f6f8" }}>
+        <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: token.colorBgLayout }}>
             <Card style={{ width: 640 }}>
                 <Typography.Title level={4} style={{ textAlign: "center", marginTop: 4 }}>
                     OpenVOD 首次启动配置

@@ -30,7 +30,13 @@ import {
 import type { TranscodeJobRow, TranscodeJobStore } from "./job-store";
 import { cleanupJobDir, writeKeyFiles } from "./key-files";
 import { fetchSourceToLocal } from "./source-download";
-import { loadMasterKeys, persistMediaKey, resolveMediaKey, type ResolvedMediaKey } from "./media-keys";
+import {
+  loadMasterKeys,
+  materializeMediaKey,
+  persistMediaKey,
+  resolveMediaKey,
+  type ResolvedMediaKey,
+} from "./media-keys";
 import type { MediaKeyStore } from "./media-key-store";
 import type { MediaStatusName, MediaStore } from "./media-store";
 
@@ -401,12 +407,22 @@ export async function executeClaimedJob(
       `任务 ${job.id}：源片已就绪（${(fetched.bytes / 1048576).toFixed(1)} MB${fetched.downloaded ? "，已落盘" : "，本地复用"}）`,
     );
 
-    // 3) 加密则先备好密钥材料（**不落库**，spec.md §4.2）；已有密钥则复用（多模板产物共用一份 CEK）
+    // 3) 加密则先备好密钥材料（**不落库**，spec.md §4.2）；已有密钥则复用（多模板产物共用一份 CEK）。
+    //    CEK 轮换任务（key_plan 非空，spec.md §4.4）例外：不复用现有密钥，而是解封**计划密钥**——
+    //    发起轮换时管理端已把同一把新密钥固化进本批全部任务，产物上传成功后整行替换 hls_keys。
     let key: ResolvedMediaKey | null = null;
     let keyInfoPath: string | undefined;
     if (snapshot.encrypt) {
       const mks = deps.masterKeys ?? loadMasterKeys();
-      key = await resolveMediaKey(deps.keyStore, mks, media.id);
+      key =
+        job.keyPlan != null
+          ? { ...materializeMediaKey(mks, job.keyPlan), reused: false }
+          : await resolveMediaKey(deps.keyStore, mks, media.id);
+      if (job.keyPlan != null) {
+        emitLog(
+          `任务 ${job.id}：CEK 轮换任务，使用计划密钥（kid=${key.kid.slice(0, 8)}…，全部轮换任务共用同一把新 CEK）`,
+        );
+      }
       const paths = await writeKeyFiles({ jobDir, mediaId: media.id, key });
       keyInfoPath = paths.keyInfoPath;
     }
@@ -465,11 +481,16 @@ export async function executeClaimedJob(
     if (!count) throw new JobExecutionError("产物上传为空（疑似转码未产出任何文件）");
     const deletedStale = await pruneStale(deps.storage, prefix, keys);
 
-    // 7) 产物就绪后才落密钥（每媒资一份：事务内整行替换）；已有密钥则复用，不落库
+    // 7) 产物就绪后才落密钥（每媒资一份：事务内整行替换）；已有密钥则复用，不落库。
+    //    轮换任务（key_plan）落库即旧 kid 失效——本批其余任务仍用同一把计划密钥，产物一致（spec.md §4.4）
     let replacedKey: boolean | null = null;
     if (key && !key.reused) {
       replacedKey = (await persistMediaKey(deps.keyStore, media.id, key)).replaced;
-      emitLog(`任务 ${job.id}：密钥已落库（kid=${key.kid.slice(0, 8)}…，${replacedKey ? "替换旧密钥" : "首次生成"}）`);
+      emitLog(
+        job.keyPlan != null
+          ? `任务 ${job.id}：轮换密钥已落库（kid=${key.kid.slice(0, 8)}…，旧密钥已失效；其余轮换任务共用同一把）`
+          : `任务 ${job.id}：密钥已落库（kid=${key.kid.slice(0, 8)}…，${replacedKey ? "替换旧密钥" : "首次生成"}）`,
+      );
     } else if (key) {
       emitLog(`任务 ${job.id}：复用该媒资已有密钥（kid=${key.kid.slice(0, 8)}…，多模板产物共用一份 CEK）`);
     }

@@ -140,7 +140,7 @@ root 下按资产类别分四个分区，互不嵌套：
 
 ### 2.1.2 系统设置（system_settings，2026-09-22 按 ADR-0015 修订）
 
-继续使用现有 key-value 表，不新增配置表或配置文件。页面为 `/settings/playback`、`/settings/storage`、`/settings/security`、`/settings/worker`，分别承载播放策略/预览账号、S3 存储、安全/登录、Worker/新媒资 ID 参数；转码模板保持独立。
+继续使用现有 key-value 表，不新增配置表或配置文件。页面为 `/settings/playback`、`/settings/storage`、`/settings/security`、`/settings/worker`，分别承载播放策略/预览账号、S3 存储、安全/登录、Worker/新媒资 ID 参数；转码模板保持独立。另有 `/settings/appearance`（2026-11-13 新增）：只切换管理端浅色 / 深色 / 跟随系统，属于**浏览器本地偏好**（`localStorage`，键 `openvod.theme.mode`），不读写 `system_settings`、无 API，因此不受 revision / 审计约束，也不同步给其他管理员。
 
 - **边界**：数据库连接、provider、端口与 MK 根密钥只能由 env 提供。其它登记项按 DB > env > 默认解析。S3 SK、URL 签名密钥、会话密钥、OIDC secret、预览口令仅以 MK 封装值落库。
 - **API**：GET `?group=...` 返回 `{group, revision, fields, restart_required}`；每个 field 包含 `key/label/value/source/secret/configured/overridden`。密钥 `value=null`，不返回明文或密文。PUT `{group, revision, values}`；值为字符串，未提交键保持不变，空串删除覆盖并回退 env/默认。
@@ -245,7 +245,8 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 - 任一步失败：事务整体回滚，**旧密钥行原样保留**（不会出现「既无新也无旧」的空洞）——已有测试覆盖（kid 撞车场景）；
 - 因此**绝不能提前落库**：若在转码前落库，一次失败的转码就会换掉该媒资密钥，使既有加密产物永久无法解密；
 - **多模板产物共用一份 CEK**（§1.3：`proceed/{id}/{templateId}/` 可并存多套）：加密任务先 `resolveMediaKey` 解封复用已有密钥，只有该媒资**从未加密过**时才生成新密钥 → 用模板 B 转码不会让模板 A 的密文失效；
-- 因此 **CEK 轮换（重加密）= 重转码该媒资的全部模板产物**，单模板重转码不换密钥；也不做同媒资多版本密钥并存 / 双 kid 宽限。
+- 因此 **CEK 轮换（重加密）= 重转码该媒资的全部加密模板产物**，单模板重转码不换密钥；也不做同媒资多版本密钥并存 / 双 kid 宽限。
+- **CEK 轮换的任务编排（2026-11-13 实现，spec.md §4.4）**：管理端发起时生成**一次**新密钥材料，把 MK 封装形态固化进本批全部轮换任务的 `transcode_jobs.key_plan`（`MediaKeyPlanSnapshot`：kid / method / iv / wrapped_cek / mk_ver）；Worker 对 `key_plan` 非空的任务**不再走 resolveMediaKey 复用**，而是解封计划密钥（`materializeMediaKey`）转码，产物上传成功后照常整行替换 `hls_keys`。由此：① 幂等——重启 / 乱序 / 分批完成都用同一把新 CEK，不会出现「重启后换第二把密钥导致已完成产物作废」；② 失败安全——全部任务完成前 `hls_keys` 不被触碰，旧产物照常可播；③ 明文红线不破——`key_plan` 与 `hls_keys.wrapped_cek` 同一信任域，明文 CEK 绝不落库。轮换进行中该媒资冻结：普通转码发起与再次轮换均 409。
 
 ### 4.3 管理端密钥接口（只读 + 生命周期操作）
 
@@ -256,6 +257,7 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 | `/api/admin/keys/{mediaId}` | DELETE | 删除该媒资密钥行；**存在未过期播放会话时 409 拒绝**（避免打断在播会话），先吊销会话再删 |
 | `/api/admin/keys/mk` | GET | MK 版本状态：当前封装版本（`MASTER_KEYS` 最大版本）+ 各版本密钥用量 + 密钥总数 |
 | `/api/admin/keys/rotate-mk` | POST | MK 轮换：按行自身 `mk_ver` 解封、以当前版本重新封装（可传 `from_ver` 限定来源版本）；**无需重转码**。v1 同步逐行执行，超大数据量演进为任务化分批 |
+| `/api/admin/keys/{mediaId}/rotate` | POST | **CEK 轮换（2026-11-13）**：重转码该媒资**全部加密模板产物**（§4.4）。校验：媒资有密钥行（404）、无任何进行中任务（409，普通转码与轮换互斥）、有加密产物（400）→ 生成**一次**新密钥（`createMediaKey`，明文即弃、只留 MK 封装形态）→ 固化进本批**全部**轮换任务的 `transcode_jobs.key_plan`，每个有产物的**加密**模板各入队一条任务（整批同一事务；模板快照结构同普通转码）。模板已删 / 未加密 / 旧布局产物记入 `skipped`（不整批失败），一个都不可轮换时 400。返回 202 `{media_id, kid, jobs[], skipped[]}`；落 `audit_logs`（`key.rotate_cek`）。响应**绝不含密钥材料**（kid 为标识符，`wrapped_cek` 只在任务行内） |
 
 **P0 红线（评审与测试用例）**：
 
@@ -269,7 +271,7 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 | 对象 | 方式 | 影响 |
 |---|---|---|
 | MK | 在 `MASTER_KEYS` 新增版本号（旧版本保留）+ 管理端「轮换 MK」（`POST /api/admin/keys/rotate-mk`）重封装 | 无需重转码；轮换期间播放不受影响（先解封再重封装，字节未变） |
-| CEK | 重转码该媒资的**全部**模板产物（单模板重转码会复用现有 CEK，不换密钥，§4.2） | 该媒资短时维护窗口 |
+| CEK | **管理端「轮换」（`POST /api/admin/keys/{mediaId}/rotate`，2026-11-13 已实现）**：生成一次计划密钥固化进本批全部轮换任务（`key_plan`），对每个有产物的**加密**模板各入队一条重转码任务（§4.2）。单模板普通重转码会复用现有 CEK，不换密钥 | 该媒资短时维护窗口：新密钥落库后旧产物不可解密，直至该模板的重转码任务完成；失败任务可重启（复用同一把计划密钥，幂等收敛） |
 | 播放会话 | 置 `revoked_at` | 新清单 / 密钥请求立即拒绝（≤60s 收敛）；已下载分片在 token exp 内仍可播（接受，ADR-0006 §6） |
 
 ### 4.5 相关环境变量

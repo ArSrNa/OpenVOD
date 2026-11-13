@@ -8,6 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 @AGENTS.md
 
+**表达要求（说人话）**：见 `AGENTS.md` 的「沟通约束（所有 Agent 必须遵守）」一节，同样适用于这里的所有会话。
+
 本仓库是 **ADR 驱动**：`docs/vod/decisions/0001~0014` 是设计决策的权威源，代码注释普遍以 `ADR-xxxx`、`spec.md §x` 引用。改动设计前先读对应 ADR；决策变化时同步回写 ADR 与 `docs/vod/spec.md`。高频坑集中在 `docs/vod/dev-workflow.md §8`（排错速查表）。
 
 ## 前置条件（不做必报错）

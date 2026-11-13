@@ -4,14 +4,18 @@
 // P0 红线（spec.md §4.3）：本模块**永不返回明文 CEK**——返回值里只有 kid / method / iv / mk_ver；
 // 明文只在 MK 轮换时于内存中短暂解封再封装，不出本文件、不落日志、不进响应。
 import {
+  ACTIVE_JOB_STATUSES,
   MediaKeyDetail,
   MediaKeyListItem,
   MasterKeyStatus,
+  RotateCekRequest,
+  RotateCekResponse,
   RotateMasterKeysRequest,
   RotateMasterKeysResponse,
   z,
 } from "@openvod/contracts";
 import {
+  createMediaKey,
   findMasterKey,
   parseMasterKeys,
   pickWrappingMasterKey,
@@ -22,6 +26,10 @@ import { getDb } from "@openvod/db";
 import { MEDIA_ID_CHARS, MEDIA_ID_PATTERN, STORAGE_PARTITIONS } from "@openvod/shared";
 import { NextResponse } from "next/server";
 import { apiError } from "./api";
+import { keyPlanFromMaterial, rotateMediaKeyWithDeps, RotateCekError } from "./keys-rotate";
+import { groupProductsByMedia } from "./media-products";
+import { templateRowToDto } from "./templates";
+import { getWatermark } from "./watermarks";
 import { getStorage } from "./storage";
 
 const db = getDb<any>();
@@ -240,6 +248,49 @@ export function hasMasterKeyVersion(ver: number): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+// ---- CEK 轮换（spec.md §4.4，2026-11-13；ADR-0006 §6：重转码该媒资全部加密模板产物） ----
+// 编排逻辑在 ./keys-rotate（依赖注入纯函数）；此处只做真实依赖装配 + 错误类型转换。
+
+export async function rotateMediaCek(mediaId: string, body: unknown): Promise<z.infer<typeof RotateCekResponse>> {
+  const parsed = RotateCekRequest.safeParse(body ?? {});
+  if (!parsed.success) {
+    throw new KeyError("bad_request", "请求体校验失败", 400);
+  }
+  const dbAny = db as any;
+  try {
+    return await rotateMediaKeyWithDeps(mediaId, {
+      assertMediaId,
+      findKeyRow: (id) =>
+        dbAny.hlsKey.findUnique({ where: { mediaId: id }, select: { kid: true } }).catch(() => null),
+      listActiveJobs: (id) =>
+        dbAny.transcodeJob.findMany({
+          where: { mediaId: id, status: { in: ACTIVE_JOB_STATUSES } },
+          select: { id: true, templateId: true, keyPlan: true },
+        }),
+      listProducts: async (id) => {
+        const objects = await (await getStorage()).listObjects(`${STORAGE_PARTITIONS.proceed}/${id}/`);
+        return groupProductsByMedia(objects).get(id) ?? [];
+      },
+      // 模板可能已删（孤儿产物）：返回 null 降级为 skipped，不整批失败
+      findTemplate: async (templateId) =>
+        dbAny.transcodeTemplate
+          .findUnique({ where: { id: templateId } })
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Prisma 动态行，与模板域同构
+          .then((row: any) => (row ? templateRowToDto(row) : null))
+          .catch(() => null),
+      getWatermark,
+      createJobs: (rows) =>
+        dbAny.$transaction(rows.map((data: unknown) => dbAny.transcodeJob.create({ data }))),
+      // 计划密钥只此一处生成：明文 CEK 在本闭包内出现后立即被丢弃（keyPlanFromMaterial 不带走明文），
+      // 落库 / 返回值里只有 MK 封装形态（spec.md §4.1 明文红线）
+      generateKeyPlan: () => keyPlanFromMaterial(createMediaKey(pickWrappingMasterKey(loadMasterKeys()))),
+    });
+  } catch (e) {
+    if (e instanceof RotateCekError) throw new KeyError(e.code, e.message, e.status);
+    throw e;
   }
 }
 

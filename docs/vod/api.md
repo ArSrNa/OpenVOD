@@ -271,8 +271,10 @@ submit 时水印内容**现读现快照**进 `transcode_jobs.template_snapshot.w
 | `DELETE /api/admin/keys/{mediaId}` | — | `200 {media_id}` | `400`；`404`；`409` 存在未过期播放会话（先吊销） |
 | `GET /api/admin/keys/mk` | — | `200 {active_ver, versions:[{ver,keys}], total_keys}`（仅版本与密钥数量，不回显密钥） | `500` |
 | `POST /api/admin/keys/rotate-mk` | `{from_ver?: number}`（缺省 = 全部非 active 版本） | `200 {rotated, failed, to_ver, errors[{media_id,kid,message}]}` | `400` zod；`500` |
+| `POST /api/admin/keys/{mediaId}/rotate` | `{}` | `202 {media_id, kid, jobs:[{job_id,template_id,template_name,status}], skipped:[{template_id\|null,template_name\|null,reason}]}`（CEK 轮换，2026-11-13） | `400` 无可轮换加密产物 / 有进行中任务；`404` 该媒资无密钥；`409` 轮换或转码进行中 |
 
 > 删除密钥后已加密分片**无法解密**（需重转码）；MK 轮换只重封装 `wrapped_cek`，**不动媒体字节**。
+> **CEK 轮换**（spec.md §4.4）：管理端生成一次新密钥并固化进本批全部轮换任务（`transcode_jobs.key_plan`），每个有产物的**加密**模板各入队一条重转码任务；Worker 产物上传成功后整行替换 `hls_keys`。任务全部完成前为短时维护窗口（部分产物可能不可播）；失败任务可重启，重启复用同一把计划密钥（幂等）。
 
 ---
 

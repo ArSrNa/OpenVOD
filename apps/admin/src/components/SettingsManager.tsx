@@ -15,7 +15,6 @@ type FormValues = Record<string, string | number | null | undefined>;
 type Confirmation = { kind: "reload" } | { kind: "clear-secret"; field: SettingField } | null;
 
 const SOURCE_LABELS = { db: "控制台", env: "环境变量", default: "默认值" };
-const EFFECT_DESCRIPTION = "保存后 30 秒内管理端生效、60 秒内分发端生效；Worker 会在下一次空闲轮询时更新（最多 30 秒）。正在执行的转码任务继续按旧配置跑完。";
 
 function changedValues(
   snapshot: SettingsEditorResponse | null,
@@ -173,28 +172,28 @@ export function SettingsManager({ group = "playback" }: { group?: SettingsGroup 
       return (
         <Input.Password
           autoComplete="new-password"
-          placeholder="留空表示不修改；输入新值即替换"
+          placeholder="留空表示不修改"
           disabled={disabled || clearedSecrets.has(field.key)}
         />
       );
     }
     if (field.type === "number") {
-      return <InputNumber min={field.min} max={field.max} precision={0} placeholder="留空则使用环境变量或默认值" style={{ width: "100%" }} />;
+      return <InputNumber min={field.min} max={field.max} precision={0} placeholder="留空回退环境变量或默认值" style={{ width: "100%" }} />;
     }
     if (field.type === "boolean") {
-      return <Select options={[{ value: "true", label: "启用" }, { value: "false", label: "关闭" }, { value: "", label: "使用环境变量或默认值" }]} />;
+      return <Select options={[{ value: "true", label: "启用" }, { value: "false", label: "关闭" }, { value: "", label: "回退环境变量或默认值" }]} />;
     }
     if (field.type === "enum") {
       return (
         <Select
           options={[
             ...(field.options ?? []),
-            { value: "", label: "使用环境变量或默认值" },
+            { value: "", label: "回退环境变量或默认值" },
           ]}
         />
       );
     }
-    return <Input placeholder={field.placeholder ?? "留空则使用环境变量或默认值"} allowClear autoComplete="off" />;
+    return <Input placeholder={field.placeholder ?? "留空回退环境变量或默认值"} allowClear autoComplete="off" />;
   };
 
   return (
@@ -204,16 +203,15 @@ export function SettingsManager({ group = "playback" }: { group?: SettingsGroup 
       extra={<Button icon={<ReloadOutlined />} onClick={reload} loading={loading} disabled={saving}>重新加载</Button>}
     >
       <div style={{ maxWidth: 720 }}>
-        <Typography.Paragraph type="secondary">{definition.description}</Typography.Paragraph>
         {loadError && <Alert type="error" showIcon message={loadError} action={<Button size="small" onClick={reload} disabled={disabled}>重试</Button>} style={{ marginBottom: 24 }} />}
         {saveError && <Alert type={conflict ? "warning" : "error"} showIcon message={saveError} action={conflict ? <Button size="small" onClick={reload} disabled={disabled}>重新加载</Button> : undefined} style={{ marginBottom: 24 }} />}
-        {saved && <Alert type="success" showIcon message="设置已保存" description={EFFECT_DESCRIPTION} style={{ marginBottom: 24 }} />}
+        {saved && <Alert type="success" showIcon message="设置已保存" style={{ marginBottom: 24 }} />}
         {group === "delivery" && String(values["storage_sign_mode"] ?? "") === "custom" && (
           <Alert
             type="warning"
             showIcon
             message="已选择自定义签名提供者"
-            description="这种模式需要先在代码里实现并注册签名算法（TS 和 Go 各一份），再重新构建部署。没注册就切换，管理端和分发端的签名请求会直接报错。可以把下面的提示词交给 AI 编码助手生成实现代码。"
+            description="需先实现并注册签名算法再重新部署，否则签名请求会报错。"
             action={
               <Button size="small" icon={<RobotOutlined />} onClick={() => {
                 setPromptProvider(String(values["storage_custom_signer"] ?? "") || "custom");
@@ -227,20 +225,13 @@ export function SettingsManager({ group = "playback" }: { group?: SettingsGroup 
           <Alert
             type="info"
             showIcon
-            message="CDN URL 鉴权模式的前置条件"
-            description={<>切换前先到 CDN 控制台完成三件事：① 私有回源（存储凭证配在 CDN 侧，不存进本系统）；② 开启 Token 鉴权，鉴权方式、密钥、有效时长要和本页对应三项完全一致（方式 A 还要对上鉴权参数名，默认 sign）；③ 缓存键包含 query，缓存时间不超过签名窗口。逐项清单见部署文档 deploy-delivery.md「CDN 加速域名与资产签名配置清单」。切换完成后建议在 CDN 全量刷新一次。</>}
+            message="切换前先配好 CDN"
+            description="CDN 控制台要开私有回源与 Token 鉴权，鉴权方式、密钥、有效时长要和本页一致，缓存时间不超过签名窗口；否则链接全部被拒。"
             style={{ marginBottom: 24 }}
           />
         )}
         {snapshot && (
           <>
-            <Alert
-              type="info"
-              showIcon
-              message="配置来源与生效时间"
-              description={<>输入框里显示的就是当前生效的值。普通字段清空后会退回环境变量或默认值；密钥框留空表示不修改。<br />{EFFECT_DESCRIPTION}</>}
-              style={{ marginBottom: 24 }}
-            />
             <Form<FormValues>
               form={form}
               layout="vertical"
@@ -311,7 +302,7 @@ export function SettingsManager({ group = "playback" }: { group?: SettingsGroup 
         cancelText="保留当前内容"
         okButtonProps={{ danger: true }}
       >
-        {confirmation?.kind === "clear-secret" ? "保存后会删掉数据库里的这个密钥，改用环境变量里的值。如果环境变量也没配，依赖它的功能会不可用。" : "未保存的修改会被最新配置覆盖。"}
+        {confirmation?.kind === "clear-secret" ? "保存后改用环境变量里的值；环境变量也没配，依赖它的功能会不可用。" : "未保存的修改会被最新配置覆盖。"}
       </Modal>
       <Modal
         open={promptOpen}

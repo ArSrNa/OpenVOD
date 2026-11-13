@@ -24,6 +24,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { authClient } from "@/lib/auth-client";
 import { DOCS_HOME, REPO_HOME } from "@/lib/links";
+import { useResolvedTheme } from "@/lib/theme";
 import { configureUploadManager, uploadManager } from "@/lib/upload-manager";
 
 // 模块骨架（ADR-0004 功能清单；模块路由随 specification 落地）
@@ -59,6 +60,7 @@ const SETTINGS_CHILDREN = [
   { key: "/settings/login", label: "登录设置" },
   { key: "/settings/security", label: "安全设置" },
   { key: "/settings/worker", label: "任务设置" },
+  { key: "/settings/appearance", label: "外观设置" },
 ];
 
 // 有二级菜单的模块：ROUTE 组装时展开为父子结构
@@ -88,6 +90,7 @@ const ROUTE_PAGES = new Set([
   "/settings/login",
   "/settings/security",
   "/settings/worker",
+  "/settings/appearance",
   "/about",
 ]);
 
@@ -195,6 +198,9 @@ export function ConsoleShell({
   const router = useRouter();
   // 当前 URL 是菜单选中与内容区判定的唯一真相源
   const pathname = usePathname();
+  // 侧边栏配色跟随 antd 算法（浅色 / 深色 / 跟随系统，见 lib/theme.ts）；
+  // 这段下面的 mounted 门禁保证 ProLayout 只在客户端渲染，取浏览器偏好不会造成水合差异
+  const resolvedTheme = useResolvedTheme();
   // 未实现模块只切内容区、不产生 URL，因此单独记录；真实导航后失效（见下方 effect）
   const [placeholder, setPlaceholder] = useState<string | null>(null);
   // ProLayout 内部的 useBreakpoint 在客户端首帧渲染期同步读取 window.matchMedia
@@ -291,7 +297,7 @@ export function ConsoleShell({
       title="OpenVOD 管理端"
       logo={<BrandLogo />}
       layout="side"
-      navTheme="light"
+      navTheme={resolvedTheme === "dark" ? "realDark" : "light"}
       siderWidth={208}
       // 挂载后渲染已无水合比对，这里再显式固定初始展开、禁用 Sider 自身的 lg 媒体查询，
       // 折叠只由底部 trigger 手动触发，首帧渲染不再依赖视口宽度

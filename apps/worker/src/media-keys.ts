@@ -10,6 +10,7 @@ import {
   pickWrappingMasterKey,
   type MasterKey,
 } from "@openvod/crypto";
+import { MediaKeyPlanSnapshot } from "@openvod/contracts";
 import type { MediaKeyRecord, MediaKeyStore } from "./media-key-store";
 
 /** 密钥落地相关错误（消息面向运维，直接进日志 / 任务 lastError） */
@@ -105,5 +106,30 @@ export async function resolveMediaKey(
     // 明文只在本次任务的临时目录里出现，随任务目录一起清理
     cek: openMediaKey(findMasterKey(mks, existing.mkVer), existing.wrappedCekHex),
     reused: true,
+  };
+}
+
+/**
+ * 从轮换计划密钥（`transcode_jobs.key_plan`，spec.md §4.4）解封出本次转码要用的密钥材料。
+ *
+ * 发起轮换时管理端已把**同一把**新密钥（MK 封装形态）固化进本批全部轮换任务：
+ * - 所有任务（含重启 / 乱序 / 分批完成）产出与落库的密钥一致 → 幂等；
+ * - 计划密钥损坏 / MASTER_KEYS 缺少对应版本 → 抛错（此时 hls_keys 未被触碰，任务失败可安全重启）；
+ * - 返回值不是 ResolvedMediaKey：调用方必须视作「新生成」，产物上传成功后落库（与现有
+ *   `!key.reused` 分支一致）。
+ */
+export function materializeMediaKey(mks: MasterKey[], plan: unknown): GeneratedMediaKey {
+  const parsed = MediaKeyPlanSnapshot.safeParse(plan);
+  if (!parsed.success) {
+    throw new MediaKeyError("轮换计划密钥（key_plan）格式非法，无法解封（任务可重启重试）");
+  }
+  return {
+    kid: parsed.data.kid,
+    method: parsed.data.method,
+    ivHex: parsed.data.iv,
+    wrappedCekHex: parsed.data.wrapped_cek,
+    mkVer: parsed.data.mk_ver,
+    // 明文只在本次任务的临时目录里出现，随任务目录一起清理（spec.md §4.1）
+    cek: openMediaKey(findMasterKey(mks, parsed.data.mk_ver), parsed.data.wrapped_cek),
   };
 }

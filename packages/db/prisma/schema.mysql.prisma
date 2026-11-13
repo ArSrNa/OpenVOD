@@ -285,6 +285,9 @@ model TranscodeJob {
   templateId String?   @map("template_id")
   /// 发起时模板快照（ADR-0014 防漂移：模板后续修改/删除不影响已入队任务）
   templateSnapshot Json? @map("template_snapshot")
+  /// CEK 轮换计划密钥（spec.md §4.4，2026-11-13）：发起轮换时生成一次，本批全部轮换任务共用
+  /// 同一把新 CEK（仅 MK 封装形态落库，明文绝不入库）；产物上传成功后以此整行替换 hls_keys
+  keyPlan    Json?     @map("key_plan")
   attempts   Int       @default(0)
   /// Worker 心跳续期；崩溃后过期重派
   leaseUntil DateTime? @map("lease_until")

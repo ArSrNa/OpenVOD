@@ -5,7 +5,8 @@
 //   已实现（M3 产物）：/media/[id]/preview-play（解密播放预览，走分发端签名链路）、
 //                      /media/[id]/products/[templateId]（DELETE 删除一套模板产物）
 //   已实现（模板管理，ADR-0014）：/api/admin/templates（GET/POST）、/templates/[id]（GET/PATCH/DELETE）
-//   已实现（密钥管理，spec.md §4）：/api/admin/keys、/keys/[mediaId]、/keys/mk、/keys/rotate-mk
+//   已实现（密钥管理，spec.md §4）：/api/admin/keys、/keys/[mediaId]、/keys/mk、/keys/rotate-mk、
+//                         /keys/[mediaId]/rotate（CEK 轮换 = 重转码全部加密产物，spec.md §4.4）
 //   已实现（转码 M2，ADR-0008）：/api/admin/media/[id]/transcode（POST 发起入队）、/api/admin/jobs（GET 任务列表）、
 //                         /api/admin/jobs/stream（SSE 实时推送，spec.md §2.1）、
 //                         /api/admin/jobs/[id]/stop、/api/admin/jobs/[id]/restart（停止 / 重启，spec.md §5.1）

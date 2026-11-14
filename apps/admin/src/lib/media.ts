@@ -682,14 +682,20 @@ export async function refreshMediaCustomProjections(mediaIds: readonly string[])
   return refreshed;
 }
 
-// ---- 删除（存储四分区该 id 全部对象 + DB 行；spec.md §2 级联范围注记） ----
+// ---- 删除（存储四分区该 id 全部对象 + DB 行 + 密钥行；spec.md §2 级联范围注记） ----
 
 async function findOriginalKey(id: string): Promise<string | null> {
   const originals = await (await getStorage()).listObjects(`${STORAGE_PARTITIONS.original}/`);
   return originals.find((o) => ORIGINAL_RE.exec(o.key)?.[1] === id)?.key ?? null;
 }
 
-export async function deleteMedia(id: string): Promise<{ removed: boolean }> {
+/**
+ * 删除媒资：存储四分区该 id 全部对象 + DB 行。
+ * `hls_keys` 由应用层显式删除（与媒资行同一事务），不单靠 `onDelete: Cascade`——
+ * 外键级联一旦失效（连接未开 FK 约束 / 换 ORM 漏配，ADR-0020 风险条目），
+ * 密钥行会静默残留并继续出现在密钥列表里。其余子表（subtitles / jobs / sessions）仍走级联。
+ */
+export async function deleteMedia(id: string): Promise<{ removed: boolean; key_removed: boolean }> {
   assertMediaId(id);
   const storage = await getStorage();
   const row = await db.media
@@ -707,17 +713,21 @@ export async function deleteMedia(id: string): Promise<{ removed: boolean }> {
     const objs = await storage.listObjects(`${partition}/${id}/`);
     await Promise.all(objs.map((o) => storage.delete(o.key)));
   }
-  // 数据库行（级联 subtitles / transcode_jobs / hls_keys / playback_sessions，onDelete: Cascade）
+  // 数据库行：密钥先删（同时拿到「原本有没有密钥」），媒资行后删（其余子表走 onDelete: Cascade）；
+  // 同一事务，任一步失败整体回滚，不会出现「媒资还在、密钥没了」的中间态
   let removed = Boolean(originalKey);
+  let keyRemoved = false;
   try {
-    await db.media.delete({ where: { id } });
-    removed = true;
+    const [keys, media] = await db.$transaction([
+      db.hlsKey.deleteMany({ where: { mediaId: id } }),
+      db.media.deleteMany({ where: { id } }),
+    ]);
+    keyRemoved = keys.count > 0;
+    removed = removed || media.count > 0;
   } catch (e) {
-    if (!isRecordNotFound(e)) {
-      throw new MediaError("internal", `数据库删除失败：${(e as Error).message}`, 500);
-    }
+    throw new MediaError("internal", `数据库删除失败：${(e as Error).message}`, 500);
   }
-  return { removed };
+  return { removed, key_removed: keyRemoved };
 }
 
 // ---- 删除某套转码产物（proceed/{id}/{模板id}/ 子树；spec.md §1.3/§5.5） ----

@@ -1,14 +1,15 @@
-// 与 schema.mysql.prisma 逐字一致（仅 generator/datasource 不同，ADR-0004 双方言纪律）
+// 与 ../mysql/schema.mysql.prisma 逐字一致（仅 generator/datasource 不同，ADR-0004 双方言纪律）
 // 修改模型时两份文件必须同步，`bun --cwd packages/db run parity` 与 CI 会校验。
+// 与 mysql 版分目录存放，且 generator/datasource 取不同名字：Prisma 语言服务会把同目录下的
+// *.prisma 当成一套多文件 schema 合并，重名会全部报「已存在」。
 
-generator client {
-  provider = "prisma-client-js"
-  output   = "../generated/sqlite"
+generator sqliteClient {
+  provider = "prisma-client"
+  output   = "../../generated/sqlite"
 }
 
-datasource db {
+datasource sqliteDb {
   provider = "sqlite"
-  url      = env("DATABASE_URL")
 }
 
 enum UserStatus {
@@ -200,6 +201,10 @@ model Media {
   description String?
   /// 业务标签（JSON 字符串数组，≤20 个 / 每个 ≤32 字符；spec.md §8）
   tags        Json?
+  /// 播放端转码产物展示与默认（spec.md §6.3/§11.1，2026-11-15）：
+  /// JSON {visible_template_ids: string[] | null, default_template_id: string | null}；
+  /// NULL = 全部产物对播放端展示、无媒资级默认（回退全局默认模板 → 排序首项）
+  productSettings Json? @map("product_settings")
   /// 媒资分类（可空；分类删除时置空，spec.md §8 / ADR-0016）
   categoryId  String?     @map("category_id")
   durationMs  Int?        @map("duration_ms")

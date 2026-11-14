@@ -23,7 +23,7 @@
 | users | 管理端 | 分发端 | 播放端用户；bcrypt 摘要；状态 / 封禁 |
 | admin_users | 管理端 | 管理端 | 控制台账号，与 users 分离 |
 | signing_keys | 管理端 | 分发端 | 密钥材料（kind 区分）：JWT ES256 密钥对、URL 签名 HMAC 密钥（EO TypeA 鉴权密钥已随 2026-09-20 ADR-0005 修订废弃，枚举保留不接入）；私密部分以 MK 封装；kid 版本化 |
-| media | 管理端 | 分发端 | 媒资：标题、状态、系统 probe 元数据(JSON)、自定义数据(JSON)、存储引用 |
+| media | 管理端 | 分发端 | 媒资：标题、状态、系统 probe 元数据(JSON)、自定义数据(JSON)、产物展示与默认设置(JSON，ADR-0021)、存储引用 |
 | media_subtitles | 管理端 | 分发端 | WebVTT 轨道（lang / label / default / 存储引用） |
 | transcode_templates | 管理端 | Worker | 转码模板（参数 JSON + 加密开关 + 保持原配置，ADR-0014） |
 | transcode_jobs | 管理端 / Worker | 管理端 | 转码任务队列（状态机 + lease；发起时快照模板进 template_snapshot，ADR-0014） |
@@ -57,4 +57,4 @@
 - 分开部署（ADR-0011）下两应用对同一 schema 演进：迁移仅由 `packages/db` 执行且必须向后兼容（expand-contract，先加后删）；分发端使用独立受限 DB 账号（约定表只读 + `playback_sessions` 读写）。
 - SQLite 与「跨机器分开部署」互斥：仅限单机自托管同卷共享；跨机 / 云函数部署必须 MySQL（ADR-0011 约束 3）。
 - 2026-10-17：Go 分发端已支持 SQLite（`modernc.org/sqlite`，单机同卷形态），并按 Prisma 的物理存储对齐时间 / 布尔类型；三端可共用一个 `DATABASE_URL`，详见 ADR-0011 修订。
-- **2026-11-13：ORM 长远目标改为 Drizzle（用户决策：更轻量、更适合 serverless）。迁移方案、准入门槛与不变量见 ADR-0020；在迁移动工前，本文的 Prisma 决策继续有效。**
+- 2026-11-14：Prisma 由 6.19.3 升到 **7.10.1**（精确锁定），改用 driver adapter（MySQL `adapter-mariadb` / SQLite `adapter-libsql`）。schema 真相源、双方言纪律与物理表示均不变，细节见 ADR-0020。

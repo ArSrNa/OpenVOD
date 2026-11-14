@@ -4,11 +4,13 @@
 // 上传原视频 → 跳转独立上传页 /media/upload（2026-10-01 起，spec.md §9，本页不再内联上传）；
 // 预览（弹窗播放 original）/ 详情 / 重命名 / 删除 / 设置封面（双模式：手动上传 / 视频截帧，spec.md §2.3） / 生成元数据（ffprobe）；
 // 「更多 → 转码」已实现（M2：选转码模板入队 transcode_jobs，Worker 认领执行，进度见「转码任务」页）；
-// 转码产物：按模板的产物列表（抽屉）→ **解密播放**（走分发端签名链路，管理端不出密钥，spec.md §6）
-// 与**按模板删除**（只删该模板子树，spec.md §5.5）；
+// 转码产物：按模板的产物列表（抽屉）→ **解密播放**（走分发端签名链路，管理端不出密钥，spec.md §6）、
+// **按模板删除**（只删该模板子树，spec.md §5.5）与**播放端展示 / 默认产物**设置（spec.md §6.3/§11.1）；
 // 「更多 → 字幕管理」打开字幕管理抽屉（M4，spec.md §7 / SubtitleManager）；
 // 「更多 → 分类、描述与标签」/ 详情弹窗 → 自定义元数据编辑（分类 / **视频描述** / 标签，spec.md §8；分类树在 /categories 维护）。
 // 「更多 → 修改上传时间」/ 详情弹窗 → 自定义上传时间（spec.md §3.1：管理端展示 + 分发端列表排序第二级回退，可恢复默认）。
+// 列表排序与筛选（spec.md §3.1）：入口在表头——展示名 / 大小 / 上传时间列头排序，
+// 状态 / 分类 / 字幕·封面·转码产物·描述列头筛选；全在浏览器侧对全量列举结果计算（lib/media-list-view.ts）。
 // 注意：这里的 description 是**视频（媒资）自身**的描述，与「分类管理」页里分类的 `media_categories.description` 无关。
 import {
   ClockCircleOutlined,
@@ -42,6 +44,7 @@ import {
   Popconfirm,
   Select,
   Space,
+  Switch,
   Table,
   Tabs,
   Tag,
@@ -50,11 +53,38 @@ import {
   Typography,
   Upload,
 } from "antd";
-import type { ColumnsType } from "antd/es/table";
+import type { ColumnsType, TableProps } from "antd/es/table";
+import type { FilterValue } from "antd/es/table/interface";
 import dayjs, { type Dayjs } from "dayjs";
 import { useRouter } from "next/navigation";
-import { buildCategoryTree, type CategoryTreeNode } from "@/lib/category-tree";
+import {
+  buildCategoryTree,
+  categoryPathMap,
+  collectSubtreeIds,
+  type CategoryNode,
+  type CategoryTreeNode,
+} from "@/lib/category-tree";
 import { formatSize } from "@/lib/format";
+import {
+  DEFAULT_MEDIA_FILTERS,
+  DEFAULT_MEDIA_SORT,
+  MEDIA_STATUS_OPTIONS,
+  PRESENCE_OPTIONS,
+  filterMediaItems,
+  isMediaFilterActive,
+  isSameMediaFilters,
+  sortMediaItems,
+  type MediaListFilters,
+  type MediaSort,
+  type MediaSortKey,
+  type PresenceFilter,
+  type PresenceKey,
+} from "@/lib/media-list-view";
+import {
+  serializeMediaProductSettings,
+  setDefaultProduct,
+  toggleProductVisibility,
+} from "@/lib/media-product-settings";
 import { PRODUCT_LEGACY_ID } from "@/lib/media-products";
 import { uploadViaXhr, UploadUnauthorizedError } from "@/lib/xhr-upload";
 import { CoverFrameCapture } from "./CoverFrameCapture";
@@ -62,7 +92,15 @@ import { HlsPreviewPlayer } from "./HlsPreviewPlayer";
 import { SubtitleManager } from "./SubtitleManager";
 import { useTableBodyHeight } from "./tableScroll";
 import { VideoPreviewPlayer } from "./VideoPreviewPlayer";
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent,
+} from "react";
 
 /** 一份模板产物（spec.md §1.3：proceed/{媒资id}/{模板id}/…） */
 interface MediaProduct {
@@ -73,6 +111,18 @@ interface MediaProduct {
   objects: number;
   bytes: number;
   variants: string[];
+  /** 对播放端展示（详情接口计算；旧布局不参与） */
+  isVisible?: boolean;
+  /** 媒资级默认产物（详情接口计算；未设置时由分发端回退全局默认） */
+  isDefault?: boolean;
+}
+
+/** 媒资级产物展示与默认设置（API 形态，spec.md §6.3/§11.1） */
+interface MediaProductSettingsDTO {
+  /** 对播放端展示的模板 ID 白名单；null = 全部展示 */
+  visible_template_ids: string[] | null;
+  /** 进入后默认加载的模板产物；null = 未设置（回退全局默认模板 → 列表首项） */
+  default_template_id: string | null;
 }
 
 /** 自定义元数据里的分类引用（含路径快照，spec.md §8.3） */
@@ -130,6 +180,8 @@ interface MediaDetail {
   sourceKey: string | null;
   assets: { proceed: number; cover: number; metadata: number };
   products: MediaProduct[];
+  /** 媒资级产物展示与默认设置（spec.md §6.3/§11.1） */
+  productSettings: MediaProductSettingsDTO;
 }
 
 /** 分类选项（TreeSelect 用；来自 /api/admin/categories 扁平列表） */
@@ -235,7 +287,7 @@ function formatTime(iso?: string | null): string {
 
 // 表格不随条目数无限增高：表体限高后内部纵向滚动、表头固定（列宽合计见下方 columns）。
 // 滚动实现抽至 tableScroll.ts（管理端所有表格共用约定，spec.md §3）。
-const TABLE_MIN_WIDTH = 1770; // 固定列 1390（含首列封面缩略图 + 分类/标签 180 + 描述 200 + 上传时间 210）+ 字幕列 90 + 展示名最小可读宽度
+const TABLE_MIN_WIDTH = 1810; // 固定列 1410（含首列封面缩略图 + 状态 120 + 分类/标签 180 + 描述 200 + 上传时间 210）+ 字幕列 110 + 展示名最小可读宽度
 
 /** 码率（bps）→ 可读字符串 */
 function formatBitrate(bps: number | null | undefined): string {
@@ -389,8 +441,16 @@ export function MediaList() {
   const [customForm] = Form.useForm<MetadataFormValues>();
   const [customSaving, setCustomSaving] = useState(false);
   const [customLoading, setCustomLoading] = useState(false);
-  const [categoryOptions, setCategoryOptions] = useState<CategoryOptionNode[]>([]);
+  // 扁平分类列表（分类筛选要按子树匹配，弹窗与筛选共用同一份）
+  const [categoryNodes, setCategoryNodes] = useState<CategoryListItem[]>([]);
   const [categoriesLoading, setCategoriesLoading] = useState(false);
+  const categoryOptions = useMemo(() => toCategoryOptions(categoryNodes), [categoryNodes]);
+
+  // ---- 排序与筛选（intent.md「媒资列表排序与筛选」/ spec.md §3.1）----
+  // v1 列表本就是一次全量列举，排序 / 筛选全在浏览器侧算，不改 GET /api/admin/media。
+  const [sort, setSort] = useState<MediaSort>(DEFAULT_MEDIA_SORT);
+  const [filters, setFilters] = useState<MediaListFilters>(DEFAULT_MEDIA_FILTERS);
+  const [page, setPage] = useState(1);
 
   // 字幕管理（M4，spec.md §7）：多轨 VTT 的增删改查（抽屉）
   const [subtitleTarget, setSubtitleTarget] = useState<MediaListItem | null>(null);
@@ -434,6 +494,57 @@ export function MediaList() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // 分类筛选下拉的数据源：页面打开即加载（弹窗打开时会再拉一次刷新）
+  useEffect(() => {
+    void (async () => {
+      try {
+        const data = (await fetchJson("/api/admin/categories")) as { items: CategoryListItem[] };
+        setCategoryNodes(data.items ?? []);
+      } catch {
+        // 分类读不到只影响筛选项，不阻断列表
+      }
+    })();
+  }, [fetchJson]);
+
+  const filtersActive = isMediaFilterActive(filters);
+
+  /** 扁平分类 → 树节点约定（子树计算 / 路径表共用） */
+  const categoryNodeList: CategoryNode[] = useMemo(
+    () =>
+      categoryNodes.map((n) => ({
+        id: n.id,
+        name: n.name,
+        parentId: n.parent_id,
+        sortOrder: n.sort_order,
+      })),
+    [categoryNodes],
+  );
+
+  /** 选中分类的子树 id 并集（每个含自身）：选父分类即筛出全部子孙分类下的媒资 */
+  const categoryScope = useMemo(() => {
+    if (!filters.categoryIds.length) return null;
+    const scope = new Set<string>();
+    for (const id of filters.categoryIds) {
+      for (const sub of collectSubtreeIds(categoryNodeList, id)) scope.add(sub);
+    }
+    return scope;
+  }, [filters.categoryIds, categoryNodeList]);
+
+  const visibleItems = useMemo(
+    () => sortMediaItems(filterMediaItems(items, filters, categoryScope), sort),
+    [items, filters, categoryScope, sort],
+  );
+
+  // 筛选 / 排序变化回到第一页，避免停在一个已被筛掉的页码上
+  useEffect(() => {
+    setPage(1);
+  }, [filters, sort]);
+
+  const resetFilters = () => {
+    setFilters({ ...DEFAULT_MEDIA_FILTERS, presence: { ...DEFAULT_MEDIA_FILTERS.presence } });
+    setPage(1);
+  };
 
   // ---- 详情 ----
   const openDetail = async (record: MediaListItem) => {
@@ -580,7 +691,7 @@ export function MediaList() {
         fetchJson(`/api/admin/media/${target.id}`) as Promise<MediaDetail>,
         fetchJson("/api/admin/categories") as Promise<{ items: CategoryListItem[] }>,
       ]);
-      setCategoryOptions(toCategoryOptions(categories.items ?? []));
+      setCategoryNodes(categories.items ?? []);
       customForm.setFieldsValue({
         category_id: detail.custom.category?.id ?? "",
         description: detail.custom.description ?? "",
@@ -680,6 +791,7 @@ export function MediaList() {
   const [productsTarget, setProductsTarget] = useState<{ id: string; title: string | null } | null>(null);
   const [productsDetail, setProductsDetail] = useState<MediaDetail | null>(null);
   const [productsLoading, setProductsLoading] = useState(false);
+  const [productSettingsSaving, setProductSettingsSaving] = useState(false);
   const [playLoadingKey, setPlayLoadingKey] = useState<string | null>(null);
   const [playing, setPlaying] = useState<{
     title: string;
@@ -711,6 +823,79 @@ export function MediaList() {
     setProductsTarget(record);
     setProductsDetail(null);
     void loadProducts(record.id);
+  };
+
+  // ---- 播放端展示 / 默认产物（spec.md §6.3/§11.1）：只改设置，不删产物、不改鉴权 ----
+  const productSettingsState = (detail: MediaDetail | null) => ({
+    visibleTemplateIds: detail?.productSettings?.visible_template_ids ?? null,
+    defaultTemplateId: detail?.productSettings?.default_template_id ?? null,
+  });
+  const allTemplateProductIds = (detail: MediaDetail | null): string[] =>
+    (detail?.products ?? []).map((p) => p.templateId).filter(Boolean);
+
+  const saveProductSettings = async (
+    next: { visible_template_ids: string[] | null; default_template_id: string | null },
+    successMessage: string,
+  ) => {
+    const target = productsTarget;
+    if (!target) return;
+    setProductSettingsSaving(true);
+    try {
+      await fetchJson(`/api/admin/media/${target.id}/product-settings`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(next),
+      });
+      message.success(successMessage);
+      await loadProducts(target.id);
+    } catch (e) {
+      if ((e as Error).message !== "未登录") {
+        message.error(e instanceof Error ? e.message : "保存产物设置失败");
+      }
+    } finally {
+      setProductSettingsSaving(false);
+    }
+  };
+
+  const handleToggleProductVisible = (p: MediaProduct, checked: boolean) => {
+    const next = toggleProductVisibility(
+      productSettingsState(productsDetail),
+      allTemplateProductIds(productsDetail),
+      p.templateId,
+      checked,
+    );
+    if (!next) {
+      message.warning("至少保留一套对播放端展示的产物");
+      return;
+    }
+    void saveProductSettings(
+      serializeMediaProductSettings(next),
+      checked ? `已对播放端展示「${productLabel(p)}」` : `已隐藏「${productLabel(p)}」`,
+    );
+  };
+
+  const handleSetDefaultProduct = (p: MediaProduct) => {
+    const next = setDefaultProduct(
+      productSettingsState(productsDetail),
+      allTemplateProductIds(productsDetail),
+      p.templateId,
+    );
+    if (!next) {
+      message.warning("先把这套产物设为对播放端展示");
+      return;
+    }
+    void saveProductSettings(
+      serializeMediaProductSettings(next),
+      `默认产物已设为「${productLabel(p)}」`,
+    );
+  };
+
+  const handleClearDefaultProduct = () => {
+    const current = productSettingsState(productsDetail);
+    void saveProductSettings(
+      serializeMediaProductSettings({ ...current, defaultTemplateId: null }),
+      "已取消默认产物（回退全局默认）",
+    );
   };
 
   const handleDeleteProduct = (p: MediaProduct) => {
@@ -808,15 +993,60 @@ export function MediaList() {
     {
       title: "变体",
       dataIndex: "variants",
-      width: 100,
+      width: 90,
       render: (variants: string[]) => (variants.length ? variants.join(" / ") : "—"),
     },
-    { title: "对象数", dataIndex: "objects", width: 80 },
-    { title: "体积", dataIndex: "bytes", width: 110, render: (bytes: number) => formatSize(bytes) },
+    { title: "对象数", dataIndex: "objects", width: 70 },
+    { title: "体积", dataIndex: "bytes", width: 90, render: (bytes: number) => formatSize(bytes) },
+    {
+      // 播放端展示（spec.md §6.3/§11.1）：关闭后 SDK 的 templates[] 不再返回该产物
+      title: "播放端",
+      key: "visible",
+      width: 80,
+      render: (_, p) =>
+        p.templateId ? (
+          <Switch
+            size="small"
+            checked={p.isVisible ?? true}
+            loading={productSettingsSaving}
+            onChange={(checked) => handleToggleProductVisible(p, checked)}
+          />
+        ) : (
+          <Tooltip title="旧布局产物不参与播放端展示">
+            <Switch size="small" disabled />
+          </Tooltip>
+        ),
+    },
+    {
+      // 媒资级默认产物：必须处于展示范围；未设置时回退全局默认模板 → 列表首项
+      title: "默认",
+      key: "isDefault",
+      width: 90,
+      render: (_, p) => {
+        if (!p.templateId) return "—";
+        if (p.isDefault) {
+          return (
+            <Tag color="gold" style={{ marginInlineEnd: 0 }}>
+              默认
+            </Tag>
+          );
+        }
+        return (
+          <Button
+            type="link"
+            size="small"
+            disabled={!p.isVisible || productSettingsSaving}
+            onClick={() => handleSetDefaultProduct(p)}
+          >
+            设为默认
+          </Button>
+        );
+      },
+    },
     {
       title: "操作",
       key: "ops",
-      width: 160,
+      width: 150,
       render: (_, p) => {
         const key = p.templateId || PRODUCT_LEGACY_ID;
         return (
@@ -908,12 +1138,71 @@ export function MediaList() {
     }
   };
 
+  // ---- 表头排序与筛选（spec.md §3.1）----
+  // 排序 / 筛选都在外部对全量列表算；列上只声明 sorter / filters 作为入口（受控，列内不本地排序 / 过滤）。
+  const sortOrderOf = (key: MediaSortKey): "ascend" | "descend" | null =>
+    sort.key === key ? (sort.order === "asc" ? "ascend" : "descend") : null;
+
+  /** 「有 / 无」两态（重置 = 全部，对应 lib 的 "any"） */
+  const presenceFilters = PRESENCE_OPTIONS.filter((o) => o.value !== "any").map((o) => ({
+    text: o.label,
+    value: o.value,
+  }));
+
+  const statusFilters = MEDIA_STATUS_OPTIONS.map((o) => ({ text: o.label, value: o.value }));
+
+  /** 分类按完整路径列出（选中任一分类含其全部子孙，见 categoryScope） */
+  const categoryFilters = useMemo(
+    () =>
+      [...categoryPathMap(categoryNodeList).entries()]
+        .sort((a, b) => a[1].localeCompare(b[1], "zh-CN"))
+        .map(([value, text]) => ({ text, value })),
+    [categoryNodeList],
+  );
+
+  /** 有 / 无筛选项的受控值：null = 未筛选 */
+  const presenceValue = (key: PresenceKey) =>
+    filters.presence[key] === "any" ? null : [filters.presence[key]];
+
+  const handleTableChange: NonNullable<TableProps<MediaListItem>["onChange"]> = (
+    _pagination,
+    tableFilters,
+    sorter,
+  ) => {
+    const single = Array.isArray(sorter) ? sorter[0] : sorter;
+    const field = single?.field as MediaSortKey | undefined;
+    if (single?.order && (field === "title" || field === "size" || field === "uploadedAt")) {
+      const next: MediaSort = { key: field, order: single.order === "ascend" ? "asc" : "desc" };
+      setSort((prev) => (prev.key === next.key && prev.order === next.order ? prev : next));
+    } else {
+      // 再次点击当前排序列头 = 取消排序，回到默认（媒资 ID 降序）
+      setSort((prev) => (prev.key === null ? prev : DEFAULT_MEDIA_SORT));
+    }
+
+    const readPresence = (values: FilterValue | null): PresenceFilter =>
+      values?.[0] === "has" ? "has" : values?.[0] === "none" ? "none" : "any";
+    const nextFilters: MediaListFilters = {
+      statuses: (tableFilters.status as string[] | null) ?? [],
+      categoryIds: (tableFilters.category as string[] | null) ?? [],
+      presence: {
+        subtitles: readPresence(tableFilters.subtitleCount),
+        cover: readPresence(tableFilters.posterKey),
+        products: readPresence(tableFilters.products),
+        description: readPresence(tableFilters.description),
+      },
+    };
+    setFilters((prev) => (isSameMediaFilters(prev, nextFilters) ? prev : nextFilters));
+  };
+
   const columns: ColumnsType<MediaListItem> = [
     {
       // 封面（首列缩略图，spec.md §3.1）：经 GET /api/admin/media/{id}/cover 读取，antd Image 点击预览大图
       title: "封面",
       dataIndex: "posterKey",
       width: 110,
+      filters: presenceFilters,
+      filterMultiple: false,
+      filteredValue: presenceValue("cover"),
       render: (posterKey: string | null, record) =>
         posterKey ? (
           <Image
@@ -932,6 +1221,8 @@ export function MediaList() {
       title: "展示名",
       dataIndex: "title",
       ellipsis: true,
+      sorter: true,
+      sortOrder: sortOrderOf("title"),
       render: (title: string | null, record) => (
         <div className="flex flex-col gap-0.5">
           <div className="flex items-center gap-1">
@@ -969,7 +1260,9 @@ export function MediaList() {
     {
       title: "状态",
       dataIndex: "status",
-      width: 100,
+      width: 120,
+      filters: statusFilters,
+      filteredValue: filters.statuses.length ? filters.statuses : null,
       render: (status: string | null) =>
         status ? (
           <Tag color={STATUS_META[status]?.color ?? "default"}>{STATUS_META[status]?.label ?? status}</Tag>
@@ -982,6 +1275,8 @@ export function MediaList() {
       title: "大小",
       dataIndex: "size",
       width: 100,
+      sorter: true,
+      sortOrder: sortOrderOf("size"),
       render: (size: number) => formatSize(size),
     },
     {
@@ -989,6 +1284,8 @@ export function MediaList() {
       title: "上传时间",
       dataIndex: "uploadedAt",
       width: 210,
+      sorter: true,
+      sortOrder: sortOrderOf("uploadedAt"),
       render: (_: string | null | undefined, record) => (
         <Space size={4}>
           <Typography.Text type="secondary">
@@ -1009,8 +1306,11 @@ export function MediaList() {
     {
       // 分类 / 标签（spec.md §8）：分类为无限层级树的路径快照，标签最多展示 2 个 + 「+N」
       title: "分类 / 标签",
-      key: "custom",
+      key: "category",
       width: 180,
+      filters: categoryFilters,
+      filterSearch: true,
+      filteredValue: filters.categoryIds.length ? filters.categoryIds : null,
       render: (_, row) => (
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           {row.category ? (
@@ -1044,6 +1344,9 @@ export function MediaList() {
       title: "描述",
       dataIndex: "description",
       width: 200,
+      filters: presenceFilters,
+      filterMultiple: false,
+      filteredValue: presenceValue("description"),
       render: (description: string | null) =>
         description ? (
           <Typography.Text style={{ fontSize: 13 }} ellipsis={{ tooltip: description }}>
@@ -1057,6 +1360,9 @@ export function MediaList() {
       title: "转码产物",
       key: "products",
       width: 200,
+      filters: presenceFilters,
+      filterMultiple: false,
+      filteredValue: presenceValue("products"),
       render: (_, row) =>
         row.products.length ? (
           <Tooltip
@@ -1083,7 +1389,10 @@ export function MediaList() {
     {
       title: "字幕",
       dataIndex: "subtitleCount",
-      width: 90,
+      width: 110,
+      filters: presenceFilters,
+      filterMultiple: false,
+      filteredValue: presenceValue("subtitles"),
       render: (count: number, row) =>
         count ? (
           <Button
@@ -1142,10 +1451,15 @@ export function MediaList() {
   return (
     <ProCard
       title="存储媒资列表"
-      subTitle={`共 ${items.length} 个视频`}
+      subTitle={
+        filtersActive
+          ? `筛出 ${visibleItems.length} / 共 ${items.length} 个视频`
+          : `共 ${items.length} 个视频`
+      }
       bordered={false}
       extra={
         <Space>
+          {filtersActive && <Button onClick={resetFilters}>清空筛选</Button>}
           {/* 上传视频（2026-10-01 起）：跳转独立上传页 /media/upload（spec.md §9.1），本页不再内联上传 */}
           <Button
             type="primary"
@@ -1172,12 +1486,30 @@ export function MediaList() {
         <Table<MediaListItem>
           rowKey="id"
           columns={columns}
-          dataSource={items}
+          dataSource={visibleItems}
           loading={loading}
-          pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 个媒资` }}
+          onChange={handleTableChange}
+          pagination={{
+            current: page,
+            pageSize: 20,
+            showSizeChanger: false,
+            onChange: setPage,
+            showTotal: (t) => `共 ${t} 个媒资`,
+          }}
           size="middle"
           scroll={{ x: TABLE_MIN_WIDTH, y: bodyHeight }}
-          locale={{ emptyText: "存储中暂无媒资（original/ 分区为空，点击右上角「上传视频」开始）" }}
+          locale={{
+            emptyText: filtersActive ? (
+              <Space direction="vertical" size={4}>
+                <Typography.Text type="secondary">没有符合筛选条件的媒资</Typography.Text>
+                <Button size="small" onClick={resetFilters}>
+                  清空筛选
+                </Button>
+              </Space>
+            ) : (
+              "存储中暂无媒资（original/ 分区为空，点击右上角「上传视频」开始）"
+            ),
+          }}
         />
       </div>
 
@@ -1581,7 +1913,7 @@ export function MediaList() {
       {/* 转码产物列表（按模板）：播放（分发端签名链路，浏览器本地解密）/ 按模板删除（spec.md §1.3/§5.5/§6） */}
       <Drawer
         open={productsTarget !== null}
-        width={780}
+        width={880}
         title={`转码产物：${productsTarget?.title ?? productsTarget?.id ?? ""}`}
         onClose={() => setProductsTarget(null)}
         destroyOnHidden
@@ -1606,6 +1938,19 @@ export function MediaList() {
           scroll={{ y: "calc(100vh - 320px)" }}
           locale={{ emptyText: <Empty description="尚无转码产物，请在「更多 → 转码」发起" /> }}
         />
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 12, marginBottom: 0 }}>
+          播放端只看到开启展示的产物；未指定清晰度时加载默认产物（未设置则用全局默认模板，再取列表首项）。
+          {productsDetail?.productSettings?.default_template_id && (
+            <Button
+              type="link"
+              size="small"
+              disabled={productSettingsSaving}
+              onClick={handleClearDefaultProduct}
+            >
+              取消默认产物
+            </Button>
+          )}
+        </Typography.Paragraph>
         {/* <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 12, marginBottom: 0 }}>
           播放：管理端只向分发端换一个签名主清单 URL，清单 / 密钥 / 分片直达浏览器——
           明文密钥（CEK）只由分发端下发、浏览器本地解密。若画面不加载：多为分发端 CORS

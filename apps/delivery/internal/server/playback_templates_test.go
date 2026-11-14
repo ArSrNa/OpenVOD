@@ -23,12 +23,12 @@ func strPtr(s string) *string { return &s }
 func TestBuildPlaybackTemplatesSortingAndDefaults(t *testing.T) {
 	candidates := []string{tplD, tplB, tplA, tplC}
 	refs := map[string]store.TemplateRef{
-		tplA: {ID: tplA, Name: "720p", IsDefault: false},
-		tplB: {ID: tplB, Name: "原画", IsDefault: true},  // 默认 → 即使 name 排序不占先也排第一
-		tplC: {ID: tplC, Name: "1080p", IsDefault: false},
-		tplD: {ID: tplD, Name: "1080p", IsDefault: false}, // 与 C 同名 → 按 id 字典序
+		tplA: {ID: tplA, Name: "720p"},
+		tplB: {ID: tplB, Name: "原画"}, // 有效默认（由 defaultID 传入）→ 即使 name 排序不占先也排第一
+		tplC: {ID: tplC, Name: "1080p"},
+		tplD: {ID: tplD, Name: "1080p"}, // 与 C 同名 → 按 id 字典序
 	}
-	got := buildPlaybackTemplates(candidates, refs, true)
+	got := buildPlaybackTemplates(candidates, refs, true, tplB)
 	want := []contracts.PlaybackTemplate{
 		{ID: tplB, Name: strPtr("原画"), IsDefault: true},
 		{ID: tplC, Name: strPtr("1080p")},
@@ -43,10 +43,10 @@ func TestBuildPlaybackTemplatesSortingAndDefaults(t *testing.T) {
 func TestBuildPlaybackTemplatesDeletedRowIsNull(t *testing.T) {
 	// tplC 无模板行（历史产物，模板已删）→ name=null、is_default=false，且 name 为 null 排在最后
 	refs := map[string]store.TemplateRef{
-		tplA: {ID: tplA, Name: "720p", IsDefault: true},
-		tplB: {ID: tplB, Name: "原画", IsDefault: false},
+		tplA: {ID: tplA, Name: "720p"},
+		tplB: {ID: tplB, Name: "原画"},
 	}
-	got := buildPlaybackTemplates([]string{tplC, tplB, tplA}, refs, true)
+	got := buildPlaybackTemplates([]string{tplC, tplB, tplA}, refs, true, tplA)
 	want := []contracts.PlaybackTemplate{
 		{ID: tplA, Name: strPtr("720p"), IsDefault: true},
 		{ID: tplB, Name: strPtr("原画")},
@@ -60,8 +60,8 @@ func TestBuildPlaybackTemplatesDeletedRowIsNull(t *testing.T) {
 func TestBuildPlaybackTemplatesLookupFailureDegradesAll(t *testing.T) {
 	// 查询失败（lookupOK=false）：全部 name=null、is_default=false，按 id 字典序稳定输出
 	got := buildPlaybackTemplates([]string{tplC, tplA, tplB}, map[string]store.TemplateRef{
-		tplA: {ID: tplA, Name: "720p", IsDefault: true}, // 即便残留 refs 也不可使用
-	}, false)
+		tplA: {ID: tplA, Name: "720p"}, // 即便残留 refs 也不可使用
+	}, false, "")
 	want := []contracts.PlaybackTemplate{
 		{ID: tplA, Name: nil},
 		{ID: tplB, Name: nil},
@@ -74,7 +74,7 @@ func TestBuildPlaybackTemplatesLookupFailureDegradesAll(t *testing.T) {
 
 func TestBuildPlaybackTemplatesEmptyCandidates(t *testing.T) {
 	// 旧布局 / 无产物：恒为空数组（len=0，序列化为 []）
-	got := buildPlaybackTemplates(nil, nil, true)
+	got := buildPlaybackTemplates(nil, nil, true, "")
 	if got == nil || len(got) != 0 {
 		t.Fatalf("空候选应为空数组，got %+v", got)
 	}
@@ -83,7 +83,7 @@ func TestBuildPlaybackTemplatesEmptyCandidates(t *testing.T) {
 func TestTemplatesContainSelectedTemplate(t *testing.T) {
 	// 与 template_id 选择一致性：resolveTemplate 只在候选内选择 → 响应 templates[] 必含所选 id
 	candidates := filterTemplateCandidates([]string{"subtitles", tplA, tplB, "not-a-template"})
-	b := buildPlaybackTemplates(candidates, nil, false)
+	b := buildPlaybackTemplates(candidates, nil, false, "")
 	for _, id := range candidates {
 		if !containsTemplate(b, id) {
 			t.Fatalf("templates[] 缺少候选 %s", id)
@@ -134,7 +134,7 @@ func TestSelectAutoTemplatePicksSortedFirst(t *testing.T) {
 		tplC: {ID: tplC, Name: "1080p"},
 		tplD: {ID: tplD, Name: "480p"},
 	}
-	items := buildPlaybackTemplates(candidates, refs, true)
+	items := buildPlaybackTemplates(candidates, refs, true, "")
 	// 排序：1080p(C) → 480p(D) → 720p(B) → 原画(A)（字典序中数字先于中文）
 	if got, want := selectAutoTemplate(items), tplC; got != want {
 		t.Fatalf("自动选择不符：got %s（items %v），want 排序后第一个 %s", got, dumpTemplates(items), want)
@@ -150,9 +150,9 @@ func TestSelectAutoTemplatePrefersDefault(t *testing.T) {
 	refs := map[string]store.TemplateRef{
 		tplB: {ID: tplB, Name: "720p"},
 		tplC: {ID: tplC, Name: "1080p"},
-		tplD: {ID: tplD, Name: "480p", IsDefault: true},
+		tplD: {ID: tplD, Name: "480p"},
 	}
-	items := buildPlaybackTemplates(candidates, refs, true)
+	items := buildPlaybackTemplates(candidates, refs, true, tplD)
 	if got, want := selectAutoTemplate(items), tplD; got != want {
 		t.Fatalf("默认模板未优先：got %s（items %v），want %s", got, dumpTemplates(items), want)
 	}
@@ -161,7 +161,7 @@ func TestSelectAutoTemplatePrefersDefault(t *testing.T) {
 func TestSelectAutoTemplateLookupFailureFallsBackToID(t *testing.T) {
 	// 模板表查询失败：全部 name=null → 排序退化为 id 字典序，选择仍与列表首项一致且不空
 	candidates := []string{tplD, tplB, tplA}
-	items := buildPlaybackTemplates(candidates, nil, false)
+	items := buildPlaybackTemplates(candidates, nil, false, "")
 	if got, want := selectAutoTemplate(items), tplA; got != want {
 		t.Fatalf("降级排序下自动选择不符：got %s（items %v），want %s", got, dumpTemplates(items), want)
 	}

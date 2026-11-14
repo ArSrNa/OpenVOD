@@ -12,6 +12,7 @@ import {
   MEDIA_TAGS_MAX,
   MEDIA_TAG_LENGTH_MAX,
   SUBTITLE_LABEL_MAX,
+  TEMPLATE_ID_PATTERN,
   WATERMARK_ANCHORS,
   WATERMARK_TEXT_MAX,
   WATERMARK_BLEND_MODES,
@@ -69,7 +70,7 @@ export const PlaybackTemplateDTO = z
     id: z.string(),
     /** transcode_templates.name 当前名称（非任务快照）；模板行已删除（历史产物）为 null */
     name: z.string().nullable(),
-    /** 管理端标记的默认模板（仅展示用；自动选择语义仍按 spec.md §6.3） */
+    /** 该媒资的有效默认产物（媒资级默认 → 全局默认模板；未指定 template_id 时自动加载这套，spec.md §6.3） */
     is_default: z.boolean(),
   })
   .meta({ title: "PlaybackTemplate" });
@@ -861,6 +862,58 @@ export const MediaCustomMetadataDTO = z.object({
   description: z.string().nullable(),
   tags: z.array(z.string()),
 });
+
+// ---- 媒资级转码产物展示与默认（spec.md §6.3/§11.1，2026-11-15）----
+// 仅管理端消费：分发端直接读 media.product_settings 的 JSON（Go 侧手工解析），
+// 故本节**不进 gen-json.ts 清单、不生成 Go struct**（同模板 / 密钥 / 用户组）。
+
+/** 展示白名单上限（一次最多勾选的产物数；媒资产物规模远小于此） */
+export const MEDIA_PRODUCT_VISIBLE_MAX = 100;
+
+/** 媒资级产物设置（管理端详情返回；空值语义见字段注释） */
+export const MediaProductSettingsDTO = z.object({
+  /** 对播放端展示的模板 ID 白名单；null = 全部展示（新产物默认可见） */
+  visible_template_ids: z.array(z.string()).nullable(),
+  /** 进入后默认加载的模板产物；null = 未设置（回退全局默认模板 → 排序首项） */
+  default_template_id: z.string().nullable(),
+});
+
+/** 模板 ID 形状与产物目录名一致（cuid），挡住手拼 / 脏值 */
+const ProductTemplateId = z
+  .string()
+  .regex(TEMPLATE_ID_PATTERN, "模板 ID 形状不合法（应为 cuid）");
+
+/**
+ * PATCH /api/admin/media/{id}/product-settings：字段缺省 = 不修改。
+ * `visible_template_ids: null` 或 `[]` = 全部展示；`default_template_id: null` = 取消媒资级默认。
+ * 打开默认的产物必须处于展示范围（服务端在合并现有设置后再校验一次）。
+ */
+export const UpdateMediaProductSettingsRequest = z
+  .object({
+    visible_template_ids: z
+      .array(ProductTemplateId)
+      .max(MEDIA_PRODUCT_VISIBLE_MAX, `最多 ${MEDIA_PRODUCT_VISIBLE_MAX} 套产物`)
+      .nullable()
+      .optional(),
+    default_template_id: ProductTemplateId.nullable().optional(),
+  })
+  .refine(
+    (v) => v.visible_template_ids !== undefined || v.default_template_id !== undefined,
+    { message: "没有需要更新的字段" },
+  )
+  .superRefine((v, ctx) => {
+    if (
+      v.default_template_id != null &&
+      v.visible_template_ids != null &&
+      !v.visible_template_ids.includes(v.default_template_id)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: "默认产物必须在展示范围内",
+        path: ["default_template_id"],
+      });
+    }
+  });
 
 // ---- 控制台总览（spec.md §2.1；仅管理端使用，不生成 Go struct） ----
 const DashboardCount = z.number().int().nonnegative();

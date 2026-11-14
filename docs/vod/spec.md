@@ -91,7 +91,7 @@ root 下按资产类别分四个分区，互不嵌套：
 |---|---|---|
 | `/api/admin/media` | GET | 媒资列表（§1.4 存储视角 + DB 展示名/状态合并）；每条含 `products[]`——按模板分组的转码产物（模板名 / 对象数 / 体积 / 变体），旧布局产物归入 `template_id=""`；另含 `subtitleCount`（该媒资字幕对象数，§7.2）与 `category`（分类引用含路径）/ `description` / `tags`（自定义元数据，§8.3） |
 | `/api/admin/media/upload` | POST | 原视频上传（§1.3）：生成数字 ID（主键冲突即重取）→ 流式写 `original/{id}.{ext}` → `media` 行落库；存储失败回滚 DB 行；**上传完毕后异步自动生成元数据**（2026-09-30 增：与 `/{id}/metadata` 同源，ffprobe → `metadata/{id}/probe.json` + `media.probe` / `duration_ms`）——响应立即返回 `metadata.status="pending"`，探测在响应发送后由后台任务执行（Next `after()`）；**best-effort**：失败只告警（上传仍成功，可手动重跑），管理端以递增间隔轮询详情直至 `probe` 就绪。**2026-10-01 增**：上传入口为独立上传页 + 客户端上传队列（§9）——客户端并发上限 2、取消 = 中止请求（服务端按「存储写入失败」回滚占位行）；端点、协议与并发语义本身不变 |
-| `/api/admin/media/{id}` | GET | 详情：存储资产计数 + DB 元数据合并 + `products[]`（每套模板产物的模板名 / 变体 / 对象数 / 体积，模板 ID 可追溯到 `proceed/{id}/{模板id}/`）+ `custom`（自定义元数据**恒三项**：分类含 `id/name/path` / 描述 / 标签，§8.3）+ `customData`（稀疏投影原文） |
+| `/api/admin/media/{id}` | GET | 详情：存储资产计数 + DB 元数据合并 + `products[]`（每套模板产物的模板名 / 变体 / 对象数 / 体积，模板 ID 可追溯到 `proceed/{id}/{模板id}/`；**2026-11-15 增**每项 `isVisible` / `isDefault`）+ `productSettings`（媒资级展示白名单 / 默认产物，§6.3）+ `custom`（自定义元数据**恒三项**：分类含 `id/name/path` / 描述 / 标签，§8.3）+ `customData`（稀疏投影原文） |
 | `/api/admin/media/{id}` | PATCH | 媒资字段部分更新（`contracts UpdateMediaRequest`）：`title` = 重命名（仅改 `media.title`，绝不改动 original 文件名与媒资 ID）；`description` / `tags` / `category_id` = 自定义元数据设置（§8.2：服务端重算 `custom_data` 投影并导出 `metadata/{id}/custom.json`；**`category_id: null` = 归入默认分类「其他」**）；`uploaded_at` = 自定义上传时间（**2026-09-30 增**，ISO 8601，`null` = 恢复默认：管理端「上传时间」展示与分发端列表排序回退链使用，**不进入**元数据投影 / 分发端下发）；至少一个字段，否则 400。审计 `media.rename` / `media.metadata_update` / `media.uploaded_at_update` |
 | `/api/admin/categories` | GET | 分类扁平列表（§8.1）：`id` / `name` / `description` / `parent_id`（层级由它表达，客户端组树）/ `sort_order` / `is_system`（系统默认分类「其他」= true，前端禁用删除）/ `media_count`（直属，含未设置分类的历史媒资计入「其他」）/ `descendant_media_count`（含子孙；**保留字段，当前 UI 不展示**）/ 时间戳；**默认分类缺失时幂等补建** |
 | `/api/admin/categories` | POST | 新建分类（§8.1）：`name` 必填（≤64）、`description`（≤191）、`parent_id`（缺省 / `null` = 顶级，不限层级）、`sort_order`；上级不存在 404；**同级重名 409**（顶级重名也拦，DB 唯一索引对 NULL 不生效）；审计 `category.create` |
@@ -112,6 +112,7 @@ root 下按资产类别分四个分区，互不嵌套：
 | `/api/admin/jobs/stream` | GET | 转码任务实时推送（SSE，`text/event-stream`）：连接即回放全量快照（`event: jobs`），此后**仅当任务快照变化时**推送全量（幂等覆盖，避免空转）；15s `event: ping` 保活心跳；断线由浏览器按 `retry` 提示自动重连（重连即重新校验会话）、连接 10 min 到期主动断开重连。**客户端不轮询**；服务端由进程内 hub（`lib/jobs-stream`）观察 DB 变化——Worker 是独立进程且 MySQL/SQLite 无跨进程通知，管理端只能观察自己的库；全部连接共享同一观察循环，订阅者归零即停机；响应 `no-store` / `X-Accel-Buffering: no` |
 | `/api/admin/media/{id}/preview-play` | POST | 「产物解密播放」预览：请求体 `template_id`（可选；**空串 = 显式请求旧布局产物**，缺省由分发端自动选择，§6.3）。服务端以**预览账号**（`DELIVERY_PREVIEW_USERNAME/PASSWORD`）调分发端 login + play（分发端地址取系统设置 `playback_base_url`，env `DELIVERY_BASE_URL` 兜底；两处皆空 501，**不回退 127.0.0.1**，2026-11-14 修订），返回 `{sid, manifest_url, expires_at, template_id, encrypted}`；浏览器用 hls.js / Safari 原生直接播该签名清单——清单 / 密钥 / 分片直达浏览器，**管理端不接触密钥材料**（P0，§4.3）。未配置预览账号返回 501 |
 | `/api/admin/media/{id}/products/{templateId}` | DELETE | 删除一套转码产物：`templateId` 为模板 cuid（删 `proceed/{id}/{templateId}/` 子树）或 `legacy`（旧布局：删 `proceed/{id}/` 顶层非保留段对象）。**只删存储对象**：`hls_keys`（可能被其它模板产物共用）与 `transcode_jobs` 历史保留；同模板存在未终结任务 → 409；不存在 → 404；落 `audit_logs`（`media.product_delete`，detail 含 template_id / objects / bytes） |
+| `/api/admin/media/{id}/product-settings` | PATCH | 保存媒资级产物展示与默认（**2026-11-15 增**，§6.3/§11.1）：`{visible_template_ids?: string[] \| null, default_template_id?: string \| null}`（缺省 = 不修改；`null` / `[]` = 全部展示；`null` 默认 = 取消媒资级默认）。默认产物必须存在且处于展示范围（400）；**至少保留一套展示产物**（空选择归一化为全部展示）；只影响分发端 `play` 的 `templates[]` 与自动选择，不删对象、不改鉴权；返回 `{productSettings}`，落 `audit_logs`（`media.product_settings_update`） |
 | `/api/admin/jobs/{id}/stop` | POST | 取消任务（**立即打断**）：QUEUED / 租约已过期 → 直接置 `CANCELLED` + 清租约；租约有效（worker 正在执行）→ 只写 `cancel_requested_at`，worker 2s 内杀掉 ffmpeg / 中止拉源并落 `CANCELLED`。返回 `{id, status, cancelling}`。写入用 CAS（状态未变才生效）。落 `audit_logs`（`transcode.stop`） |
 | `/api/admin/jobs/{id}/restart` | POST | 重启（重新入队）：仅 **FAILED**（失败或手动停止）——`attempts` 清零（否则认领逻辑会立即判「超过重试上限」）+ 清错误 / 租约 / 时间戳 → QUEUED，由 worker 重新认领。落 `audit_logs`（`transcode.restart`） |
 | `/api/admin/jobs` | DELETE | 批量删除任务（2026-11-14）：请求体 `{ids[]}`（1–200）；**仅非进行中**（DONE / FAILED / CANCELLED）可删，进行中 / 不存在者进 `skipped[]` 回报而非整批失败。只删 `transcode_jobs` 行，**不动产物与 `hls_keys`**。落 `audit_logs`（`transcode.delete`） |
@@ -193,6 +194,7 @@ root 下按资产类别分四个分区，互不嵌套：
 ### 3.1 已实现页面
 
 - `/media`（媒资管理，M1/M2 已实现，M3 增产物操作，2026-09-24 增分类 / 标签）：媒资列表表格——**封面缩略图（首列，antd Image，经 GET `/cover` 读取，点击预览大图；未设置显示「未设置」）**、**展示名（第一行为展示名，第二行为媒资 ID 代码样式；右侧复制按钮一键复制 ID + 重命名按钮）**、生命周期状态、原始文件（格式 / 大小 / 上传时间——**可自定义**：设置后展示自定义值并带「自定义」Tag，未设置回退对象存储写入时间，2026-09-30 增）、**分类 / 标签（分类完整路径或「未分类」Tag；标签最多平铺 2 个 + 「+N」悬停全量，§8.5）**、**描述（视频描述列：媒资自身描述，空显示「—」，§8.5）**、**转码产物（按模板分组：`N 组产物 · M 个对象`，悬停列出每套产物的模板名与档位，点击打开产物列表）**；详情弹窗显示产物组数并提供「产物列表（播放 / 删除）」入口（不再逐套平铺）；
+  - **排序与筛选（2026-11-15 增，入口在表头，浏览器侧计算，不改 API）**：排序 = 点击「展示名」/「大小」/「上传时间」列头切换升 / 降序，第三次点击取消排序回到默认（媒资 ID 降序）；展示名未命名用媒资 ID 兜底（`zh-CN` 比较），上传时间自定义优先、回退存储写入时间，时间缺失恒排末尾；筛选 = 列头筛选，状态列（多选，含「未入库」）、分类 / 标签列（多选，选中任一分类含其全部子孙分类）、封面 / 描述 / 转码产物 / 字幕列各「有 / 无」，彼此取「与」；有筛选时标题区显示「筛出 x / 共 y 个视频」并出现「清空筛选」，筛不到结果时表格空态同样给「清空筛选」。纯函数 `apps/admin/src/lib/media-list-view.ts`，单测 `apps/admin/test/media-list-view.test.ts`；
   - **产物列表（抽屉，按模板一行）**：模板名（已删显示「模板已删除（id 前缀）」；旧布局显示「未分组（旧布局）」）、存储前缀 `proceed/{id}/{模板id}/`、变体（`1080p / 720p`）、对象数、体积；操作：
     - **播放** = 解密播放预览（`POST /media/{id}/preview-play` → 分发端签名主清单 URL → hls.js / Safari 原生播放，浏览器本地解密；管理端不出密钥，§4.3），播放弹窗标注「AES-128 加密（浏览器本地解密）」或「未加密」与模板 ID；
     - **删除** = 按模板删除该套产物（`DELETE /media/{id}/products/{templateId}`；确认弹窗给出前缀 / 对象数 / 体积与不可恢复警告；同模板有进行中任务时 409，需等待其结束）；
@@ -351,14 +353,14 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 | `WORKER_MODE` | `resident` | 运行模式（ADR-0017）：`resident` = 常驻轮询；`http` = HTTP 门铃（`POST /wake` 触发 claim-drain，空闲可退出）；`invoked` = 异步云函数单任务触发（载荷 `job_ids` 定向认领，不扫队列）。DB `worker_mode` > env |
 | `WORKER_HTTP_PORT` | `9001` | http / invoked 模式监听端口（含 `GET /healthz`） |
 | `WORKER_IDLE_EXIT_MINUTES` | `0`（不退出） | 空闲退出阈值（http / invoked）；invoked 建议 1~5，跑完主动退出避免平台按进程存活计费 |
-| `WORKER_WAKE_SYNC` | `0`（立即 202） | `1` = `/wake` 等 drain 跑完再返回 200。只对「响应即事件结束、实例随请求冻结」的平台开（SCF WebServer 镜像函数），且必须配合平台**异步执行**，否则调用方超时会切断任务 |
+| `WORKER_WAKE_SYNC` | `0`（立即 202） | `1` = `/wake` 等 drain 跑完再返回 200。只对「响应即事件结束、实例随请求冻结」的平台开（SCF WebServer 镜像函数）；调用方已改为响应后发送，不再受 5s 限制，但建议同时开平台**异步执行**，否则后台连接要挂到任务结束 |
 | `WORKER_JOBS_ROOT` | 空（= `os.tmpdir()/openvod-jobs`） | 任务临时目录根；invoked 模式**必须**指向挂载的文件系统（CFS / NAS），`/tmp` 装不下产物峰值 |
 | `WORKER_NOTIFY_SECRET` | 空（http / invoked 必填） | `/wake` Bearer 密钥；缺失拒绝启动 |
 | `WORKER_POLL_INTERVAL_MS` | `2000` | 轮询间隔（毫秒，仅 resident 模式） |
 | `WORKER_LEASE_MS` | `60000` | 任务 lease 时长（执行期按 1/3 续期） |
 | `WORKER_MAX_ATTEMPTS` | `3` | 单任务最大尝试次数 |
 
-http / invoked 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_settings，ADR-0015）在发起转码 / 重启后 `POST {url}/wake` 拉起 worker（invoked 载荷带 `job_ids` 定向认领）。该外呼在返回前限时等待（≤5s，2xx 即视为送达）——admin 实例响应后可能被冻结，`void` 出去的请求会丢；等待超时按未送达告警，任务仍留存队列兜底。`WORKER_WAKE_SYNC=1` 时 worker 要等任务跑完才回 200，此时 admin 仍能在 5s 内收到响应，**前提是平台先把调用转成异步**（SCF 需开启「异步执行」并立即返回 RequestId）；未开异步执行时 admin 会超时断开，SCF 记 499 并终止实例。详见 ADR-0017 与 [env-vars.md](./env-vars.md)。
+http / invoked 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_settings，ADR-0015）在发起转码 / 重启 / CEK 轮换后 `POST {url}/wake` 拉起 worker（invoked 载荷带 `job_ids` 定向认领）。该外呼在**响应发出之后**发送（Next `after()`，ADR-0017 §9）：用户端始终立即拿 202，`WORKER_WAKE_SYNC=1` 下 worker 等任务跑完才回 200 的那段等待落在响应之后，上限 1 小时；超时按未送达告警，任务仍留存队列兜底。SCF 侧仍建议开启「异步执行」（调用方立即拿 RequestId、执行上限 24h），否则这条后台连接要一直挂到任务结束。详见 ADR-0017 与 [env-vars.md](./env-vars.md)。
 
 ## 6. 播放链路（分发端，M3）
 
@@ -420,12 +422,14 @@ http / invoked 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`�
 
 吊销语义：会话有效性**每请求查库**（比 ADR-0006 §6 的 ≤60s 收敛更严格；进程内 60s 缓存为演进项）——置 `revoked_at` 后新的清单 / 密钥 / 分片请求立即 403。
 
-### 6.3 模板产物选择（多套并存，ADR-0014）
+### 6.3 模板产物选择（多套并存，ADR-0014 / ADR-0021）
+
+**媒资级展示设置（2026-11-15 增，ADR-0021）**：`media.product_settings` 保存该媒资的 `visible_template_ids`（对播放端展示的白名单，`null` = 全部）与 `default_template_id`（进入后默认加载的产物，`null` = 未设置）。只有白名单内的产物参与 `templates[]` 与自动选择；显式指定被隐藏的产物仍可播放（管理端预览 / 老客户端兼容），并随本次响应一并返回。设置只影响展示与自动选择，不改变产物可访问性，不是鉴权手段。脏值 / 白名单与产物无交集一律降级为「全部展示」（可用性优先）。
 
 `play` 的 `template_id`（可选）：
 
-- 显式指定 → 必须存在，否则 409 `not_playable`（消息列出可选值）；
-- 未指定 → 唯一产物直接使用；多套 → 取**默认模板**（`transcode_templates.is_default`）的那套；**无默认模板则自动选 `templates[]` 的第一个**（**2026-10-13 修订**——原「多套且无默认 → 409 列出可选值」把选择成本推给每个客户端，播放端应呈现为清晰度切换而不是报错；自动选择与响应 `templates[]` 共用同一排序（§11.1），客户端看到的首项即默认播放项，可随时带 `template_id` 切换；模板表不可用时退化为列举顺序第一个，可用性优先）；
+- 显式指定 → 必须存在（存储里有该模板子树），否则 409 `not_playable`（消息列出可选值）；不在展示白名单内也可播放；
+- 未指定 → 唯一**展示中**的产物直接使用；多套 → 取**媒资级默认产物**（`media.product_settings.default_template_id`）→ **全局默认模板**（`transcode_templates.is_default`）→ **自动选 `templates[]` 的第一个**（2026-10-13 修订：多套且无默认不再 409，播放端呈现为清晰度切换；自动选择与响应 `templates[]` 共用同一排序（§11.1），客户端看到的首项即默认播放项；模板表不可用时退化为列举顺序第一个）；
 - 无模板子树 → 旧布局（`proceed/{id}/{variant}/`），返回 `template_id=""`。
 
 ### 6.4 签名密钥材料形态与引导
@@ -994,14 +998,15 @@ t = ⌊(now + ttl) / ttl⌋ · ttl + ttl           # V：过期时刻；不论�
 |---|---|---|
 | `id` | string | 模板 ID（cuid 形状，§1.3）；即 `play` 请求 `template_id` 的可用取值 |
 | `name` | string \| null | `transcode_templates.name`（**当前**名称，非任务快照）；模板行已被删除（历史产物）为 `null` |
-| `is_default` | bool | 该模板被管理端标记为默认（`transcode_templates.is_default`）；仅展示用，自动选择语义仍按 §6.3 |
+| `is_default` | bool | 该媒资的**有效默认产物**：媒资级默认（`media.product_settings.default_template_id`）→ 全局默认模板（`transcode_templates.is_default`）；未指定 `template_id` 时加载的正是这一套。至多一项为 true（§6.3，2026-11-15） |
 
 规则：
 
-- **候选 = 存储实际存在的模板子树**：`proceed/{id}/` 下直接子目录中匹配模板 ID 形状者（排除 `subtitles` 保留段）——与 `resolveTemplate`（§6.3）同一列举逻辑，「有什么放什么」；**不**列出「有模板但无产物」的项；不匹配形状的脏目录同样不列；
+- **候选 = 存储实际存在的模板子树 ∩ 播放端展示白名单**：`proceed/{id}/` 下直接子目录中匹配模板 ID 形状者（排除 `subtitles` 保留段），再按 `media.product_settings.visible_template_ids` 过滤（`null` / 空 = 全部）——「有什么放什么」+「展示什么给什么」；**不**列出「有模板但无产物」的项；不匹配形状的脏目录同样不列；白名单与现存产物无交集时回退全部（至少一套可播）；
 - **旧布局**（无模板子树、`template_id=""`）：`templates: []`（旧布局不参与切换，播放仍按 §6.3 自动工作）；
-- **排序**：默认模板优先，其余按 `name`（`null` 排最后）再按 `id` 字典序，保证稳定；多个模板同时标记默认时按标记原样输出；
-- **自动选择 = 首项**（2026-10-13）：未指定 `template_id` 且无默认模板时，分发端自动播放 `templates[0]`（与本节排序共用同一实现）——客户端列表里看到的第一项即默认播放项，切换只需回传该项 `id`（§6.3）；
+- **排序**：有效默认产物优先，其余按 `name`（`null` 排最后）再按 `id` 字典序，保证稳定；
+- **自动选择 = 首项**（2026-10-13）：未指定 `template_id` 时，分发端自动播放 `templates[0]`（与本节排序共用同一实现）——客户端列表里看到的第一项即默认播放项，切换只需回传该项 `id`（§6.3）；
+- **隐藏产物的显式请求**（2026-11-15）：显式指定不在白名单内的产物仍可播放（管理端预览 / 老客户端兼容），该产物随本次响应的 `templates[]` 一并返回（`is_default=false`）；未请求时不出现；
 - **名称查询**：一次批量查询 `transcode_templates`；查询失败**不致命**——全部降级 `name: null`（播放链路不因模板表查询失败中断，同 §8.4 容错口径）；
 - **目录级候选**：不校验 `master.m3u8` 是否存在（产物不完整时该选项仍列出，播放失败由前端提示）；
 - 幂等复用会话（缺省）与 `force_new=true` 均照常返回，内容与当前 `template_id` 选择一致；请求 / 响应其余字段**零改动**（App 可忽略该字段，向后兼容）。
@@ -1014,9 +1019,11 @@ t = ⌊(now + ttl) / ttl⌋ · ttl + ttl           # V：过期时刻；不论�
 - Go：`internal/store` 新增批量查名（`SELECT id, name FROM transcode_templates WHERE id IN (…)`，占位符展开）；`internal/server` 在 `resolveTemplate` 的候选列举上构造响应；
 - `docs/vod/api.md` §2.2 play 行与响应示例补 `templates`；错误码表不变。
 
-**单测（Go）**：多套产物（含默认标记与排序）/ 模板行已删（`name=null`）/ 旧布局（空数组）/ 模板表查询失败（全 `null` 且不报错）/ 与 `template_id` 选择一致性 / **自动选择取列表首项**（`selectAutoTemplate`：无默认取排序首项、默认优先、查表失败降级、空列表）。
+**单测（Go）**：多套产物（含默认标记与排序）/ 模板行已删（`name=null`）/ 旧布局（空数组）/ 模板表查询失败（全 `null` 且不报错，有效默认仍打标）/ 与 `template_id` 选择一致性 / **自动选择取列表首项**（`selectAutoTemplate`：无默认取排序首项、默认优先、查表失败降级、空列表）/ **媒资级设置**（`product_settings_test.go`：JSON 解析容错、白名单过滤与回退、默认产物生效范围、隐藏产物的显式请求并集、默认唯一打标）。
 
 **多套产物自动选择（2026-10-13 修订，§6.3）**：`resolveTemplate` 的多候选分支不再返回 409——默认模板优先，无默认则 `selectAutoTemplate(items)`（= 排序后 `templates[0]`）；选择与响应 `templates[]` 共用同一次模板表查询（`templateResolution`），保证「列表首项 = 默认播放项」；旧布局分支显式返回空数组（不外泄 `null`）。
+
+**媒资级默认与展示（2026-11-15，ADR-0021）**：候选先按 `media.product_settings.visible_template_ids` 过滤；默认优先级 = 媒资级 `default_template_id`（须在可见范围内）→ 全局 `transcode_templates.is_default` → 排序首项。`is_default` 由分发端按这条链计算后唯一打标，不再直接透传模板行的 `is_default`。`product_settings` 是 `media` 表的新列，**不新增表、不新增受限账号授权**（分发端已有 `media` 只读）。
 
 ### 11.2 App 工程形态与配置（`apps/player`）
 

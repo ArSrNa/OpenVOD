@@ -80,9 +80,10 @@ OpenVOD：自建云点播系统（媒资 → 转码加密 → 元数据 / 字幕
 
 ### 数据层
 
-- Prisma 是 schema 唯一真相源：`packages/db/prisma/schema.mysql.prisma` 与 `schema.sqlite.prisma` 的 enum/model 段必须逐字一致。MySQL 为生产准绳（迁移仅由 `packages/db` 执行，必须 expand-contract 向后兼容）；SQLite 仅限本地开发与单机同卷自托管（`db push`），跨机器 / 云函数部署必须 MySQL。
+- Prisma 是 schema 唯一真相源：`packages/db/prisma/mysql/schema.mysql.prisma` 与 `packages/db/prisma/sqlite/schema.sqlite.prisma` 的 enum/model 段必须逐字一致。MySQL 为生产准绳（迁移仅由 `packages/db` 执行，必须 expand-contract 向后兼容）；SQLite 仅限本地开发与单机同卷自托管（`db push`），跨机器 / 云函数部署必须 MySQL。
 - `packages/db/src/index.ts` 静态导入两份生成客户端、按 `DB_PROVIDER` 实例化其一——这是两份客户端缺一不可的根因。
 - 媒资分类为独立表 `media_categories`（**无限层级**邻接表，`media.category_id` 外键 `SetNull`，删除分类只把媒资迁入默认分类、不删媒资）；**系统默认分类「其他」**（`is_system`，未设置分类的媒资默认归入：上传即落库 / 留空 =「其他」/ 读取空值回退 / 不可删除）；「分类 / 描述 / 标签」构成 v1 **自定义元数据**：投影进 `media.custom_data`（稀疏，含分类 name/path 快照）+ 导出 `metadata/{id}/custom.json`，分发端 `custom` 按公开白名单下发（ADR-0016 / spec.md §8）。
+- Prisma 锁 **7.10.1**（ADR-0020）：客户端必须带 driver adapter（MySQL `@prisma/adapter-mariadb`、SQLite `@prisma/adapter-libsql`）；SQLite 的 DateTime 固定 `unixepoch-ms`、`file:` 相对路径以 `packages/db/prisma` 为基准，自建客户端走 `createSQLiteAdapter()`。
 - Go 侧不用 Prisma：`database/sql + sqlx` 只读读模型 + 播放会话写入，靠集成测试对齐表结构。分发端双驱动（ADR-0011 2026-10-17 修订）：三端共用 `DATABASE_URL`，scheme 决定 MySQL / SQLite（`modernc.org/sqlite` 纯 Go）；SQLite 的 DateTime 是整数毫秒、Boolean 是 0/1，由 `store.Time` + 方言化参数绑定对齐。
 - 任务队列不引入 Redis：MySQL `FOR UPDATE SKIP LOCKED` / SQLite CAS 认领，带 `lease_until` 崩溃重派（ADR-0004/0008）。
 - 水印模板为独立表 `watermark_templates`（图片 / 文字两类，图片资产落 `watermark/{模板id}.{ext}` 第五分区）；`transcode_templates.watermark_id` 可空外键（`SetNull`，应用层引用检查在前）。水印**只经任务快照**进 Worker（`template_snapshot.watermark`），模板 / 图片变更不影响已入队任务；`keep_original`（`-c copy`）与水印互斥（模板保存 + 任务发起两层校验）。烧录由 `packages/transcode/src/watermark.ts` 的纯函数编译为 ffmpeg 滤镜链（ADR-0018 / spec.md §10）。

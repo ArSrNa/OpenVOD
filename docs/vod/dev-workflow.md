@@ -89,11 +89,11 @@ task vectors              # TS/Go 加密互通测试向量
 
 ```ts
 import { PrismaClient as MySQLPrismaClient } from "../generated/mysql";
-import { PrismaClient as SQLitePrismaClient } from "../generated/sqlite";
+import { PrismaClient as SQLitePrismaClient } from "../generated/sqlite/client";
 ```
 
 因此 `generated/mysql` 与 `generated/sqlite` 缺一不可，否则 Next/webpack 报
-`Module not found: Can't resolve '../generated/sqlite'`。生成物在 `packages/db/generated/`（`.gitignore` 已忽略），**改 schema 后必须重新生成**：
+`Module not found: Can't resolve '../generated/sqlite/client'`。生成物在 `packages/db/generated/`（`.gitignore` 已忽略），**改 schema 后必须重新生成**：
 
 ```bash
 task db:generate          # = generate:mysql + generate:sqlite
@@ -138,18 +138,17 @@ cd packages/db
 mkdir -p prisma/migrations/20260918000000_init
 # 1) 由 schema 生成初始迁移 SQL（不连库）
 ./node_modules/.bin/prisma migrate diff \
-  --from-empty --to-schema-datamodel prisma/schema.mysql.prisma \
+  --from-empty --to-schema prisma/mysql/schema.mysql.prisma \
   --script > prisma/migrations/20260918000000_init/migration.sql
-# 2) 把 SQL 直接执行到目标库
+# 2) 把 SQL 直接执行到目标库（连接串取自 prisma.config.ts 的 DATABASE_URL，--schema 已移除）
 ./node_modules/.bin/prisma db execute \
-  --file prisma/migrations/20260918000000_init/migration.sql \
-  --schema prisma/schema.mysql.prisma
+  --file prisma/migrations/20260918000000_init/migration.sql
 # 3) 登记为「已应用」，避免 migrate deploy 重复执行
 ./node_modules/.bin/prisma migrate resolve \
-  --applied 20260918000000_init --schema prisma/schema.mysql.prisma
+  --applied 20260918000000_init --schema prisma/mysql/schema.mysql.prisma
 # 4) 校验库结构与 schema 一致（输出 "-- This is an empty migration." 即无漂移）
 ./node_modules/.bin/prisma migrate diff \
-  --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.mysql.prisma --script
+  --from-config-datasource --to-schema prisma/mysql/schema.mysql.prisma --script
 ```
 
 > 上述命令需先加载 `.env`：`set -a; . ./.env; set +a`。
@@ -245,11 +244,12 @@ task contracts            # 契约生成物变更后需入库（契约门禁）
 
 | 现象 | 原因 / 处理 |
 |---|---|
-| `Module not found: Can't resolve '../generated/sqlite'`（或 mysql） | 只生成了一份客户端；`task db:generate` 生成两份，然后重启 dev |
+| `Module not found: Can't resolve '../generated/sqlite/client'`（或 mysql） | 只生成了一份客户端；`task db:generate` 生成两份，然后重启 dev |
 | `P2021 The table xxx does not exist` | 目标库未建表；SQLite 用 `task db:push`，MySQL 用 §4.3 迁移/baseline |
-| `The column xxx.yyy does not exist in the current database`（P2021 的列形态） | **改了 Prisma schema 但没把迁移应用到目标库**——生成客户端（`task db:generate`）只更新类型与查询引擎，**不会**改库。MySQL 跑 `task db:migrate`（= `prisma migrate deploy`），SQLite 跑 `task db:push`；先跑 `bunx prisma migrate status --schema prisma/schema.mysql.prisma`（只读）确认是「not yet been applied」还是 failed / drift。additive 迁移（加列 / 加表）向后兼容，放心补跑 |
+| SQLite 里 `created_at` 变成 `2026-01-02 03:04:05.678` 文本 / Go 读出 1970 年 | 自建 `new PrismaClient({ adapter })` 时没走 `@openvod/db` 的 `createSQLiteAdapter()`，适配器默认存 ISO 8601 文本（ADR-0020） |
+| `The column xxx.yyy does not exist in the current database`（P2021 的列形态） | **改了 Prisma schema 但没把迁移应用到目标库**——生成客户端（`task db:generate`）只更新类型与查询编译器，**不会**改库。MySQL 跑 `task db:migrate`（= `prisma migrate deploy`），SQLite 跑 `task db:push`；先跑 `bunx prisma migrate status --schema prisma/mysql/schema.mysql.prisma`（只读）确认是「not yet been applied」还是 failed / drift。additive 迁移（加列 / 加表）向后兼容，放心补跑 |
 | `P1012 the URL must start with file:`（跑 `task db:push` 时） | `.env` 的 `DATABASE_URL` 是 MySQL——`db:push` 只服务 SQLite 开发库；MySQL 用 `task db:migrate`。临时要 SQLite 库可内联覆盖：`DATABASE_URL="file:./dev.db" bun run --cwd packages/db push:sqlite` |
-| `P3009 failed migrations` + MySQL `1064` near `'--…'` | 迁移 SQL 的 `--` 注释后**必须跟空格**（紧跟文字时 MySQL 不识别为注释，整个文件报 1064 且被记为 failed 挡住后续迁移）。修正 SQL 后：`bunx prisma migrate resolve --rolled-back <迁移名> --schema prisma/schema.mysql.prisma`，再 `task db:migrate` |
+| `P3009 failed migrations` + MySQL `1064` near `'--…'` | 迁移 SQL 的 `--` 注释后**必须跟空格**（紧跟文字时 MySQL 不识别为注释，整个文件报 1064 且被记为 failed 挡住后续迁移）。修正 SQL 后：`bunx prisma migrate resolve --rolled-back <迁移名> --schema prisma/mysql/schema.mysql.prisma`，再 `task db:migrate` |
 | `P3014 could not create the shadow database` | 账号无建库权限；按 §4.3 的 baseline 四步，不要用 `migrate dev` |
 | `task db:migrate` 报 `Field 'applied_steps_count' doesn't have a default value`（迁移明明没应用却跑不动） | 目标库的 `_prisma_migrations` 是历史遗留的残缺结构（各列可空、无主键、`applied_steps_count` 无默认值），而库开着 `STRICT_TRANS_TABLES`，Prisma 写迁移记录时省略该列 → 在**插入记录阶段**就失败，DDL 一条都没执行（`migrate status` 仍显示 not yet been applied，可安全重跑，不必 `migrate resolve`）。修：`ALTER TABLE _prisma_migrations MODIFY COLUMN applied_steps_count INT UNSIGNED NOT NULL DEFAULT 0;`（与 Prisma 官方建表定义一致）后再 `task db:migrate`。MySQL 的 DDL 非事务，失败后先用 `SHOW COLUMNS FROM <表>` 核对是否半应用 |
 | 重转码后播放**还是旧画面 / 旧水印**（改水印或模板参数重转无效） | 配了 `STORAGE_CDN_BASE_URL` 时九成是 **CDN 缓存键忽略了查询串**：产物按模板树原位替换（路径不变），预签名 query 每次不同但缓存键相同 → CDN 一直回旧分片。验证：对比 CDN 响应头 `last-modified` 与任务完成时间（旧 = 命中陈旧缓存）；或无签名裸打分片 URL，返回 200 即坐实（顺带说明 URL 鉴权已被缓存绕过）。处理：EO 控制台**刷新缓存**（目录刷新 `proceed/`）先恢复，再把缓存键改为**含完整 query** 或启用 CDN URL 鉴权（spec §6.5；两模式控制台配置逐项清单见 deploy-delivery.md「CDN 加速域名与资产签名配置清单」） |
@@ -271,6 +271,7 @@ task contracts            # 契约生成物变更后需入库（契约门禁）
 | 运行时报 `Cannot find module '@openvod/xxx'`（某 app 里） | **该 app 的 `package.json` 没声明这个 workspace 依赖**：bun 只给声明了依赖的包建软链，缺声明时从该包内解析不到（`packages/*` 之间同理）。补 `"@openvod/xxx": "workspace:*"` 后 `bun i`。已在 `packages/crypto`（→ shared）与 `apps/worker`（→ contracts）踩到过 |
 | 管理端 `Error: [safe-delete]...SAFE_DELETE_BULK_CONFIRM_REQUIRED`（构建时） | Next 清理 `.next/turbopack` 触发环境的批量删除保护；先 `rm -rf apps/admin/.next` 再 `task build:admin` |
 | 任务一直停在「排队中」 | **worker 没在跑**（最常见）：`bun scripts/dev.ts status` 看 worker 行；起起来用 `bun scripts/dev.ts all --background`（含 worker）或 `task dev:worker`。判据：该行 `attempts=0` 且 `lease_until` 为空 = 从未被任何消费者认领。若两者都非空，则是上一实例仍在执行或 lease 未过期（`WORKER_LEASE_MS`）|
+| 任务停在「排队中」，admin 日志 `[worker-notify] 唤醒通知未送达（The operation was aborted due to timeout）`，SCF 侧同 RequestId 记 `Request was canceled by client` / 499 | 同步唤醒（`WORKER_WAKE_SYNC=1`）下 `/wake` 要等整条转码跑完才回 200，旧版 admin 的 5s 外呼上限必然先到——一断连 SCF 就判客户端取消并终止实例（worker 侧连「认领任务」日志都没有）。2026-11-15 起唤醒已挪到响应之后（`DETACHED_WAKE_TIMEOUT_MS=1h`），**admin 镜像要重建到含该改动的版本**。另核两项：`WORKER_HTTP_PORT=9000`、`WORKER_JOBS_ROOT` 指向 CFS（默认 `/tmp` 只有 512MB，转码中途必失败）。详见 ADR-0017 §9 |
 | 任务反复失败 / `last_error` 提到「重试次数已达上限」 | Worker 崩溃循环；看 `last_error` 根因（常见：`MASTER_KEYS 不可用`、源片缺失、模板快照非法）。修好后在「转码任务」页重新发起。注：档位「全部被跳过」已不再判失败（2026-09-18 起改走源规格兜底产出，spec.md §5.4） |
 | 「转码任务」页一直显示「连接中断，自动重连中…」 | SSE 长连接被中间层掐断或缓冲：浏览器会自动重连（端点已带 `no-store` / `X-Accel-Buffering: no`，反向代理需放行长连接）；若会话已过期，重连 401，重新登录即可 |
 | 控制台页面卡住约 60s（`GET /xxx 200 in 60s`）并报 `⨯ Error: The destination stream closed early.`（浏览器侧另有 `Uncaught TypeError: network error`），末端跟随 `[Better Auth]: Provider "generic-oidc": discovery left no usable …` 或 `Discovery fetch failed` | 出口网络 / IdP 抖动时，better-auth 的 OIDC discovery（`${OIDC_ISSUER}/.well-known/openid-configuration`）**无超时**且落在 `auth.api.getSession()` 的首次调用路径上——也就是每个控制台页面（`requireConsoleSession()`），请求被拖到 TCP 超时（实测 132s；客户端 / 网关约 60s 先放弃，故表现为 60s + React 流被关）。provider 注册前已由 `apps/admin/src/lib/oidc.ts` 带 3s 超时预检：**未配置 issuer（DB 键与 env 皆空）时直接返回、不触网**；预检失败即本次实例不注册 generic-oidc（SSO 暂不可用，**本地邮箱密码登录不受影响**），日志 `[admin] OIDC discovery 预检失败（…）`。要恢复 SSO 需核对 `admin_oidc_issuer`（或 `OIDC_ISSUER`，CNB 走密钥注入、**不出现在 `.env`**）与容器出口网络 |

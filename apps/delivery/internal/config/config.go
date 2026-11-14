@@ -318,7 +318,7 @@ func findPrismaSchemaDir() (string, bool) {
 	}
 	for {
 		candidate := filepath.Join(dir, "packages", "db", "prisma")
-		if _, err := os.Stat(filepath.Join(candidate, "schema.sqlite.prisma")); err == nil {
+		if _, err := os.Stat(filepath.Join(candidate, "sqlite", "schema.sqlite.prisma")); err == nil {
 			return candidate, true
 		}
 		parent := filepath.Dir(dir)

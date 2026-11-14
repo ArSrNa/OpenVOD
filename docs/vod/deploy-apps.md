@@ -18,14 +18,14 @@ worker 端口取决于 `WORKER_MODE`（ADR-0017）：`resident`（默认）无�
 
 ### SCF WebServer 镜像函数（腾讯云，ADR-0017 §8）
 
-这套部署有四个不能省的配置，少任一项任务都会停在「排队中」：
+这套部署有三个必须项和一项建议项：
 
 | 配置 | 值 | 原因 |
 |---|---|---|
 | `WORKER_HTTP_PORT` | `9000` | SCF 只把请求转发到容器 9000；默认 9001 时请求根本到不了 worker（调用日志 499 / Duration 0ms） |
-| 函数「异步执行」 | **创建时**开启 | 开启后调用方立即拿 RequestId、执行上限 900s → 24h；不开时 admin 的 5s 唤醒超时会切断请求并杀实例。创建后无法修改 |
 | `WORKER_WAKE_SYNC` | `1` | Web 函数响应一返回就冻结实例，必须让 `/wake` 等转码跑完再返回 |
 | `WORKER_JOBS_ROOT` | CFS 挂载点 | `/tmp` 只有 512MB，装不下源片 + 全档产物峰值 |
+| 函数「异步执行」 | **创建时**开启（建议） | 开启后调用方立即拿 RequestId、执行上限 900s → 24h。不开也能跑：admin 自 2026-11-15 起把唤醒放在响应之后（上限 1h），代价是这条后台连接要一直挂到整条转码结束。创建后无法修改 |
 
 另设 `WORKER_IDLE_EXIT_MINUTES=1~5`，任务跑完主动退出。超过 24h 的任务不在支持范围，改用常驻容器。
 
@@ -61,10 +61,9 @@ task image:player     # docker build -f apps/player/Dockerfile -t openvod-player
    Dockerfile 在**构建期** `test -f` 三份字体（缺则构建失败），Worker 启动时再自检一次并**告警不退出**——
    因为 `drawtext` 的 `fontfile` 不存在时 ffmpeg 不报错而是静默回退系统默认字体，中文会渲染成豆腐块而任务仍报成功。
    自建镜像若裁掉了字体，必须同步改 `WATERMARK_FONT_DIR`（`@openvod/shared`）与映射。
-5. **admin 镜像的构建与运行阶段都必须装 openssl**（2026-09-22 实测踩坑）：Prisma 生成客户端时按检测到的
-   libssl 选择查询引擎——构建阶段缺 openssl 会退化为 `debian-openssl-1.1.x`，与运行阶段（bookworm libssl3）
-   不匹配，启动报 `generated for "debian-openssl-1.1.x", but the actual deployment required "debian-openssl-3.0.x"`，
-   `/healthz` 变 `db:false`。两阶段都装 openssl 即对齐（worker 基于 Debian 全量环境，无此问题）。
+5. **admin 镜像不再需要 openssl**（ADR-0020，2026-11-14）：Prisma 7 去掉了 Rust 查询引擎，
+   改由 `mariadb` / `libsql` 驱动连接，镜像只留 `ca-certificates`（供 HTTPS 校验）。
+   2026-09-22 那条「构建与运行阶段都装 openssl 对齐 libssl」的坑随引擎一起消失，不要再加回来。
 6. **admin 运行时必须带 ffmpeg（ffprobe）**（2026-11-13）：管理端「生成元数据」（spec.md §2.1）与
    「水印图片宽高探测」（spec.md §10.2）都在 **admin 进程内**就地跑 `ffprobe`，镜像里没有就整条功能 500
    「运行环境无法执行 ffprobe」。`apps/admin/Dockerfile` 在 **runtime 阶段** `apt-get install ffmpeg`，

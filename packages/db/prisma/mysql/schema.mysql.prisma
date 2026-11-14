@@ -1,14 +1,14 @@
 // OpenVOD v1 schema（ADR-0004 表清单；MySQL 为准绳，迁移唯一真相源）
-// 双方言纪律：本文件的 enum/model 段必须与 schema.sqlite.prisma 逐字一致（bun --cwd packages/db run parity）
+// 双方言纪律：本文件的 enum/model 段必须与 ../sqlite/schema.sqlite.prisma 逐字一致（bun --cwd packages/db run parity）
+// 两份 schema 分目录存放：同目录下的多个 *.prisma 会被 Prisma 语言服务当成一套多文件 schema 合并。
 
 generator client {
-  provider = "prisma-client-js"
-  output   = "../generated/mysql"
+  provider = "prisma-client"
+  output   = "../../generated/mysql"
 }
 
 datasource db {
   provider = "mysql"
-  url      = env("DATABASE_URL")
 }
 
 enum UserStatus {
@@ -200,6 +200,10 @@ model Media {
   description String?
   /// 业务标签（JSON 字符串数组，≤20 个 / 每个 ≤32 字符；spec.md §8）
   tags        Json?
+  /// 播放端转码产物展示与默认（spec.md §6.3/§11.1，2026-11-15）：
+  /// JSON {visible_template_ids: string[] | null, default_template_id: string | null}；
+  /// NULL = 全部产物对播放端展示、无媒资级默认（回退全局默认模板 → 排序首项）
+  productSettings Json? @map("product_settings")
   /// 媒资分类（可空；分类删除时置空，spec.md §8 / ADR-0016）
   categoryId  String?     @map("category_id")
   durationMs  Int?        @map("duration_ms")

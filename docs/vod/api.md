@@ -87,7 +87,7 @@
 |---|---|---|---|
 | `GET /api/admin/media` | — | `200 {total, items[]}`；条目 = `{id, title\|null, status\|null, posterKey\|null, category\|null, description\|null, tags[], ext, key, size, lastModified?, uploadedAt\|null, assets{proceed,cover,metadata}, products[], subtitleCount}` 🆕（`category/description/tags/uploadedAt`） | `500` |
 | `POST /api/admin/media/upload?filename=<name>&title=<可选展示名>` | **原始字节流**（`Content-Type` 任意，流式接收） | `201 {id, title, ext, key, size, metadata}` 🆕；**上传完毕后异步自动生成元数据**（2026-09-30）：响应**立即返回**、`metadata = {status:"pending"}`，探测在响应发送后由后台任务执行（Next `after()`：ffprobe → `metadata/{id}/probe.json` + `media.probe` / `duration_ms`）——best-effort，失败只告警（可手动 `POST /{id}/metadata` 重跑）；管理端以**递增间隔轮询详情**直至 `probe` 就绪（约 30s 上限） | `400` 空体 / 缺 `filename` / 无法识别扩展名；`500` 存储或 DB 失败（自动探测失败**不算**上传失败） |
-| `GET /api/admin/media/{id}` | 路径 `id` 为纯数字 | `200` 详情：`{id, title, status, ext, size, lastModified, uploadedAt\|null, createdAt, updatedAt, durationMs, posterKey, sourceKey, probe, custom{category,description,tags}, customData, assets{...}, products[]}` 🆕（`uploadedAt`） | `400` ID 形状非法；`404` 媒资不存在 |
+| `GET /api/admin/media/{id}` | 路径 `id` 为纯数字 | `200` 详情：`{id, title, status, ext, size, lastModified, uploadedAt\|null, createdAt, updatedAt, durationMs, posterKey, sourceKey, probe, custom{category,description,tags}, customData, assets{...}, products[], productSettings{visible_template_ids,default_template_id}}` 🆕（`uploadedAt`；2026-11-15 起 `products[]` 每项带 `isVisible` / `isDefault`） | `400` ID 形状非法；`404` 媒资不存在 |
 | `PATCH /api/admin/media/{id}` 🆕 | `UpdateMediaRequest`（见下） | `200` 按传入字段增量返回：`{id, title?, custom?, customData?, customDataKey?, customDataWritten?}` | `400` 校验失败 / 至少一字段；`404` 媒资未入库或分类不存在；`500` |
 | `DELETE /api/admin/media/{id}` | — | `200 {removed: boolean}` | `400` ID 形状非法；`500` |
 | `GET /api/admin/media/{id}/original` | — | `302` → 对象存储预签名 GET（TTL 600s，可经 `STORAGE_CDN_BASE_URL`）；响应 `no-store` | `404` 原始文件不存在 |
@@ -95,6 +95,7 @@
 | `POST /api/admin/media/{id}/cover?filename=<name>` | **原始图片字节流**（jpg/png/webp/gif/avif） | `201 {key}` | `400` 空体 / 缺 filename / 非图片；`404` 媒资未入库；`500` |
 | `POST /api/admin/media/{id}/metadata` | —（无 body） | `200 {id, probeKey, summary}`（ffprobe 摘要；`probeKey = metadata/{id}/probe.json`）；**上传完毕后由 upload 接口异步自动触发**（2026-09-30，响应后后台执行），此端点用于**手动重跑**（幂等覆盖） | `404` 媒资 / original 缺失；`500` 缺 ffprobe、预签名失败 |
 | `POST /api/admin/media/{id}/preview-play` | `{template_id?: string}`（`""` = 显式旧布局；缺省 = 自动选择） | `200 {sid, manifest_url, expires_at, template_id, encrypted, browser_cors_ok}`（管理端以预览账号换分发端签名 URL，**不出密钥**） | `501` 未配置预览账号；`502` 分发端不可达；分发端错误码透传（404→404，其余→409） |
+| `PATCH /api/admin/media/{id}/product-settings`（2026-11-15 增） | `UpdateMediaProductSettingsRequest`：`{visible_template_ids?: string[]\|null, default_template_id?: string\|null}`（缺省 = 不修改；`null` / `[]` = 全部展示） | `200 {productSettings}`；只影响分发端 `play` 的 `templates[]` 与自动选择，不删产物、不改鉴权；审计 `media.product_settings_update` | `400` 校验失败（默认产物不在展示范围）/ 模板产物不存在；`404` 媒资未入库；`500` |
 | `POST /api/admin/media/{id}/transcode` | `{template_ids: string[]}`（1..10，去重保序） | `202 {jobs:[{job_id, template_id, template_name, watermark_id\|null, status:"QUEUED"}]}` | `400` zod / 加密但非 HLS / `keep_original` 模板却关联水印 / 图片水印未上传图；`404` 媒资 / original / 模板 / 水印缺失；`409` 同媒资同模板已有未终结任务 |
 | `DELETE /api/admin/media/{id}/products/{templateId}` | `templateId` = 模板 cuid 或字面量 `legacy` | `200 {deleted, bytes}` | `400` 形状非法；`404` 产物不存在；`409` 该模板有进行中任务 |
 
@@ -457,7 +458,7 @@ JWT 为 ES256（P-256）compact JWS，header `{alg,typ,kid}`，claims `{iss,sub,
 | 成功 | `200 {sid, manifest_url, expires_at, template_id, subtitles[], templates[]}`；`sid` = `ps_` + 24 hex；`manifest_url` 已带 `typ=m` 签名 token 与 `tpl`；字幕 `url` 带 `typ=v` **共享 token**（不绑会话、exp 窗口对齐；同一枚 token 覆盖全部轨道，URL 另带 `?v=<content_version>`，ADR-0009 2026-11-13 修订）；`templates[]` 见下（spec.md §11.1） |
 | 幂等 | 非 `force_new` 时先复用同用户同媒资的未过期未吊销会话 |
 | 并发上限 | 新建会话前检查 `users.max_concurrent_sessions`（0 = 不限），超限 → `409 session_limit` |
-| 失败 | `400` body 非法；`404` 媒资不存在；`409 not_playable`（非 READY / 无任何可播放产物 / 指定模板无产物）；`409 session_limit`；`500`。**多套产物未指定 `template_id` 不再 409**（2026-10-13）：默认模板优先，无默认则自动选 `templates[]` 首项（spec.md §6.3） |
+| 失败 | `400` body 非法；`404` 媒资不存在；`409 not_playable`（非 READY / 无任何可播放产物 / 指定模板无产物）；`409 session_limit`；`500`。**多套产物未指定 `template_id` 不再 409**（2026-10-13）：媒资级默认产物 → 全局默认模板 → `templates[]` 首项（spec.md §6.3） |
 
 ```bash
 MF=$(curl -s -X POST $D/v1/media/<媒资id>/play -H "authorization: Bearer $TOKEN" -d '{}' \
@@ -466,17 +467,18 @@ MF=$(curl -s -X POST $D/v1/media/<媒资id>/play -H "authorization: Bearer $TOKE
 
 #### 🆕 `templates[]`：可用模板产物列表（spec.md §11.1，2026-10-12）
 
-「清晰度」选项 = 该媒资**实际存在的**模板产物子树（`proceed/{id}/{templateId}/`，与 `template_id` 自动选择同一列举逻辑，「有什么放什么」；不列「有模板但无产物」的项）。恒为数组，旧布局为 `[]`：
+「清晰度」选项 = 该媒资**实际存在且对播放端展示**的模板产物子树（`proceed/{id}/{templateId}/` ∩ `media.product_settings.visible_template_ids`，与 `template_id` 自动选择同一列举逻辑；不列「有模板但无产物」的项）。恒为数组，旧布局为 `[]`：
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `id` | string | 模板 ID（cuid 形状）；即 `play` 请求 `template_id` 的可用取值 |
 | `name` | string \| null | `transcode_templates.name` 当前名称（非任务快照）；模板行已删（历史产物）为 `null` |
-| `is_default` | bool | 管理端标记的默认模板（仅展示；自动选择语义仍按 §6.3） |
+| `is_default` | bool | 该媒资的有效默认产物（媒资级默认 → 全局默认模板）；至多一项 true，未指定 `template_id` 时加载的正是这一套 |
 
-- **排序**：默认模板优先，其余按 `name`（`null` 排最后）再按 `id` 字典序，保证稳定；
-- **自动选择 = 首项**（2026-10-13）：未指定 `template_id` 且无默认模板时自动播放 `templates[0]`——客户端列表里看到的第一项就是正在播的那套，切换只需回传其 `id`；
-- **容错**：模板表查询失败**不致命**——全部降级 `name: null`（播放链路不因模板表查询失败中断）；
+- **排序**：有效默认产物优先，其余按 `name`（`null` 排最后）再按 `id` 字典序，保证稳定；
+- **自动选择 = 首项**（2026-10-13）：未指定 `template_id` 时自动播放 `templates[0]`——客户端列表里看到的第一项就是正在播的那套，切换只需回传其 `id`；
+- **容错**：模板表查询失败**不致命**——全部降级 `name: null`（有效默认仍打标；播放链路不因模板表查询失败中断）；
+- **隐藏产物**（2026-11-15）：显式指定不在展示白名单内的 `template_id` 仍可播放（管理端预览 / 老客户端兼容），该产物随本次响应一并返回；未指定时不出现；
 - **切换**：指定 `template_id` 再次 play（复用会话）→ App 换源并保留播放进度（apps/player 参考实现）。
 
 ```json

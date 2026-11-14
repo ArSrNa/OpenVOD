@@ -29,7 +29,7 @@ beforeAll(async () => {
   await writeFile(path, "");
   const url = `file:${path}`;
   // cwd 必须是 packages/db：Prisma 7 CLI 从 CWD 发现 prisma.config.ts（datasource URL 在那里）
-  const proc = Bun.spawn([process.execPath, "--no-env-file", fileURLToPath(new URL("../../../packages/db/node_modules/prisma/build/index.js", import.meta.url)), "db", "push", "--schema", "prisma/schema.sqlite.prisma"], {
+  const proc = Bun.spawn([process.execPath, "--no-env-file", fileURLToPath(new URL("../../../packages/db/node_modules/prisma/build/index.js", import.meta.url)), "db", "push", "--schema", "prisma/sqlite/schema.sqlite.prisma"], {
     cwd: fileURLToPath(new URL("../../../packages/db/", import.meta.url)),
     env: { ...process.env, DATABASE_URL: url }, stdout: "pipe", stderr: "pipe",
   });

@@ -1,12 +1,14 @@
-// 与 schema.mysql.prisma 逐字一致（仅 generator/datasource 不同，ADR-0004 双方言纪律）
+// 与 ../mysql/schema.mysql.prisma 逐字一致（仅 generator/datasource 不同，ADR-0004 双方言纪律）
 // 修改模型时两份文件必须同步，`bun --cwd packages/db run parity` 与 CI 会校验。
+// 与 mysql 版分目录存放，且 generator/datasource 取不同名字：Prisma 语言服务会把同目录下的
+// *.prisma 当成一套多文件 schema 合并，重名会全部报「已存在」。
 
-generator client {
+generator sqliteClient {
   provider = "prisma-client"
-  output   = "../generated/sqlite"
+  output   = "../../generated/sqlite"
 }
 
-datasource db {
+datasource sqliteDb {
   provider = "sqlite"
 }
 

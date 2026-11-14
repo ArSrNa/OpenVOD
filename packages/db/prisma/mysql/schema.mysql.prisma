@@ -1,9 +1,10 @@
 // OpenVOD v1 schema（ADR-0004 表清单；MySQL 为准绳，迁移唯一真相源）
-// 双方言纪律：本文件的 enum/model 段必须与 schema.sqlite.prisma 逐字一致（bun --cwd packages/db run parity）
+// 双方言纪律：本文件的 enum/model 段必须与 ../sqlite/schema.sqlite.prisma 逐字一致（bun --cwd packages/db run parity）
+// 两份 schema 分目录存放：同目录下的多个 *.prisma 会被 Prisma 语言服务当成一套多文件 schema 合并。
 
 generator client {
   provider = "prisma-client"
-  output   = "../generated/mysql"
+  output   = "../../generated/mysql"
 }
 
 datasource db {

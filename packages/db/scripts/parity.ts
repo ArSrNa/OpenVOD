@@ -11,8 +11,8 @@ const section = (file: string) => {
   return text.slice(i).replace(/\r\n/g, "\n").trimEnd() + "\n";
 };
 
-const mysql = section("schema.mysql.prisma");
-const sqlite = section("schema.sqlite.prisma");
+const mysql = section("mysql/schema.mysql.prisma");
+const sqlite = section("sqlite/schema.sqlite.prisma");
 
 if (mysql !== sqlite) {
   console.error("schema 漂移：enum/model 段不一致（ADR-0004 双方言纪律）");

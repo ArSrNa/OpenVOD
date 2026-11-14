@@ -30,7 +30,7 @@ function findPrismaSchemaDir(): string | null {
   let dir = process.cwd();
   for (;;) {
     const candidate = join(dir, "packages", "db", "prisma");
-    if (existsSync(join(candidate, "schema.sqlite.prisma"))) return candidate;
+    if (existsSync(join(candidate, "sqlite", "schema.sqlite.prisma"))) return candidate;
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;

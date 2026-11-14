@@ -7,15 +7,15 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "generate:mysql": "prisma generate --schema prisma/schema.mysql.prisma",
-    "generate:sqlite": "prisma generate --schema prisma/schema.sqlite.prisma",
-    "push:sqlite": "prisma db push --schema prisma/schema.sqlite.prisma",
-    "sync:sqlite": "prisma db push --schema prisma/schema.sqlite.prisma",
-    "migrate:deploy": "prisma migrate deploy --schema prisma/schema.mysql.prisma",
-    "migrate:dev": "prisma migrate dev --schema prisma/schema.mysql.prisma",
-    "studio": "prisma studio --schema prisma/schema.sqlite.prisma",
+    "generate:mysql": "prisma generate --schema prisma/mysql/schema.mysql.prisma",
+    "generate:sqlite": "prisma generate --schema prisma/sqlite/schema.sqlite.prisma",
+    "push:sqlite": "prisma db push --schema prisma/sqlite/schema.sqlite.prisma",
+    "sync:sqlite": "prisma db push --schema prisma/sqlite/schema.sqlite.prisma",
+    "migrate:deploy": "prisma migrate deploy --schema prisma/mysql/schema.mysql.prisma",
+    "migrate:dev": "prisma migrate dev --schema prisma/mysql/schema.mysql.prisma",
+    "studio": "prisma studio --schema prisma/sqlite/schema.sqlite.prisma",
     "parity": "bun scripts/parity.ts",
-    "format": "prisma format --schema prisma/schema.mysql.prisma && prisma format --schema prisma/schema.sqlite.prisma"
+    "format": "prisma format --schema prisma/mysql/schema.mysql.prisma && prisma format --schema prisma/sqlite/schema.sqlite.prisma"
   },
   "dependencies": {
     "@prisma/adapter-libsql": "7.10.1",

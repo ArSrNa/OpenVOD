@@ -317,7 +317,7 @@ function ensureDeps(env: Env): void {
 //      （MySQL 只认迁移，schema 改了却没写迁移时给明确警告）。
 // ---------------------------------------------------------------------------
 const DB_PKG = "packages/db";
-const DB_SCHEMA_FILES = ["prisma/schema.mysql.prisma", "prisma/schema.sqlite.prisma"] as const;
+const DB_SCHEMA_FILES = ["prisma/mysql/schema.mysql.prisma", "prisma/sqlite/schema.sqlite.prisma"] as const;
 const DB_MIGRATIONS_DIR = join(ROOT, DB_PKG, "prisma", "migrations");
 const dbStampFile = join(RUN_DIR, "db-sync.json");
 
@@ -387,7 +387,7 @@ function syncDbStructure(env: Env, provider: DBProvider): void {
       dim(
         provider === "sqlite"
           ? "  手动处理：若提示需要丢数据，确认后执行 bun run --cwd packages/db push:sqlite --accept-data-loss"
-          : "  MySQL 只认迁移：bunx prisma migrate status --schema packages/db/prisma/schema.mysql.prisma 查看，排错见 docs/vod/dev-workflow.md §4.3 / §8",
+          : "  MySQL 只认迁移：bunx prisma migrate status --schema packages/db/prisma/mysql/schema.mysql.prisma 查看，排错见 docs/vod/dev-workflow.md §4.3 / §8",
       ),
     );
     println(dim("  跳过启动前同步：加 --no-db-sync"));

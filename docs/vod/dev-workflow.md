@@ -138,17 +138,17 @@ cd packages/db
 mkdir -p prisma/migrations/20260918000000_init
 # 1) 由 schema 生成初始迁移 SQL（不连库）
 ./node_modules/.bin/prisma migrate diff \
-  --from-empty --to-schema prisma/schema.mysql.prisma \
+  --from-empty --to-schema prisma/mysql/schema.mysql.prisma \
   --script > prisma/migrations/20260918000000_init/migration.sql
 # 2) 把 SQL 直接执行到目标库（连接串取自 prisma.config.ts 的 DATABASE_URL，--schema 已移除）
 ./node_modules/.bin/prisma db execute \
   --file prisma/migrations/20260918000000_init/migration.sql
 # 3) 登记为「已应用」，避免 migrate deploy 重复执行
 ./node_modules/.bin/prisma migrate resolve \
-  --applied 20260918000000_init --schema prisma/schema.mysql.prisma
+  --applied 20260918000000_init --schema prisma/mysql/schema.mysql.prisma
 # 4) 校验库结构与 schema 一致（输出 "-- This is an empty migration." 即无漂移）
 ./node_modules/.bin/prisma migrate diff \
-  --from-config-datasource --to-schema prisma/schema.mysql.prisma --script
+  --from-config-datasource --to-schema prisma/mysql/schema.mysql.prisma --script
 ```
 
 > 上述命令需先加载 `.env`：`set -a; . ./.env; set +a`。
@@ -247,9 +247,9 @@ task contracts            # 契约生成物变更后需入库（契约门禁）
 | `Module not found: Can't resolve '../generated/sqlite/client'`（或 mysql） | 只生成了一份客户端；`task db:generate` 生成两份，然后重启 dev |
 | `P2021 The table xxx does not exist` | 目标库未建表；SQLite 用 `task db:push`，MySQL 用 §4.3 迁移/baseline |
 | SQLite 里 `created_at` 变成 `2026-01-02 03:04:05.678` 文本 / Go 读出 1970 年 | 自建 `new PrismaClient({ adapter })` 时没走 `@openvod/db` 的 `createSQLiteAdapter()`，适配器默认存 ISO 8601 文本（ADR-0020） |
-| `The column xxx.yyy does not exist in the current database`（P2021 的列形态） | **改了 Prisma schema 但没把迁移应用到目标库**——生成客户端（`task db:generate`）只更新类型与查询编译器，**不会**改库。MySQL 跑 `task db:migrate`（= `prisma migrate deploy`），SQLite 跑 `task db:push`；先跑 `bunx prisma migrate status --schema prisma/schema.mysql.prisma`（只读）确认是「not yet been applied」还是 failed / drift。additive 迁移（加列 / 加表）向后兼容，放心补跑 |
+| `The column xxx.yyy does not exist in the current database`（P2021 的列形态） | **改了 Prisma schema 但没把迁移应用到目标库**——生成客户端（`task db:generate`）只更新类型与查询编译器，**不会**改库。MySQL 跑 `task db:migrate`（= `prisma migrate deploy`），SQLite 跑 `task db:push`；先跑 `bunx prisma migrate status --schema prisma/mysql/schema.mysql.prisma`（只读）确认是「not yet been applied」还是 failed / drift。additive 迁移（加列 / 加表）向后兼容，放心补跑 |
 | `P1012 the URL must start with file:`（跑 `task db:push` 时） | `.env` 的 `DATABASE_URL` 是 MySQL——`db:push` 只服务 SQLite 开发库；MySQL 用 `task db:migrate`。临时要 SQLite 库可内联覆盖：`DATABASE_URL="file:./dev.db" bun run --cwd packages/db push:sqlite` |
-| `P3009 failed migrations` + MySQL `1064` near `'--…'` | 迁移 SQL 的 `--` 注释后**必须跟空格**（紧跟文字时 MySQL 不识别为注释，整个文件报 1064 且被记为 failed 挡住后续迁移）。修正 SQL 后：`bunx prisma migrate resolve --rolled-back <迁移名> --schema prisma/schema.mysql.prisma`，再 `task db:migrate` |
+| `P3009 failed migrations` + MySQL `1064` near `'--…'` | 迁移 SQL 的 `--` 注释后**必须跟空格**（紧跟文字时 MySQL 不识别为注释，整个文件报 1064 且被记为 failed 挡住后续迁移）。修正 SQL 后：`bunx prisma migrate resolve --rolled-back <迁移名> --schema prisma/mysql/schema.mysql.prisma`，再 `task db:migrate` |
 | `P3014 could not create the shadow database` | 账号无建库权限；按 §4.3 的 baseline 四步，不要用 `migrate dev` |
 | `task db:migrate` 报 `Field 'applied_steps_count' doesn't have a default value`（迁移明明没应用却跑不动） | 目标库的 `_prisma_migrations` 是历史遗留的残缺结构（各列可空、无主键、`applied_steps_count` 无默认值），而库开着 `STRICT_TRANS_TABLES`，Prisma 写迁移记录时省略该列 → 在**插入记录阶段**就失败，DDL 一条都没执行（`migrate status` 仍显示 not yet been applied，可安全重跑，不必 `migrate resolve`）。修：`ALTER TABLE _prisma_migrations MODIFY COLUMN applied_steps_count INT UNSIGNED NOT NULL DEFAULT 0;`（与 Prisma 官方建表定义一致）后再 `task db:migrate`。MySQL 的 DDL 非事务，失败后先用 `SHOW COLUMNS FROM <表>` 核对是否半应用 |
 | 重转码后播放**还是旧画面 / 旧水印**（改水印或模板参数重转无效） | 配了 `STORAGE_CDN_BASE_URL` 时九成是 **CDN 缓存键忽略了查询串**：产物按模板树原位替换（路径不变），预签名 query 每次不同但缓存键相同 → CDN 一直回旧分片。验证：对比 CDN 响应头 `last-modified` 与任务完成时间（旧 = 命中陈旧缓存）；或无签名裸打分片 URL，返回 200 即坐实（顺带说明 URL 鉴权已被缓存绕过）。处理：EO 控制台**刷新缓存**（目录刷新 `proceed/`）先恢复，再把缓存键改为**含完整 query** 或启用 CDN URL 鉴权（spec §6.5；两模式控制台配置逐项清单见 deploy-delivery.md「CDN 加速域名与资产签名配置清单」） |

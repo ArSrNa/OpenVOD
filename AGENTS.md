@@ -110,6 +110,7 @@ bun scripts/dev.ts all --background   # 需要恢复时按原样起回（含 wor
 
 - Prisma 是 schema 唯一真相源：`packages/db/prisma/schema.mysql.prisma` 与 `schema.sqlite.prisma` 的 enum/model 段必须逐字一致。MySQL 为生产准绳（迁移仅由 `packages/db` 执行，必须 expand-contract 向后兼容）；SQLite 仅限本地开发与单机同卷自托管（`db push`），跨机器 / 云函数部署必须 MySQL。
 - `packages/db/src/index.ts` 静态导入两份生成客户端、按 `DB_PROVIDER` 实例化其一——这是两份客户端缺一不可的根因。
+- Prisma 锁 **7.10.1**（ADR-0020）：客户端必须带 driver adapter（MySQL `@prisma/adapter-mariadb`、SQLite `@prisma/adapter-libsql`）；SQLite 的 DateTime 固定 `unixepoch-ms`、`file:` 相对路径以 `packages/db/prisma` 为基准，自建客户端走 `createSQLiteAdapter()`。
 - Go 侧不用 Prisma：`database/sql + sqlx` 只读读模型 + 播放会话写入，靠集成测试对齐表结构。
 - 任务队列不引入 Redis：MySQL `FOR UPDATE SKIP LOCKED` / SQLite CAS 认领，带 `lease_until` 崩溃重派（ADR-0004/0008）。
 

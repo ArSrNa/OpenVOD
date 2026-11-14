@@ -15,8 +15,8 @@ const nextConfig: NextConfig = {
   images: {
     remotePatterns: [{ protocol: "https", hostname: "www.arsrna.cn", pathname: "/logo.png" }],
   },
-  // Prisma 客户端保持外部化（引擎二进制不走打包器）
-  serverExternalPackages: ["@prisma/client"],
+  // Prisma 客户端与驱动适配器保持外部化（原生驱动 / wasm 查询编译器不走打包器，ADR-0020）
+  serverExternalPackages: ["@prisma/client", "@prisma/adapter-mariadb", "@prisma/adapter-libsql"],
   // Next 16 起 Turbopack 为默认打包器（无自定义 webpack 配置，直接生效）
   allowedDevOrigins: ["127.0.0.1", "*.cnb.run"],
   // API 一律不缓存（与 lib/envelope.ts 的逐响应 no-store 构成双保险）：

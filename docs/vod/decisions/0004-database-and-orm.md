@@ -23,7 +23,7 @@
 | users | 管理端 | 分发端 | 播放端用户；bcrypt 摘要；状态 / 封禁 |
 | admin_users | 管理端 | 管理端 | 控制台账号，与 users 分离 |
 | signing_keys | 管理端 | 分发端 | 密钥材料（kind 区分）：JWT ES256 密钥对、URL 签名 HMAC 密钥（EO TypeA 鉴权密钥已随 2026-09-20 ADR-0005 修订废弃，枚举保留不接入）；私密部分以 MK 封装；kid 版本化 |
-| media | 管理端 | 分发端 | 媒资：标题、状态、系统 probe 元数据(JSON)、自定义数据(JSON)、存储引用 |
+| media | 管理端 | 分发端 | 媒资：标题、状态、系统 probe 元数据(JSON)、自定义数据(JSON)、产物展示与默认设置(JSON，ADR-0021)、存储引用 |
 | media_subtitles | 管理端 | 分发端 | WebVTT 轨道（lang / label / default / 存储引用） |
 | transcode_templates | 管理端 | Worker | 转码模板（参数 JSON + 加密开关 + 保持原配置，ADR-0014） |
 | transcode_jobs | 管理端 / Worker | 管理端 | 转码任务队列（状态机 + lease；发起时快照模板进 template_snapshot，ADR-0014） |

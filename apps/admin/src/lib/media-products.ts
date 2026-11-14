@@ -21,6 +21,10 @@ export interface MediaProduct {
   bytes: number;
   /** 变体目录名（如 1080p / 720p），升序 */
   variants: string[];
+  /** 对播放端展示（**仅详情接口填写**；白名单未命中为 false，旧布局恒 false） */
+  isVisible?: boolean;
+  /** 媒资级默认产物（**仅详情接口填写**；null / 未设置时由分发端回退全局默认模板） */
+  isDefault?: boolean;
 }
 
 const PROCEED_UNDER_MEDIA_RE = new RegExp(`^${STORAGE_PARTITIONS.proceed}/(${MEDIA_ID_CHARS})/(.+)$`);

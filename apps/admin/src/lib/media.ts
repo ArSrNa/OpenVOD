@@ -26,6 +26,11 @@ import {
   type MediaProduct,
 } from "./media-products";
 import {
+  parseMediaProductSettings,
+  serializeMediaProductSettings,
+  visibleProducts,
+} from "./media-product-settings";
+import {
   buildCategoryLookup,
   categoryRefById,
   pickCategoryRef,
@@ -35,7 +40,11 @@ import {
 import { mergeCustomData, parseMediaTags, serializeCustomData } from "./custom-metadata";
 import { getDb } from "@openvod/db";
 import { ACTIVE_JOB_STATUSES } from "@openvod/contracts";
-import type { DashboardStats, MediaCustomMetadataDTO } from "@openvod/contracts";
+import type {
+  DashboardStats,
+  MediaCustomMetadataDTO,
+  MediaProductSettingsDTO,
+} from "@openvod/contracts";
 import type { z } from "@openvod/contracts";
 import type { StorageObject } from "@openvod/storage";
 import { NextResponse } from "next/server";
@@ -428,8 +437,10 @@ export interface MediaDetail {
   posterKey: string | null;
   sourceKey: string | null;
   assets: { proceed: number; cover: number; metadata: number };
-  /** 转码产物按模板分组（spec.md §1.3） */
+  /** 转码产物按模板分组（spec.md §1.3）；每项带播放端展示 / 默认标记（spec.md §6.3） */
   products: MediaProduct[];
+  /** 媒资级产物展示与默认设置（spec.md §6.3/§11.1） */
+  productSettings: z.infer<typeof MediaProductSettingsDTO>;
 }
 
 export async function getMediaDetail(id: string): Promise<MediaDetail> {
@@ -447,6 +458,20 @@ export async function getMediaDetail(id: string): Promise<MediaDetail> {
   const ext = original ? ORIGINAL_RE.exec(original.key)?.[2]?.toLowerCase() ?? null : null;
   const products = groupProductsByMedia(proceeds).get(id) ?? [];
   await attachTemplateNames(products);
+
+  // 播放端展示 / 默认标记（spec.md §6.3）：旧布局产物不参与（SDK 的 templates[] 不含它）
+  const settings = parseMediaProductSettings(row?.productSettings);
+  const allTemplateIds = products.map((p) => p.templateId).filter(Boolean);
+  // 默认产物已被删（历史设置残留）：界面按「未设置默认」展示，与实际播放行为一致
+  if (settings.defaultTemplateId && !allTemplateIds.includes(settings.defaultTemplateId)) {
+    settings.defaultTemplateId = null;
+  }
+  const visibleIds = visibleProducts(settings, allTemplateIds);
+  for (const p of products) {
+    p.isVisible = p.templateId ? visibleIds.includes(p.templateId) : false;
+    p.isDefault = p.templateId !== "" && p.templateId === settings.defaultTemplateId;
+  }
+
   return {
     id,
     title: row?.title ?? null,
@@ -470,7 +495,67 @@ export async function getMediaDetail(id: string): Promise<MediaDetail> {
     sourceKey: row?.sourceKey ?? original?.key ?? null,
     assets: { proceed: proceeds.length, cover: covers.length, metadata: metadatas.length },
     products,
+    productSettings: serializeMediaProductSettings(settings),
   };
+}
+
+// ---- 媒资级产物展示与默认（spec.md §6.3/§11.1，2026-11-15） ----
+
+/**
+ * 保存媒资级产物设置（管理端「转码产物」抽屉）：
+ *   - visible_template_ids = null / []：全部展示；数组 = 白名单（只保留当前实际存在的模板产物）；
+ *   - default_template_id 必须存在且处于展示范围；
+ *   - 默认产物被移出展示范围且本次未显式改默认 → 自动取消默认（避免留着一个不生效的默认）。
+ * 只影响播放端 play 的 templates[] 与自动选择，不删除任何存储对象、不改变产物可访问性。
+ */
+export async function updateMediaProductSettings(
+  id: string,
+  input: { visible_template_ids?: string[] | null; default_template_id?: string | null },
+): Promise<z.infer<typeof MediaProductSettingsDTO>> {
+  assertMediaId(id);
+  const row = await db.media
+    .findUnique({ where: { id }, select: { productSettings: true } })
+    .catch(() => null);
+  if (!row) throw new MediaError("not_found", `媒资不存在：${id}`, 404);
+
+  const storage = await getStorage();
+  const proceeds = await storage.listObjects(`${STORAGE_PARTITIONS.proceed}/${id}/`);
+  const allTemplateIds = (groupProductsByMedia(proceeds).get(id) ?? [])
+    .map((p) => p.templateId)
+    .filter(Boolean);
+
+  const existing = parseMediaProductSettings(row.productSettings);
+
+  let visible = existing.visibleTemplateIds;
+  if (input.visible_template_ids !== undefined) {
+    const requested = [...new Set(input.visible_template_ids ?? [])].filter((t) =>
+      allTemplateIds.includes(t),
+    );
+    visible = requested.length ? requested : null; // 空选择 = 全部展示（至少保留一套）
+  }
+
+  let def = existing.defaultTemplateId;
+  const defExplicit = input.default_template_id !== undefined;
+  if (defExplicit) def = input.default_template_id ?? null;
+
+  if (def != null) {
+    if (!allTemplateIds.includes(def)) {
+      throw new MediaError("bad_request", "该模板产物不存在（先转码产出后再设为默认）", 400);
+    }
+    if (visible != null && !visible.includes(def)) {
+      if (defExplicit) {
+        throw new MediaError("bad_request", "默认产物必须在展示范围内", 400);
+      }
+      def = null;
+    }
+  }
+
+  const settings = { visibleTemplateIds: visible, defaultTemplateId: def };
+  await db.media.update({
+    where: { id },
+    data: { productSettings: serializeMediaProductSettings(settings) },
+  });
+  return serializeMediaProductSettings(settings);
 }
 
 // ---- 重命名（仅改数据库展示名；original 文件名与媒资 ID 永不改变，intent.md） ----
@@ -771,6 +856,38 @@ export async function deleteMediaProduct(
     throw new MediaError("not_found", "该产物不存在或已被删除", 404);
   }
   await Promise.all(targets.map((o) => storage.delete(o.key)));
+
+  // 产物已删：同步清掉设置里的失效默认 / 白名单项（失败不阻断删除，读路径本身会降级）
+  if (tpl) {
+    const row = await db.media
+      .findUnique({ where: { id }, select: { productSettings: true } })
+      .catch(() => null);
+    if (row) {
+      const current = parseMediaProductSettings(row.productSettings);
+      const visible = current.visibleTemplateIds?.filter((v) => v !== tpl) ?? null;
+      const def = current.defaultTemplateId === tpl ? null : current.defaultTemplateId;
+      const changed =
+        def !== current.defaultTemplateId ||
+        (current.visibleTemplateIds != null &&
+          visible != null &&
+          visible.length !== current.visibleTemplateIds.length);
+      if (changed) {
+        await db.media
+          .update({
+            where: { id },
+            data: {
+              productSettings: serializeMediaProductSettings({
+                visibleTemplateIds: visible && visible.length ? visible : null,
+                defaultTemplateId: def,
+              }),
+            },
+          })
+          .catch((e: unknown) =>
+            console.warn(`[media] 产物设置清理失败（${id}/${tpl}）：${(e as Error).message}`),
+          );
+      }
+    }
+  }
   return { deleted: targets.length, bytes: targets.reduce((sum, o) => sum + o.size, 0) };
 }
 

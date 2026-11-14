@@ -1,19 +1,28 @@
-// admin → worker HTTP 门铃（ADR-0017 §3）：发起转码 / 任务重启成功后
+// admin → worker HTTP 门铃（ADR-0017 §3）：发起转码 / 任务重启 / CEK 轮换成功后
 // POST {WORKER_NOTIFY_URL}/wake（Bearer WORKER_NOTIFY_SECRET），拉起异步函数实例并让它认领本次任务。
 // 载荷 `{ job_ids }` 只被 invoked 模式（异步云函数）消费：定向认领，不扫队列；
 // http 模式忽略载荷、照常 drain 队列（兼容旧版本 worker：无 body 也能唤醒）。
 // 设计原则：通知可以丢（任务留存 transcode_jobs，靠平台定时拉起或人工重启兜底），事实源不能丢。
 // 因此失败仅告警、绝不把业务响应改成失败；未配置 WORKER_NOTIFY_URL 时安静跳过。
 //
-// 调用方必须 await（不能 void）：admin 以 serverless / 容器形态运行时，响应返回后实例可能立刻被
-// 冻结或回收，未发出或被中断的外呼会被直接丢掉——结果就是任务入队了、函数始终没被拉起。
-// 等待有上限（DEFAULT_WAKE_TIMEOUT_MS），超时按「未送达」告警，不会把管理端拖住。
+// 调用时机（2026-11-15 修订）：用 next/server 的 after() 在**响应发出之后**调用，不再占用业务响应。
+// 同步唤醒（WORKER_WAKE_SYNC=1，SCF WebServer 镜像函数）下 /wake 要等整条转码跑完才回 200，
+// 放在响应前会有两个后果：用户点「发起转码」要等整条转码；且 DEFAULT_WAKE_TIMEOUT_MS（5s）
+// 必然先到——admin 一断连，SCF 判定客户端取消，记 499 并终止实例（ADR-0017 §8 的故障）。
+// 挪到响应之后：用户立刻拿 202，外呼按 DETACHED_WAKE_TIMEOUT_MS 等，平台侧异步执行即可送达。
 import { WorkerWakeRequest } from "@openvod/contracts";
 import { SETTING_KEYS } from "@openvod/shared";
 import { resolvePlain, resolveSecret } from "./settings";
 
-/** 单次唤醒的外呼上限：正常是毫秒级（异步平台收到即返回），只兜住不可达地址的等待 */
+/** 响应前同步发送时的外呼上限：正常是毫秒级（异步平台收到即返回），只兜住不可达地址的等待 */
 export const DEFAULT_WAKE_TIMEOUT_MS = 5_000;
+
+/**
+ * 响应后发送时的等待上限（2026-11-15）：已不占用户的时间，改为覆盖整条转码链。
+ * SCF 未开「异步执行」时 /wake 会一直挂到任务跑完；超时只代表「没拿到完成确认」，
+ * 任务仍在平台侧执行，队列兜底与人工重启语义不变。
+ */
+export const DETACHED_WAKE_TIMEOUT_MS = 60 * 60 * 1_000;
 
 export interface WakeNotifyResult {
   notified: boolean;
@@ -57,8 +66,8 @@ export async function postWorkerWake(deps: {
 
 /**
  * 业务侧入口：从 system_settings（DB > env，ADR-0015）解析唤醒配置并发送。
- * **调用方必须 await**（见文件头）：内部消化全部失败、最长等待 timeoutMs，
- * 业务响应仍是 202，只是确保外呼真的发出去了。
+ * 内部消化全部失败。调用点一律走 after()（见文件头）并显式传 DETACHED_WAKE_TIMEOUT_MS，
+ * 默认值只给「响应前同步发送」的调用方用，不要在新代码里依赖。
  */
 export async function notifyWorkerWake(
   jobIds?: string[],

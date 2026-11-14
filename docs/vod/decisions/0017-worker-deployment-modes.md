@@ -5,6 +5,7 @@
 - 修订：2026-11-13 —— 增加第三模式 `invoked`（异步云函数单任务触发）与任务日志尾部通道，见 §6
 - 修订：2026-11-14 —— admin 侧唤醒改为**限时 await**（原 `void` fire-and-forget 在 serverless admin 上会随响应冻结丢掉外呼，任务入队但函数永不拉起），见 §7
 - 修订：2026-11-14 —— 新增**同步唤醒**（`WORKER_WAKE_SYNC`）：`/wake` 等 drain 跑完再响应，适配 SCF WebServer 镜像函数这类「响应即事件结束」的平台，见 §8
+- 修订：2026-11-15 —— admin 侧唤醒改为**响应后发送**（Next `after()`）：§7 的限时 await 在同步唤醒下等于 5s 硬切断（SCF 记 499 并终止实例），改由响应之后的 1 小时后台外呼承担，见 §9
 - 关联：ADR-0008（转码流水线，本 ADR 修订其「常驻容器」前提）、ADR-0003（部署目标）、ADR-0004（数据库与 ORM）、ADR-0011（部署拓扑）、ADR-0015（环境变量与系统设置边界）、spec.md §5.1
 
 ## 背景
@@ -142,3 +143,27 @@ P0 边界重申：**转码禁止上「请求-响应型函数」**（SCF / EdgeOn
 4. `WORKER_IDLE_EXIT_MINUTES=1~5`，任务跑完主动退出，避免按进程存活计费。
 
 边界：这条路径本质仍是「请求-响应型函数跑转码」，只是用异步执行把响应期拉长到 24h。超出 24h 的任务、或平台不给 CFS 的场景，仍应回到常驻容器（`resident`）。
+
+## 实现记录（2026-11-15，唤醒改为响应后发送）
+
+问题：按 §7 的「响应前限时 await」部署后，admin 容器日志固定出现
+`[worker-notify] 唤醒通知未送达（The operation was aborted due to timeout）`，
+SCF 侧同一 RequestId 记 `Request was canceled by client` / `statusCode 499` / `Process terminated by user`，
+worker 一条「认领任务」都没有。两者是同一次调用的上下游：`WORKER_WAKE_SYNC=1` 下 `/wake` 必须等整条转码跑完
+才回 200，而 `DEFAULT_WAKE_TIMEOUT_MS=5s` 到点就 abort——客户端一断，SCF 判定取消并终止实例，
+转码还没开跑就被杀。§7 的「必须 await」与 §8 的「必须同步等待」直接对冲，5s 是结构性硬失败点，
+不是配置问题。
+
+改动：
+
+- **外呼挪出响应窗口**：`transcode` / `jobs/{id}/restart` / `keys/{mediaId}/rotate` 三处由 `await notifyWorkerWake(...)`
+  改为 `after(() => notifyWorkerWake(...))`（`next/server` 的 `after()`）。用户仍立即拿 202，
+  唤醒在响应发出之后执行，serverless 平台由 Next 转 `waitUntil`，不会随响应结束被回收。
+- **等待上限上移**：新增 `DETACHED_WAKE_TIMEOUT_MS = 1h`（`apps/admin/src/lib/worker-notify.ts`），
+  专供响应后发送；`DEFAULT_WAKE_TIMEOUT_MS = 5s` 仅保留给「响应前同步发送」的调用方。
+  超时只代表没拿到完成确认，任务仍在平台侧执行，队列兜底与人工重启语义不变。
+- **审计前置**：`auditAction` 仍留在响应前（要用 `req`），唤醒放在它之后，避免请求作用域失效。
+- **平台侧**：SCF「异步执行」由「必须」降为「强烈建议」——不开也能跑（后台连接挂到任务结束），
+  开了才回到「调用方立即拿 RequestId」的原设计。`WORKER_HTTP_PORT=9000` / `WORKER_JOBS_ROOT` 不变。
+
+测试：`apps/admin/test/worker-notify.test.ts` 增补「响应后等待上限不得退回 5s」。

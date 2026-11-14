@@ -353,14 +353,14 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可多版本轮换，ADR-0006 
 | `WORKER_MODE` | `resident` | 运行模式（ADR-0017）：`resident` = 常驻轮询；`http` = HTTP 门铃（`POST /wake` 触发 claim-drain，空闲可退出）；`invoked` = 异步云函数单任务触发（载荷 `job_ids` 定向认领，不扫队列）。DB `worker_mode` > env |
 | `WORKER_HTTP_PORT` | `9001` | http / invoked 模式监听端口（含 `GET /healthz`） |
 | `WORKER_IDLE_EXIT_MINUTES` | `0`（不退出） | 空闲退出阈值（http / invoked）；invoked 建议 1~5，跑完主动退出避免平台按进程存活计费 |
-| `WORKER_WAKE_SYNC` | `0`（立即 202） | `1` = `/wake` 等 drain 跑完再返回 200。只对「响应即事件结束、实例随请求冻结」的平台开（SCF WebServer 镜像函数），且必须配合平台**异步执行**，否则调用方超时会切断任务 |
+| `WORKER_WAKE_SYNC` | `0`（立即 202） | `1` = `/wake` 等 drain 跑完再返回 200。只对「响应即事件结束、实例随请求冻结」的平台开（SCF WebServer 镜像函数）；调用方已改为响应后发送，不再受 5s 限制，但建议同时开平台**异步执行**，否则后台连接要挂到任务结束 |
 | `WORKER_JOBS_ROOT` | 空（= `os.tmpdir()/openvod-jobs`） | 任务临时目录根；invoked 模式**必须**指向挂载的文件系统（CFS / NAS），`/tmp` 装不下产物峰值 |
 | `WORKER_NOTIFY_SECRET` | 空（http / invoked 必填） | `/wake` Bearer 密钥；缺失拒绝启动 |
 | `WORKER_POLL_INTERVAL_MS` | `2000` | 轮询间隔（毫秒，仅 resident 模式） |
 | `WORKER_LEASE_MS` | `60000` | 任务 lease 时长（执行期按 1/3 续期） |
 | `WORKER_MAX_ATTEMPTS` | `3` | 单任务最大尝试次数 |
 
-http / invoked 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_settings，ADR-0015）在发起转码 / 重启后 `POST {url}/wake` 拉起 worker（invoked 载荷带 `job_ids` 定向认领）。该外呼在返回前限时等待（≤5s，2xx 即视为送达）——admin 实例响应后可能被冻结，`void` 出去的请求会丢；等待超时按未送达告警，任务仍留存队列兜底。`WORKER_WAKE_SYNC=1` 时 worker 要等任务跑完才回 200，此时 admin 仍能在 5s 内收到响应，**前提是平台先把调用转成异步**（SCF 需开启「异步执行」并立即返回 RequestId）；未开异步执行时 admin 会超时断开，SCF 记 499 并终止实例。详见 ADR-0017 与 [env-vars.md](./env-vars.md)。
+http / invoked 模式下 admin 经 `worker_notify_url` / `worker_notify_secret`（system_settings，ADR-0015）在发起转码 / 重启 / CEK 轮换后 `POST {url}/wake` 拉起 worker（invoked 载荷带 `job_ids` 定向认领）。该外呼在**响应发出之后**发送（Next `after()`，ADR-0017 §9）：用户端始终立即拿 202，`WORKER_WAKE_SYNC=1` 下 worker 等任务跑完才回 200 的那段等待落在响应之后，上限 1 小时；超时按未送达告警，任务仍留存队列兜底。SCF 侧仍建议开启「异步执行」（调用方立即拿 RequestId、执行上限 24h），否则这条后台连接要一直挂到任务结束。详见 ADR-0017 与 [env-vars.md](./env-vars.md)。
 
 ## 6. 播放链路（分发端，M3）
 

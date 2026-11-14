@@ -2,7 +2,7 @@
 // 以及新设置键的写入校验（worker_mode 枚举、worker_notify_secret 长度）。
 import { expect, test } from "bun:test";
 import { normalizeSettingValue, SettingsError } from "../src/lib/settings";
-import { postWorkerWake } from "../src/lib/worker-notify";
+import { DETACHED_WAKE_TIMEOUT_MS, DEFAULT_WAKE_TIMEOUT_MS, postWorkerWake } from "../src/lib/worker-notify";
 
 function fakeFetch(status: number): {
   fetchImpl: typeof fetch;
@@ -64,6 +64,13 @@ test("唤醒外呼有等待上限：不可达地址按未送达返回，不拖�
     timeoutMs: 10,
   });
   expect(result.notified).toBe(false);
+});
+
+test("响应后发送的等待上限覆盖整条转码链（不得退回响应前那 5s）", () => {
+  // 同步唤醒（WORKER_WAKE_SYNC）下 /wake 要等任务跑完才响应；响应后发送若仍用 5s，
+  // 等于把 ADR-0017 §8 的 499 从「切断响应」平移到「切断后台外呼」
+  expect(DETACHED_WAKE_TIMEOUT_MS).toBeGreaterThanOrEqual(30 * 60_000);
+  expect(DETACHED_WAKE_TIMEOUT_MS).toBeGreaterThan(DEFAULT_WAKE_TIMEOUT_MS);
 });
 
 test("worker_mode 仅允许 resident / http / invoked", () => {

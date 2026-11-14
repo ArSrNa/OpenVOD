@@ -29,6 +29,7 @@
     "dayjs": "^1.11.13",
     "next": "^16.3.5",
     "react": "^19.0.0",
+    "react-av-timeline": "^3.0.4",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {

@@ -74,8 +74,8 @@ function decodeText(input: Uint8Array): string {
   return text.replace(/\r\n?/g, "\n"); // 换行统一为 LF
 }
 
-/** `HH:MM:SS.mmm` / `MM:SS.mmm` → 毫秒；非法返回 null */
-function parseTimestamp(raw: string): number | null {
+/** `HH:MM:SS.mmm` / `MM:SS.mmm` → 毫秒；非法返回 null（§7.6 字幕条目编辑同样按此口径解析） */
+export function parseVttTimestamp(raw: string): number | null {
   const m = /^(?:(\d{2,}):)?(\d{2}):(\d{2})\.(\d{3})$/.exec(raw.trim());
   if (!m) return null;
   const hours = Number(m[1] ?? 0);
@@ -84,6 +84,17 @@ function parseTimestamp(raw: string): number | null {
   const millis = Number(m[4]);
   if (minutes > 59 || seconds > 59) return null;
   return ((hours * 60 + minutes) * 60 + seconds) * 1000 + millis;
+}
+
+/** 毫秒 → `HH:MM:SS.mmm`（负数按 0；§7.6 字幕条目编辑的时间输入格式化） */
+export function formatVttTimestamp(ms: number): string {
+  const total = Math.max(0, Math.round(ms));
+  const hours = Math.floor(total / 3_600_000);
+  const minutes = Math.floor((total % 3_600_000) / 60_000);
+  const seconds = Math.floor((total % 60_000) / 1000);
+  const millis = total % 1000;
+  const pad = (value: number, size = 2) => String(value).padStart(size, "0");
+  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}.${pad(millis, 3)}`;
 }
 
 /**
@@ -107,8 +118,8 @@ export function validateVttText(text: string): string {
     if (!line.includes("-->")) continue;
     const [left, right] = line.split("-->");
     // 结束时间后可跟 cue 设置（align:middle 等），只取第一段
-    const start = parseTimestamp(left ?? "");
-    const end = parseTimestamp((right ?? "").trim().split(/\s+/)[0] ?? "");
+    const start = parseVttTimestamp(left ?? "");
+    const end = parseVttTimestamp((right ?? "").trim().split(/\s+/)[0] ?? "");
     if (start == null || end == null) throw new VttError(`时间轴格式非法：${line}`);
     if (end <= start) throw new VttError(`cue 结束时间必须晚于开始时间：${line}`);
     cues += 1;

@@ -1,12 +1,12 @@
 {
-  "version": "1.2.7",
   "name": "openvod",
-  "private": true,
+  "version": "1.2.8",
+  "devDependencies": {
+    "@clack/prompts": "^1.8.1",
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.8.0"
+  },
   "license": "Apache-2.0",
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ],
   "scripts": {
     "start": "sh scripts/compose.sh up",
     "dev": "bun scripts/dev.ts",
@@ -23,9 +23,8 @@
     "dev:player": "bun run --cwd apps/player dev",
     "test": "bun test && go -C apps/delivery test ./..."
   },
-  "devDependencies": {
-    "@clack/prompts": "^1.8.1",
-    "@types/bun": "^1.2.0",
-    "typescript": "^5.8.0"
-  }
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ]
 }

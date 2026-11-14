@@ -522,6 +522,27 @@ export const TranscodeJobLogsResponse = z.object({
   tail: z.string().nullable(),
 });
 
+/** 批量删除任务上限（与列表一次返回的条数一致：一次最多清理当前可见范围） */
+export const TRANSCODE_JOBS_DELETE_MAX = 200;
+
+/**
+ * 批量删除转码任务（2026-11-14）：只删 `transcode_jobs` 行，不动对象存储里的产物与 `hls_keys`。
+ * 仅**非进行中**（DONE / FAILED / CANCELLED）可删；进行中的任务在响应 `skipped` 里回报，不整体失败。
+ */
+export const TranscodeJobsDeleteRequest = z.object({
+  ids: z
+    .array(z.string().min(1))
+    .min(1, "请至少选择一个任务")
+    .max(TRANSCODE_JOBS_DELETE_MAX, `单次最多删除 ${TRANSCODE_JOBS_DELETE_MAX} 个任务`),
+});
+
+export const TranscodeJobsDeleteResponse = z.object({
+  /** 实际删除的任务数 */
+  deleted: z.number().int(),
+  /** 未删除的任务及原因（进行中 / 不存在） */
+  skipped: z.array(z.object({ id: z.string(), reason: z.string() })),
+});
+
 /**
  * Worker 唤醒请求（admin → worker，http / invoked 共用）。
  * `job_ids` 只被 invoked 模式消费（定向认领，不扫队列）；http 模式忽略载荷、照常 drain 队列。

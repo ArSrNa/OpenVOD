@@ -220,7 +220,7 @@ export function SetupWizard() {
                     </div>
 
                     <div style={{ display: step === 1 ? "block" : "none" }}>
-                        <Form.Item name="playback_base_url" label="播放域名（分发端地址）" extra="密钥/字幕/m3u8视频获取的地址，请填写分发端部署的地址，留空则只能从本机访问，建议将部署delivery在公网">
+                        <Form.Item name="playback_base_url" label="播放域名（分发端地址）" extra="分发端部署后的访问地址；留空则无法播放">
                             <Input placeholder="https://delivery.example.com" />
                         </Form.Item>
                         <Typography.Title level={5}>首个管理员账号（强烈建议现在创建）</Typography.Title>

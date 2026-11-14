@@ -3,6 +3,7 @@
 - 状态：已接受（2026-09-24，用户委托决策）
 - 日期：2026-09-24
 - 修订：2026-11-13 —— 增加第三模式 `invoked`（异步云函数单任务触发）与任务日志尾部通道，见 §6
+- 修订：2026-11-14 —— admin 侧唤醒改为**限时 await**（原 `void` fire-and-forget 在 serverless admin 上会随响应冻结丢掉外呼，任务入队但函数永不拉起），见 §7
 - 关联：ADR-0008（转码流水线，本 ADR 修订其「常驻容器」前提）、ADR-0003（部署目标）、ADR-0004（数据库与 ORM）、ADR-0011（部署拓扑）、ADR-0015（环境变量与系统设置边界）、spec.md §5.1
 
 ## 背景
@@ -39,7 +40,7 @@ v1 的 worker 是**常驻进程 + 轮询认领**（ADR-0008），admin 与 worke
 ### 3. admin 通知钩子
 
 - 新增配置 `WORKER_NOTIFY_URL` + `WORKER_NOTIFY_SECRET`（env 或 `system_settings`，沿用 ADR-0015 的边界与 MK 封装纪律）；
-- 发起转码 / 任务重启成功后 POST 通知，**失败仅告警不阻塞**（业务仍返回 202）；
+- 发起转码 / 任务重启成功后 POST 通知，**失败仅告警不阻塞**（业务仍返回 202）；发送要在响应前完成（限时 ≤5s），不能 `void`——admin 实例返回后可能被冻结，未发出的外呼会丢（2026-11-14 修订）；
 - `stop` 不需要通知 worker（「租约有效 → 409」语义不依赖通道）；
 - 多 worker 并存时任一实例收到通知即可（CAS 认领竞争自动分活）。
 
@@ -111,3 +112,10 @@ P0 边界重申：**转码禁止上「请求-响应型函数」**（SCF / EdgeOn
 - **日志尾部**（新增 `apps/worker/src/job-log.ts` + `packages/transcode` 的 `onStderrLine`）：worker 阶段日志与 ffmpeg stderr 逐行进环形缓冲（48KB / 单行 2KB 上限），每 2s 有变化才覆盖写；写库失败保持 dirty 下一轮重试。`transcode_jobs.log_tail MEDIUMTEXT` + `log_seq INTEGER`（expand 迁移）。
 - **管理端**：`GET /api/admin/jobs/{id}/logs?after=<seq>`（未变化返回 `tail: null`）+ 任务页「日志」抽屉；`lib/job-watchdog.ts` 读时巡检（仅 invoked、60s 节流、租约过期 5 分钟 / 排队 10 分钟 → FAILED）。
 - **测试**：`apps/worker/test/job-log.test.ts`（有变化才写 / 环形裁剪 / 单行上限 / 失败重试 / stop 收尾）、`http-mode.test.ts` 增补载荷与 pending 合并用例；`worker-notify.test.ts` 增补 JSON 载荷与 `invoked` 枚举。
+
+## 实现记录（2026-11-14，唤醒外呼必须在响应前发出）
+
+- **问题**：admin 侧三处调用（发起转码 / 任务重启 / CEK 轮换）此前是 `void notifyWorkerWake(...)`。admin 以 serverless 或容器形态运行时，响应返回后实例可能立刻冻结，未完成的 `fetch` 被丢弃——任务已入 `transcode_jobs`，但异步函数始终没被拉起，直到看门狗 10 分钟后判 FAILED。
+- **改动**：三处改为 `await notifyWorkerWake(...)`；`notifyWorkerWake` 新增 `timeoutMs`（默认 `DEFAULT_WAKE_TIMEOUT_MS = 5000`），超时按「未送达」告警返回，业务响应仍是 202。多模板提交仍逐任务各发一次，总等待仍受单次超时约束（并行发出）。
+- **语义不变**：通知依旧可丢——唤醒失败只影响「何时开跑」，不影响任务事实（DB 兜底 + 人工重启）。
+- **测试**：`worker-notify.test.ts` 增补「不可达地址按上限返回未送达」用例。

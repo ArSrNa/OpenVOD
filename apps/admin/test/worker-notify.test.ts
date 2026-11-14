@@ -47,6 +47,21 @@ test("非 202 / 网络错误 / 缺配置：不送达但绝不抛异常", async (
   expect((await postWorkerWake({ url: "https://worker.example.com", secret: "", fetchImpl })).reason).toContain("worker_notify_secret");
 });
 
+test("唤醒外呼有等待上限：不可达地址按未送达返回，不拖住调用方", async () => {
+  // 只接 abort、永不 resolve 的 fetch：验证 timeoutMs 到点即返回失败而不是挂死
+  const hanging = ((_input: RequestInfo | URL, init?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+    })) as typeof fetch;
+  const result = await postWorkerWake({
+    url: "https://worker.example.com",
+    secret: "s3cret",
+    fetchImpl: hanging,
+    timeoutMs: 10,
+  });
+  expect(result.notified).toBe(false);
+});
+
 test("worker_mode 仅允许 resident / http / invoked", () => {
   expect(normalizeSettingValue("worker_mode", "http")).toBe("http");
   expect(normalizeSettingValue("worker_mode", "Resident")).toBe("resident");

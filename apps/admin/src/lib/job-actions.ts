@@ -1,4 +1,4 @@
-// 转码任务的「取消 / 重启」操作守卫（纯函数；spec.md §5.1，ADR-0008）
+// 转码任务的「取消 / 重启 / 删除」操作守卫（纯函数；spec.md §5.1，ADR-0008）
 //
 // 语义（与 worker 的认领 / 租约 / 取消轮询机制对齐，apps/worker/src/job-store.ts）：
 //   取消（2026-11-12 起可**立即打断**）：
@@ -6,7 +6,8 @@
 //     - 租约有效（worker 正在执行）：写 cancel_requested_at 作为取消请求，worker 2s 内轮询到即
 //       杀 ffmpeg / 中止拉源并落 CANCELLED；请求期间按钮显示「取消中」，重复提交被拒；
 //   重启（重新入队）＝ FAILED 或 CANCELLED → QUEUED：attempts 清零、清 cancel_requested_at、
-//     清错误与租约——不清零 attempts 会被认领逻辑立即判「超过重试上限」而秒失败。
+//     清错误与租约——不清零 attempts 会被认领逻辑立即判「超过重试上限」而秒失败；
+//   删除（2026-11-14）＝ 仅终结态（DONE / FAILED / CANCELLED）可删，进行中的必须先取消。
 // 本模块只做判定，不改库；DB 写入与 CAS 见 lib/transcode.ts。
 
 import { ACTIVE_JOB_STATUSES } from "@openvod/contracts";
@@ -65,4 +66,35 @@ export function jobActionState(input: JobActionInput): JobActionState {
   }
 
   return { canStop, canRestart, leaseExpired, cancelling, stopBlocked, restartBlocked };
+}
+
+export interface JobDeletePartition {
+  /** 可删除的任务 id（去重后，保持请求顺序） */
+  deletable: string[];
+  /** 不可删除的任务及原因（进行中 / 不存在） */
+  skipped: Array<{ id: string; reason: string }>;
+}
+
+/**
+ * 批量删除前的可删性划分（纯判定，不改库）：仅**非进行中**（终结态）可删。
+ * 进行中的任务交给用户先「取消」，避免删掉正在写产物的任务行让 worker 收尾落空。
+ */
+export function partitionDeletableJobs(
+  ids: string[],
+  rows: Array<{ id: string; status: string }>,
+): JobDeletePartition {
+  const statusOf = new Map(rows.map((r) => [r.id, r.status]));
+  const deletable: string[] = [];
+  const skipped: JobDeletePartition["skipped"] = [];
+  for (const id of new Set(ids)) {
+    const status = statusOf.get(id);
+    if (status === undefined) {
+      skipped.push({ id, reason: "任务不存在" });
+    } else if ((ACTIVE_STATUSES as readonly string[]).includes(status)) {
+      skipped.push({ id, reason: "任务进行中，不能删除" });
+    } else {
+      deletable.push(id);
+    }
+  }
+  return { deletable, skipped };
 }

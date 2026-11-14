@@ -48,6 +48,10 @@ sh scripts/compose-infra.sh init-env
 
 ## 3. 建表
 
+`bun scripts/dev.ts --env-file .env.trial ...` 启动前会自动生成两份 Prisma 客户端并应用 migrations
+（`.env.trial` 的 `DATABASE_URL` 随 `--env-file` 一起传给 Prisma，不再需要手工导出）。所以本节可跳过，
+只在想先单独建表、或启动器报错要排查时手动执行：
+
 ```bash
 task db:generate   # mysql + sqlite 两份 Prisma 客户端（缺任一 Next 打包报错）
 # Prisma CLI 不认识 .env.trial：先显式导出再迁移（真实进程环境优先于 .env 文件，不会被根 .env 打回）

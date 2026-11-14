@@ -3,11 +3,12 @@
 // 转码任务页（/jobs，M2；ADR-0008 队列 + ADR-0014 模板快照）：
 // 列表来自 transcode_jobs，展示状态机（排队 → 探测 → **拉取源片** → 转码 → 封装上传 → 完成/失败/取消）、
 // 模板名（取任务快照，模板被删也能追溯）、阶段进度与失败原因；
-// 操作：**取消**（立即打断：执行中的任务由 worker 收到取消请求后杀掉 ffmpeg，spec.md §5.1）与
-// **重启**（失败 / 已取消的任务清零尝试次数重新入队）。
+// 操作：**取消**（立即打断：执行中的任务由 worker 收到取消请求后杀掉 ffmpeg，spec.md §5.1）、
+// **重启**（失败 / 已取消的任务清零尝试次数重新入队）与**删除**（仅终结态，支持勾选批量；
+// 只删任务记录，产物与 hls_keys 不动）。
 // 实时性走 SSE（/api/admin/jobs/stream，spec.md §2.1）：客户端零轮询，服务端仅在快照变化时推全量，
 // 断线由 EventSource 自动重连（重连即拿最新快照）；「耗时」列用本地时钟每秒重算，不产生请求。
-import { FileTextOutlined, ReloadOutlined, StopOutlined, ThunderboltOutlined } from "@ant-design/icons";
+import { DeleteOutlined, FileTextOutlined, ReloadOutlined, StopOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { ProCard } from "@ant-design/pro-components";
 import { ACTIVE_JOB_STATUSES } from "@openvod/contracts";
 import { App, Button, Empty, Progress, Space, Table, Tag, Tooltip, Typography } from "antd";
@@ -86,6 +87,7 @@ export function JobsManager() {
   const [reconnect, setReconnect] = useState(0); // 手动刷新 = 重建 SSE 连接（服务端随即回放最新快照）
   const [now, setNow] = useState(() => Date.now()); // 仅驱动「耗时」列重算，不发请求
   const [logJob, setLogJob] = useState<JobItem | null>(null); // 日志抽屉当前任务（null = 关闭）
+  const [selectedIds, setSelectedIds] = useState<string[]>([]); // 勾选的任务（仅终结态可选）
 
   // SSE：连上即收到全量快照（event: jobs），之后仅在服务端观察到变化时收帧；断线自动重连
   useEffect(() => {
@@ -120,7 +122,16 @@ export function JobsManager() {
     return () => clearInterval(timer);
   }, [hasActive]);
 
-  // ---- 停止 / 重启（spec.md §5.1）：写入后由 SSE 自动推送新状态，无需手动刷新 ----
+  // 勾选项跟随最新快照：任务消失（已被删）或变成进行中（被重启 / 被认领）就移出选择，
+  // 避免删除请求带上不该删的行（服务端仍会再挡一次）
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      const next = prev.filter((id) => items.some((i) => i.id === id && !ACTIVE.has(i.status)));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [items]);
+
+  // ---- 停止 / 重启 / 删除（spec.md §5.1）：写入后由 SSE 自动推送新状态，无需手动刷新 ----
   const { message, modal } = App.useApp();
 
   const callAction = useCallback(async (id: string, action: "stop" | "restart") => {
@@ -170,6 +181,46 @@ export function JobsManager() {
       },
     });
   };
+
+  // 删除（2026-11-14）：仅终结态；批量与单条同一个入口
+  const handleDelete = useCallback(
+    (ids: string[]) => {
+      if (!ids.length) return;
+      const first = ids[0]!;
+      modal.confirm({
+        title: ids.length > 1 ? `确认删除 ${ids.length} 个任务？` : `确认删除任务 ${first.slice(0, 12)}…？`,
+        content: (
+          <Typography.Text type="secondary">
+            只删除任务记录，已产出的播放文件不受影响；进行中的任务不能删除，删除后不可恢复。
+          </Typography.Text>
+        ),
+        okText: "删除",
+        okButtonProps: { danger: true },
+        cancelText: "取消",
+        onOk: async () => {
+          try {
+            const res = await fetch("/api/admin/jobs", {
+              method: "DELETE",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ ids }),
+            });
+            const body = (await res.json().catch(() => null)) as
+              | { deleted?: number; skipped?: Array<{ id: string; reason: string }>; error?: { message?: string } }
+              | null;
+            if (!res.ok) throw new Error(body?.error?.message ?? `请求失败（HTTP ${res.status}）`);
+            const deleted = body?.deleted ?? 0;
+            const skipped = body?.skipped?.length ?? 0;
+            message.success(`已删除 ${deleted} 个任务${skipped ? `，${skipped} 个进行中未删除` : ""}`);
+            setSelectedIds((prev) => prev.filter((id) => !ids.includes(id)));
+            if (logJob && ids.includes(logJob.id)) setLogJob(null);
+          } catch (e) {
+            message.error(e instanceof Error ? e.message : "删除失败");
+          }
+        },
+      });
+    },
+    [logJob, message, modal],
+  );
 
   const columns: ColumnsType<JobItem> = [
     {
@@ -290,7 +341,7 @@ export function JobsManager() {
     {
       title: "操作",
       key: "ops",
-      width: 200,
+      width: 240,
       render: (_, row) => {
         const st = jobActionState({
           status: row.status,
@@ -312,6 +363,11 @@ export function JobsManager() {
                 重启
               </Button>
             )}
+            {!ACTIVE.has(row.status) && (
+              <Button danger type="link" size="small" icon={<DeleteOutlined />} onClick={() => handleDelete([row.id])}>
+                删除
+              </Button>
+            )}
           </Space>
         );
       },
@@ -327,6 +383,14 @@ export function JobsManager() {
         <Button icon={<ReloadOutlined />} onClick={() => setReconnect((n) => n + 1)} loading={loading}>
           刷新
         </Button>
+        <Button
+          danger
+          icon={<DeleteOutlined />}
+          disabled={!selectedIds.length}
+          onClick={() => handleDelete(selectedIds)}
+        >
+          删除选中{selectedIds.length ? `（${selectedIds.length}）` : ""}
+        </Button>
         <Tag color={CONN_META[conn].color}>{CONN_META[conn].label}</Tag>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           <ThunderboltOutlined /> 任务由 Worker 认领执行；同一媒资同时只允许一个进行中的任务（发起入口在「媒资管理 → 更多 → 转码」）
@@ -339,9 +403,15 @@ export function JobsManager() {
           columns={columns}
           dataSource={items}
           loading={loading}
+          rowSelection={{
+            selectedRowKeys: selectedIds,
+            onChange: (keys) => setSelectedIds(keys.map(String)),
+            // 进行中的任务不可勾选（取消后才能删）
+            getCheckboxProps: (row) => ({ disabled: ACTIVE.has(row.status) }),
+          }}
           pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 个任务` }}
           size="middle"
-          scroll={{ x: 1380, y: bodyHeight }}
+          scroll={{ x: 1460, y: bodyHeight }}
           locale={{
             emptyText: <Empty description="暂无转码任务（在「媒资管理 → 更多 → 转码」发起）" />,
           }}

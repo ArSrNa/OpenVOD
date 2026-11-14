@@ -32,6 +32,7 @@ OpenVOD：自建云点播系统（媒资 → 转码加密 → 元数据 / 字幕
 | `task db:push` | SQLite 开发库建表（`DB_PROVIDER=sqlite`） |
 | `task db:migrate` | 生产 MySQL 迁移（`prisma migrate deploy`）；空库 baseline 四步流程见 dev-workflow §4.3 |
 | `task db:parity` | 校验两份 Prisma schema 的 enum/model 段逐字一致（CI 门禁） |
+| `bun scripts/dev.ts <服务>` | **启动前自动同步数据库**：schema 文件变了就重生成 mysql + sqlite 两份客户端，再按 `DB_PROVIDER` 同步结构（sqlite `db push` / mysql `migrate deploy`），失败即中止启动；`--no-db-sync` 跳过 |
 | `task contracts` | zod → JSON Schema → Go struct（quicktype）。生成物**必须入库**，CI 用 `bun run check:contracts-go` diff 门禁 |
 | `task vectors` | 生成 TS/Go 加密互通测试向量；未生成时两端互通测试会 skip |
 | `bun scripts/dev.ts` | 开发启动器（TS，取代旧 `./start*.sh`）：交互式勾选服务（admin / delivery / worker）与运行方式（前台调试 / 后台常驻），端口跟随 env 文件的 `ADMIN_PORT` / `DELIVERY_LISTEN`（默认根 `.env`，`--env-file <路径>` 可指定替代文件，指定后不读根 `.env`） |
@@ -114,7 +115,7 @@ MK（环境变量 MASTER_KEYS="版本:64位hex"，可轮换）
 
 - `apps/delivery` 播放链路（M3）已实现：`internal/{config,contracts,server,token,auth,blob,mk,playback,store}` 与装配包 `app`——login（bcrypt + ES256 JWT）、media 列表/详情、play（会话幂等 / 并发上限）、主 + 子清单改写、`/key`、分片 S3 预签名直出、字幕下发（`play` 附 typ=v 签名 URL；`.vtt` 按 `storage_key` 代理输出 `no-store`，spec.md §7.5）、`custom` 自定义元数据公开白名单（`internal/server/custom.go`：分类 / 描述 / 标签，spec.md §8.4）。未覆盖项见 `docs/vod/spec.md §6.6`。
 - `apps/worker/src/index.ts` 的转码执行链已实现（ADR-0008：认领 → ffprobe → **拉取源片到任务临时目录**（`source-download.ts`，状态 `DOWNLOADING` + `progress`）→ key_info → 转码（本地文件输入）→ 上传 → 写 `hls_keys`）；**水印烧录已实现**（ADR-0018 / spec.md §10.4：读 `template_snapshot.watermark` → 图片型按 `image_key` 预签名取图 → `packages/transcode` 编译滤镜链，逐档挂在 scale 之后、编码切片之前；启动自检水印字体）。
-- `apps/admin` 的 `/api/auth/*`（better-auth）、`/healthz`、登录页与建号脚本可用；`/api/admin/*` 业务端点按里程碑逐条落地——已实现：媒资（上传 / 列表 / 详情 / 重命名 + **自定义元数据字段更新**（描述 / 标签 / 分类）/ 删除 / 预览 / 封面 / 元数据 / 产物 / 转码发起）、`/api/admin/categories`（分类 CRUD，无限层级，spec.md §8）、`/api/admin/templates`（含可选 `watermark_id` 关联 + 两层校验）、`/api/admin/watermarks`（水印模板 CRUD + 图片上传 / 预览 + `referenced_by` + 删除 409，spec.md §10）、`/api/admin/keys`（含 MK 轮换）、`/api/admin/jobs`（列表 + SSE + 停止 / 重启）、`/api/admin/stats`、`/api/admin/users`（播放端用户 CRUD + 重置口令 + 吊销会话，spec.md §2.1.1）、`/api/admin/media/{id}/subtitles`（字幕轨道 CRUD + 覆盖文本，spec.md §7）；其余路径仍由 `/api/admin/[...path]` 会话守卫后返回 501。
+- `apps/admin` 的 `/api/auth/*`（better-auth）、`/healthz`、登录页与建号脚本可用；`/api/admin/*` 业务端点按里程碑逐条落地——已实现：媒资（上传 / 列表 / 详情 / 重命名 + **自定义元数据字段更新**（描述 / 标签 / 分类）/ 删除 / 预览 / 封面 / 元数据 / 产物 / 转码发起）、`/api/admin/categories`（分类 CRUD，无限层级，spec.md §8）、`/api/admin/templates`（含可选 `watermark_id` 关联 + 两层校验）、`/api/admin/watermarks`（水印模板 CRUD + 图片上传 / 预览 + `referenced_by` + 删除 409，spec.md §10）、`/api/admin/keys`（含 MK 轮换）、`/api/admin/jobs`（列表 + SSE + 停止 / 重启 / 批量删除非进行中任务）、`/api/admin/stats`、`/api/admin/users`（播放端用户 CRUD + 重置口令 + 吊销会话，spec.md §2.1.1）、`/api/admin/media/{id}/subtitles`（字幕轨道 CRUD + 覆盖文本，spec.md §7）；其余路径仍由 `/api/admin/[...path]` 会话守卫后返回 501。
 
 ## 仓库约定
 

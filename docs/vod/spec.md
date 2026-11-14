@@ -97,7 +97,7 @@ root 下按资产类别分四个分区，互不嵌套：
 | `/api/admin/categories` | POST | 新建分类（§8.1）：`name` 必填（≤64）、`description`（≤191）、`parent_id`（缺省 / `null` = 顶级，不限层级）、`sort_order`；上级不存在 404；**同级重名 409**（顶级重名也拦，DB 唯一索引对 NULL 不生效）；审计 `category.create` |
 | `/api/admin/categories/{id}` | PATCH | 更新分类：改名 / 描述 / 移动（`parent_id`，禁止环路 → 409）/ 排序；上级不存在 404；同级重名 409；**改名或移动后刷新该分类子树下全部媒资的自定义元数据投影**（`path` 快照，§8.3），响应 `refreshed_media` 回报刷新条数；审计 `category.update` |
 | `/api/admin/categories/{id}` | DELETE | 删除分类：**系统默认分类「其他」→ 409**（不可删除）；有子分类 → 409（先删 / 先移走）；该分类下的媒资**迁入默认分类「其他」**（不删媒资），删除后刷新这些媒资的投影（分类快照换成「其他」），响应 `affected_media` / `moved_to` / `refreshed_media`；审计 `category.delete` |
-| `/api/admin/media/{id}` | DELETE | 删除：original 对象 + proceed/cover/metadata 三分区该 id 全部对象 + DB 行（级联 subtitles / transcode_jobs / hls_keys / playback_sessions）；幂等可重试。**级联范围说明**：open-questions #13 决议（软删 + 保留期 GC）之前的 v1 临时策略为**硬删除全级联** |
+| `/api/admin/media/{id}` | DELETE | 删除：original 对象 + proceed/cover/metadata 三分区该 id 全部对象 + DB 行 + **该媒资密钥行**（`hls_keys` 由应用层与媒资行同一事务显式删除，不依赖外键级联；subtitles / transcode_jobs / playback_sessions 随 `onDelete: Cascade`），响应 `removed` / `key_removed`；幂等可重试。**级联范围说明**：open-questions #13 决议（软删 + 保留期 GC）之前的 v1 临时策略为**硬删除全级联** |
 | `/api/admin/media/{id}/original` | GET | 原视频预览：预签名 GET 302 重定向（字节不经管理端；配置 `STORAGE_CDN_BASE_URL` 时 302 目标 origin 替换为加速域名，ADR-0005）；no-store |
 | `/api/admin/media/{id}/cover` | POST | 上传封面：`cover/{id}/poster.{ext}`（jpg/png/webp/gif/avif）+ 回写 `media.poster_key`；手动上传 / 视频截帧双模式共用此端点（§2.3） |
 | `/api/admin/media/{id}/cover` | GET | 封面图片读取（列表首列缩略图 / 详情展示，§3.1）：local 整对象流式输出；s3 预签名 GET 302（字节不经管理端，`STORAGE_CDN_BASE_URL` origin 替换同 original）；no-store |

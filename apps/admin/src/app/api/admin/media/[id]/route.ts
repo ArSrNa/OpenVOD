@@ -7,7 +7,7 @@
 //                                 （分类 / 描述 / 标签，spec.md §8.2/§8.3），并导出 metadata/{id}/custom.json
 //            uploaded_at          自定义上传时间（null = 恢复默认；spec.md §3.1：仅管理端展示 +
 //                                 分发端列表排序回退，不进入元数据投影 / 下发）
-//   DELETE 删除：存储四分区该 id 全部对象 + DB 行（级联范围注记见 spec.md §2）
+//   DELETE 删除：存储四分区该 id 全部对象 + DB 行 + 该媒资密钥行（范围注记见 spec.md §2）
 // POST [id]/transcode、[id]/subtitles、[id]/metadata 未实现 → 由 /api/admin/[...path] 返回 501。
 import { NextRequest, NextResponse } from "next/server";
 import { UpdateMediaRequest, z } from "@openvod/contracts";
@@ -102,7 +102,10 @@ export async function DELETE(req: NextRequest, ctx: Ctx): Promise<NextResponse> 
   try {
     const { id } = await ctx.params;
     const result = await deleteMedia(id);
-    await auditAction(req, session, "media.delete", id, { removed: result.removed });
+    await auditAction(req, session, "media.delete", id, {
+      removed: result.removed,
+      key_removed: result.key_removed,
+    });
     return apiJson(result);
   } catch (e) {
     return mediaErrorResponse(e);

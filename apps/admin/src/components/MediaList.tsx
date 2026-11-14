@@ -527,7 +527,7 @@ export function MediaList() {
       title: `确认删除媒资 ${record.id}？`,
       content: (
         <Typography.Text type="danger">
-          将删除存储中的原视频与全部关联资产（转码产物 / 封面 / 元数据）及数据库记录，不可恢复。
+          将删除存储中的原视频与全部关联资产（转码产物 / 封面 / 元数据 / 加密密钥）及数据库记录，不可恢复。
         </Typography.Text>
       ),
       okText: "删除",

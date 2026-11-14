@@ -192,14 +192,9 @@ export function MediaUpload() {
         const actions: ReactNode[] = [];
         if (task.status === "QUEUED" || task.status === "UPLOADING") {
           actions.push(
-            <Tooltip
-              key="cancel"
-              title="取消即中止上传；若该文件已上传完成，媒资仍会出现在列表"
-            >
-              <Button size="small" onClick={() => uploadManager.cancel(task.id)}>
-                取消
-              </Button>
-            </Tooltip>,
+            <Button size="small" onClick={() => uploadManager.cancel(task.id)}>
+              取消
+            </Button>
           );
         }
         if (task.status === "FAILED" || task.status === "CANCELED") {

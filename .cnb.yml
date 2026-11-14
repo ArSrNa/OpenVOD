@@ -85,6 +85,7 @@ include:
 
 # 转码 Worker 镜像（ADR-0003 / ADR-0008：Bun 常驻容器；P0 转码禁止上函数）
 # 构建上下文同为仓库根；镜像内含 ffmpeg/ffprobe（worker 启动自检的必需项）。
+# 这里推的 worker:latest 同时是「转推worker到腾讯云CCR」的数据源：构建参数（尤其 --platform）改动要两边一起看。
 .build-worker-image: &build-worker-image
   name: 构建并推送 worker 镜像
   runner:
@@ -98,46 +99,72 @@ include:
 
 # 转码 worker → 腾讯云 CCR（仓库 tcb-${CCR_UIN}-iydy/openvod，标签 :worker）
 # 用途：云托管 / TCB 侧取 worker 镜像；凭据同样来自密钥仓库 ccr.yaml，只在本 stage 注入。
-# 「OCI → docker」的正确做法是**导出侧** oci-mediatypes=false，不是 `--output type=docker` 后 docker push
-# （2026-11-13 实测：后者在 Docker 29 + containerd 镜像存储下仍推 OCI index，CCR 显示 OCI-Image-v1）。
-# 反例与断言见本 stage 的 script 注释。
+#
+# **不从 Dockerfile 重建**：直接取 CNB 制品库里「构建worker（Docker）」产出的镜像，换标签 + 转 docker 媒体类型。
+# 省掉 apt（ffmpeg / fonts-noto-cjk）、bun install、Prisma 生成这条整链（单次 10 分钟级）。
+# 使用顺序：先跑「构建worker（Docker）」把新镜像推上制品库，再跑本任务转推 CCR。源永远是 :latest。
+# 源镜像必须带 linux/amd64（制品库现有 worker 实测为 amd64）；日后构建机换架构时，
+# 要先让「构建worker（Docker）」用 --platform linux/amd64 产出，否则这里会报 no match for platform。
+#
+# 为什么不能 `docker pull` + `docker tag` + `docker push` 了事：
+#   制品库里的 worker 是 OCI image index（还带一个 attestation manifest）；本环境 Docker 29 用
+#   containerd 镜像存储（overlayfs / io.containerd.snapshotter.v1），docker push 原样推回 OCI，
+#   CCR 里显示成 OCI-Image-v1。
+# 为什么不能 `docker buildx imagetools create`：
+#   它只搬 manifest、不改 mediaType，OCI 进去 OCI 出来。
+# 为什么 FROM-only + buildx build 不算重建：
+#   临时 Dockerfile 只有一行 FROM，没有 RUN / COPY / ADD，构建器不执行任何构建指令，
+#   等价于「导出器把基础镜像的层按 docker v2 schema2 重新打包」：层 digest 与源镜像一致
+#   （不会重新压缩、不会重跑 apt），CCR 里已存在的层由导出器跳过，不再传输。
+# 反例实测（勿改回）：
+#   - `--output type=docker` + docker push → 仍推 OCI index；
+#   - 漏掉 --provenance=false / --sbom=false → 被包成 OCI image index；
+#   - `--output type=image` 但漏掉 oci-mediatypes=false → manifest 仍是 OCI。
 .push-worker-ccr: &push-worker-ccr
-  name: 构建 worker 并推送腾讯云 CCR
+  name: 复用制品库镜像转推 worker 到腾讯云 CCR（不重建）
   runner:
-    cpus: 32
+    cpus: 8 # 纯搬运：只拉 manifest / 转格式 / 推层，不吃 CPU
   services:
     - docker
   stages:
-    - name: 登录 CCR → 构建（docker 媒体类型）→ 推送
+    - name: 登录 CCR → 换标签并转成 docker 媒体类型 → 推送
       imports:
         - https://cnb.cool/arsrna/env/-/blob/main/ccr.yaml # CCR_UIN / CCR_PASSWORD
       script: |
-        set -e
+        set -euo pipefail
         : "${CCR_UIN:?密钥仓库 ccr.yaml 未提供 CCR_UIN}"
         : "${CCR_PASSWORD:?密钥仓库 ccr.yaml 未提供 CCR_PASSWORD}"
+        SRC="${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/worker:latest"
         IMAGE="ccr.ccs.tencentyun.com/tcb-${CCR_UIN}-iydy/openvod:worker"
+        echo "源镜像：$SRC"
         echo "目标镜像：$IMAGE"
 
-        # 1) 登录：密码走 --password-stdin（用 -p 会把口令整条回显在流水线日志里）
+        # 1) 登录：口令走 --password-stdin（用 -p 会把口令整条回显在流水线日志里）
+        if [ -n "${CNB_TOKEN:-}" ]; then
+          printf '%s' "$CNB_TOKEN" | docker login "$CNB_DOCKER_REGISTRY" --username "${CNB_TOKEN_USER_NAME:-cnb}" --password-stdin
+        fi
         printf '%s' "$CCR_PASSWORD" | docker login ccr.ccs.tencentyun.com --username "$CCR_UIN" --password-stdin
 
-        # 2) 构建即推送，并在**导出侧**锁定 docker v2 schema2（2026-11-13 实测，别再改回 --output type=docker）：
-        #      oci-mediatypes=false   → manifest 用 application/vnd.docker.distribution.manifest.v2+json
-        #      --provenance=false / --sbom=false → 不附带证明与附件（否则会被包成 OCI image index）
-        #    反例实测：`--output type=docker` + `docker push` 推出去的是
-        #    application/vnd.oci.image.index.v1+json（含一个 attestation manifest）——本环境 Docker 29
-        #    用 containerd 镜像存储（Storage Driver: overlayfs / io.containerd.snapshotter.v1），
-        #    docker push 不做 schema2 转换，CCR 里就显示成 OCI-Image-v1。
+        # 2) 源镜像必须已存在（制品库是唯一来源，本任务不再兜底构建）
+        docker buildx imagetools inspect "$SRC" || {
+          echo "制品库没有 $SRC：先在分支页点「构建worker（Docker）」，再点本任务"; exit 1; }
+
+        # 3) 换标签 + 转 docker v2 schema2，**导出侧**锁类型：
+        #      oci-mediatypes=false → manifest 为 application/vnd.docker.distribution.manifest.v2+json
+        #      --provenance=false / --sbom=false → 不附带证明与附件（否则会被包成 OCI index）
+        #    空构建上下文：临时 Dockerfile 没有 COPY，构建器不会读仓库；换目录执行以免误把仓库当上下文。
+        WORK=$(mktemp -d)
+        printf 'FROM %s\n' "$SRC" > "$WORK/retag.Dockerfile"
         docker buildx build \
-          -f apps/worker/Dockerfile \
+          -f "$WORK/retag.Dockerfile" \
           --platform linux/amd64 \
           --provenance=false \
           --sbom=false \
           --output type=image,name="$IMAGE",oci-mediatypes=false,push=true \
-          .
+          "$WORK"
+        rm -rf "$WORK"
 
-        # 3) 断言远端确实是 Docker v2 schema2：worker 镜像层大（ffmpeg / fonts-noto-cjk），
-        #    推完顺手核一次，避免「推成功但类型退回 OCI」时到部署阶段才发现
+        # 4) 断言远端确实是 Docker v2 schema2，避免「推成功但类型退回 OCI」到部署阶段才发现
         MEDIA=$(docker buildx imagetools inspect "$IMAGE" --format '{{.Manifest.MediaType}}')
         echo "远端 manifest 媒体类型：$MEDIA"
         test "$MEDIA" = "application/vnd.docker.distribution.manifest.v2+json" \

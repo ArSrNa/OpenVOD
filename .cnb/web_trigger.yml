@@ -16,8 +16,8 @@ branch:
       - name: 构建worker（Docker）
         description: 构建 apps/worker 镜像并推送到 CNB 制品库（含 ffmpeg/ffprobe）
         event: web_trigger_worker_docker
-      - name: 构建worker（腾讯云CCR）
-        description: 构建 apps/worker 镜像并以 docker 媒体类型推送到 ccr.ccs.tencentyun.com/tcb-<CCR_UIN>-iydy/openvod:worker（凭据取密钥仓库 ccr.yaml）
+      - name: 转推worker到腾讯云CCR
+        description: 取制品库 worker:latest 换标签并以 docker 媒体类型推送到 ccr.ccs.tencentyun.com/tcb-<CCR_UIN>-iydy/openvod:worker（不重建；凭据取密钥仓库 ccr.yaml）
         event: web_trigger_worker_ccr
       - name: 构建player（Docker）
         description: 构建 apps/player 镜像并推送到 CNB 制品库（播放演示 App，免登录）

@@ -238,7 +238,7 @@ DELETE /api/admin/categories/cother00000000000000000    # 默认分类
 - 拒绝条件一：`keep_original=true && watermark_id != null` → `400`；
 - 拒绝条件二：指向图片型水印但 `image_key` 为空（未上传图）→ `400`。
 
-submit 时水印内容**现读现快照**进 `transcode_jobs.template_snapshot.watermark`——水印参数（锚点 / 偏移 / 透明度 / 混合 / 文字等）的修改对**下一次发起**生效；已入队任务不受水印参数后续变更影响（重启任务同样沿用入队时快照）。唯一例外是图片**字节**：快照只固化 `image_key` / 宽高等元数据，字节在 Worker 执行时按 key 现取——同扩展名换图时未执行的任务会烧**新图**；换扩展名会删除旧键，未执行的任务将失败（键版本化属演进项）。已产出内容永远不受影响（水印已烧进像素）。
+submit 时水印内容**现读现快照**进 `transcode_jobs.template_snapshot.watermark`——水印参数（锚点 / 偏移 / 透明度 / 混合 / 文字等）的修改对**下一次发起**生效；已入队任务不受水印参数后续变更影响。**重启任务时快照按当前模板与水印重建**（2026-11-15 修订，ADR-0014 补充）：改完配置再重启即生效；模板 / 水印已被删除时沿用入队时快照；新模板配置非法（`keep_original` + 水印、图片水印未传图）则拒绝重启。唯一例外是图片**字节**：快照只固化 `image_key` / 宽高等元数据，字节在 Worker 执行时按 key 现取——同扩展名换图时未执行的任务会烧**新图**；换扩展名会删除旧键，未执行的任务将失败（键版本化属演进项）。已产出内容永远不受影响（水印已烧进像素）。
 
 ---
 
@@ -287,7 +287,7 @@ submit 时水印内容**现读现快照**进 `transcode_jobs.template_snapshot.w
 | `GET /api/admin/jobs/stream` | —（SSE） | `200 text/event-stream`；头 `Cache-Control: no-store, no-transform`、`X-Accel-Buffering: no`；事件 `jobs`（全量快照，连上即回放）、`ping`（15s 保活）；**10 分钟主动断开**由 EventSource 重连 | `401`（JSON 信封，非 SSE 流） |
 | `POST /api/admin/jobs/{id}/stop` | — | `200 {id, status, cancelling}`：未执行（QUEUED / 租约过期）→ 直接 `status="CANCELLED"`；执行中 → 只写 `cancel_requested_at`、`cancelling=true`（worker 2s 内中断并落 `CANCELLED`） | `404`；`409` 已终结 / 取消请求已在等待中 |
 | `DELETE /api/admin/jobs` | `{ids: string[]}`（1–200，去重；**仅非进行中** DONE / FAILED / CANCELLED 可删） | `200 {deleted, skipped[]}`：`skipped` = `{id, reason}`（进行中 / 不存在），不整体失败；只删任务行，产物与 `hls_keys` 不动 | `400` 参数不合法或空数组；`500` |
-| `POST /api/admin/jobs/{id}/restart` | — | `200 {id, status:"QUEUED"}`（`attempts=0`、清 `cancel_requested_at` / 错误 / 租约）；仅 `FAILED` / `CANCELLED` 可重启 | `404`；`409` 不可重启 |
+| `POST /api/admin/jobs/{id}/restart` | — | `200 {id, status:"QUEUED"}`（`attempts=0`、清 `cancel_requested_at` / 错误 / 租约）；仅 `FAILED` / `CANCELLED` 可重启。`template_snapshot` 按**当前**模板与水印重建（2026-11-15，ADR-0014 补充）：模板 / 水印已删则沿用入队时快照；新模板配置非法 → `400`；CEK 轮换任务模板改不加密 → `409`。审计 detail 记 `snapshot: refreshed\|kept` | `404`；`400`；`409` 不可重启 |
 | `GET /api/admin/jobs/{id}/logs?after=<seq>` | 查询参数 `after`（上次拿到的 `log_seq`，缺省 0） | `200 {seq, tail}`：Worker 每 2s 覆盖写 `transcode_jobs.log_tail`（最近 48KB）并 `log_seq+1`；`seq` 未变时 `tail=null`（不重传文本）；`no-store` | `404` 任务不存在 |
 
 ---

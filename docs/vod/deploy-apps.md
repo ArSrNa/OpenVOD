@@ -175,10 +175,16 @@ CNB 云原生开发环境实测要点（2026-09-22）：
 | 构建worker（腾讯云CCR） | `web_trigger_worker_ccr` | `ccr.ccs.tencentyun.com/tcb-${CCR_UIN}-iydy/openvod:worker`（凭据取密钥仓库 `ccr.yaml`，见下） |
 | 构建player（Docker） | `web_trigger_player_docker` | `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/player:latest` |
 | 发布播放器SDK | `web_trigger_publish_sdk` | `openvod-jssdk` → npm 官方 + CNB npm 制品库（单测覆盖率上报 CNB 洞察） |
-| 打 tag 发版（worker + admin + delivery + player 一次构建） | `tag_push` | 四个镜像均推 `:latest` 与 `:<tag名>` 双标签（delivery 构建见 deploy-delivery.md）；**同批发布播放器 SDK** |
+| 打 tag 发版（只建有改动的镜像） | `tag_push` | 按本次 tag 相对上一个 tag 的改动，只重建 worker / admin / delivery / player 中受影响的那几个：重建的推 `:latest` 与 `:<tag名>` 双标签，未重建的由上一版 tag 复制成本次版本 tag；`packages/player-sdk` 有改动时同批发布播放器 SDK |
 
-`tag_push` 流水线（`$` 兜底分支）单流水线串行构建四个运行镜像，任一 stage 失败即中断、
-不留「半个版本」；产物同时保留 `:latest` 与本次 tag 两个标签，制品库可直接按 tag 回滚。
+`tag_push` 流水线（`$` 兜底分支）先算变更范围再决定建哪些镜像，任一构建 job 失败即中断、不留「半个版本」。
+路径分组写在 `scripts/ci/changed-scope.sh` 的 `WORKER_PATHS` / `ADMIN_PATHS` / `DELIVERY_PATHS` /
+`PLAYER_PATHS` / `SDK_PATHS`：改了某个镜像的依赖范围就改那里。没有上一个 tag（首次发版）或历史取不到时
+退化为全量构建，不静默跳过。产物仍保留 `:latest` 与本次 tag 两个标签，制品库可直接按 tag 回滚。
+
+版本号有一个已知连带：根 `package.json` 的 `version` 在构建期烘焙进 admin（页脚展示）与 delivery（`/v1/meta`），
+所以「只改了版本号」的一版仍会重建这两个镜像；不想连这也重建，把 `package.json` 从那两组路径里删掉即可，
+代价是这两个产物里的版本号停在各自上次构建时的值。
 
 ### 同步到腾讯云 CCR（`web_trigger_worker_ccr`）
 
@@ -247,9 +253,10 @@ worker 镜像含 `ffmpeg` 与 `fonts-noto-cjk`，层较大，首次推送耗时�
    - **Git LFS**：本仓库用 LFS 追踪 `videos/mv.mp4`（`.gitattributes`），CNB 检出会带 `git-lfs` 的 `pre-push`
      钩子。曾因镜像缺 `git-lfs` 直接 push 失败（`git-lfs was not found`）；现在 job 用开发镜像（内置 `git-lfs`），
      且推 tag 时显式 `--no-verify`——推 tag 只上传 tag 对象、不涉及任何 LFS 对象，跳过该钩子是安全的；
-3. tag 推送触发 `tag_push`：四个运行镜像（worker → admin → delivery → player）串行构建 + **独立 job**
+3. tag 推送触发 `tag_push`：先对比「上一个 tag → 本次 tag」的改动，只重建受影响的那几个运行镜像
+   （判断口径见 `scripts/ci/changed-scope.sh`；三镜像之外的 player 同规则），外加**独立流水线**
    发布播放器 SDK——单测覆盖率（`testing:coverage`，红线见 `.cnb.yml`）→ `bun packages/player-sdk/scripts/publish.ts --registry both`
-   发布到 npm 官方与 CNB 制品库；
+   发布到 npm 官方与 CNB 制品库（`packages/player-sdk` 无改动时整条跳过）；
 4. SDK 版本与 tag 同源：发布脚本读取同一个根 `package.json` 的 version，并校验 `CNB_BRANCH`（tag 名）与之一致，
    不一致直接拒绝发布（防「tag 与内容不匹配」的错版）；
 5. 令牌：`NPM_TOKEN` 由密钥仓库 `arsrna/env` 的 `npm.yml` 注入；CNB 制品库用内置 `CNB_TOKEN`，

@@ -16,6 +16,7 @@ import {
   DeleteOutlined,
   EditOutlined,
   FontSizeOutlined,
+  FormOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
   SyncOutlined,
@@ -39,8 +40,12 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { fetchSubtitleVtt } from "@/lib/subtitle-client";
+import { parseVttDocument } from "@/lib/vtt-cues";
+import { SubtitleContentEditor } from "./SubtitleContentEditor";
 import { useTableBodyHeight } from "./tableScroll";
 import { VideoPreviewPlayer } from "./VideoPreviewPlayer";
+import type { PreviewTimelineCue } from "./PreviewTimeline";
 
 interface SubtitleTrack {
   id: string;
@@ -127,6 +132,11 @@ export function SubtitleTracksPanel({ mediaId, mediaTitle, onChanged }: Subtitle
 
   // 字幕预览：original 原视频 + 该轨道字幕（Video.js 原生外挂 track；与媒资预览同一皮肤）
   const [preview, setPreview] = useState<SubtitleTrack | null>(null);
+  // 预览时间轴的条目（随预览一起取该轨道 VTT 解析；取不到时时间轴只有标尺与游标）
+  const [previewCues, setPreviewCues] = useState<PreviewTimelineCue[]>([]);
+
+  // 字幕文本编辑弹窗（spec.md §7.6）
+  const [contentTarget, setContentTarget] = useState<SubtitleTrack | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -147,6 +157,24 @@ export function SubtitleTracksPanel({ mediaId, mediaTitle, onChanged }: Subtitle
   useEffect(() => {
     void load();
   }, [load]);
+
+  // ---- 预览（原视频 + 该轨字幕 + 时间轴） ----
+  // 连点不同轨道时只采用最后一次请求的结果
+  const previewSeq = useRef(0);
+  const openPreview = useCallback(
+    async (track: SubtitleTrack) => {
+      const seq = (previewSeq.current += 1);
+      setPreview(track);
+      setPreviewCues([]);
+      try {
+        const doc = parseVttDocument(await fetchSubtitleVtt(mediaId, track.id));
+        if (previewSeq.current === seq) setPreviewCues(doc.cues);
+      } catch {
+        // 字幕取不到时播放器仍可预览原视频（<track> 自己会报错）；时间轴退化为空
+      }
+    },
+    [mediaId],
+  );
 
   // ---- 上传（POST，spec.md §7.4） ----
   const handleUpload = async () => {
@@ -289,14 +317,28 @@ export function SubtitleTracksPanel({ mediaId, mediaTitle, onChanged }: Subtitle
       key: "lang",
       width: 200,
       render: (_, t) => (
-        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
           <Space size={6}>
             <Tag color="geekblue" style={{ marginInlineEnd: 0 }}>
               {t.lang}
             </Tag>
             {t.is_default ? <Tag color="green">默认</Tag> : null}
           </Space>
-          <Typography.Text ellipsis={{ tooltip: t.label }}>{t.label}</Typography.Text>
+          {/* 编辑语言与展示名就放在展示名后面：入口贴近被改的内容，操作列只留播放 / 正文 / 替换 / 删除 */}
+          <div style={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
+            <Typography.Text ellipsis={{ tooltip: t.label }} style={{ minWidth: 0 }}>
+              {t.label}
+            </Typography.Text>
+            <Tooltip title="编辑语言与展示名">
+              <Button
+                type="text"
+                size="small"
+                icon={<EditOutlined />}
+                aria-label="编辑语言与展示名"
+                onClick={() => openEdit(t)}
+              />
+            </Tooltip>
+          </div>
         </div>
       ),
     },
@@ -357,25 +399,31 @@ export function SubtitleTracksPanel({ mediaId, mediaTitle, onChanged }: Subtitle
     {
       title: "操作",
       key: "ops",
-      width: 320,
+      width: 400,
       render: (_, t) => (
         <Space size={0}>
-          <Tooltip title={t.storage_ok === false ? "字幕对象缺失，无法预览" : "原视频 + 该字幕"}>
+          <Button
+            type="link"
+            size="small"
+            icon={<PlayCircleOutlined />}
+            disabled={t.storage_ok === false}
+            onClick={() => void openPreview(t)}
+          >
+            预览
+          </Button>
+          <Tooltip title={t.storage_ok === false ? "字幕对象缺失，无法按条目编辑" : "逐条改时间轴与正文"}>
             <span>
               <Button
                 type="link"
                 size="small"
-                icon={<PlayCircleOutlined />}
+                icon={<FormOutlined />}
                 disabled={t.storage_ok === false}
-                onClick={() => setPreview(t)}
+                onClick={() => setContentTarget(t)}
               >
-                预览
+                编辑字幕
               </Button>
             </span>
           </Tooltip>
-          <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openEdit(t)}>
-            编辑
-          </Button>
           <Upload
             accept=".vtt,.srt,text/vtt"
             showUploadList={false}
@@ -428,7 +476,7 @@ export function SubtitleTracksPanel({ mediaId, mediaTitle, onChanged }: Subtitle
           loading={loading}
           size="small"
           pagination={false}
-          scroll={{ x: 1095, y: bodyHeight }}
+          scroll={{ x: 1175, y: bodyHeight }}
           locale={{
             emptyText: (
               <Typography.Text type="secondary">
@@ -448,37 +496,37 @@ export function SubtitleTracksPanel({ mediaId, mediaTitle, onChanged }: Subtitle
       <Modal
         open={preview !== null}
         title={`字幕预览：${preview?.label ?? ""}${preview ? `（${preview.lang}）` : ""}`}
-        width={880}
+        width={960}
         footer={null}
         onCancel={() => setPreview(null)}
         destroyOnHidden
       >
         {preview && (
-          <>
-            <VideoPreviewPlayer
-              src={`/api/admin/media/${mediaId}/original`}
-              subtitles={[
-                {
-                  src: `/api/admin/media/${mediaId}/subtitles/${preview.id}/content`,
-                  lang: preview.lang,
-                  label: preview.label,
-                  default: true,
-                },
-              ]}
-            />
-            <Typography.Paragraph
-              type="secondary"
-              style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}
-            >
-              播放的是 <Typography.Text code>original/{mediaId}</Typography.Text> 原视频；字幕为该轨道
-              {" "}
-              <Typography.Text code>{preview.storage_key}</Typography.Text>
-              （原生外挂轨道，可在播放器字幕菜单切换 / 关闭）。转码产物的加密播放请到「媒资管理 →
-              产物列表 → 播放」。
-            </Typography.Paragraph>
-          </>
+          <VideoPreviewPlayer
+            src={`/api/admin/media/${mediaId}/original`}
+            cues={previewCues}
+            subtitles={[
+              {
+                src: `/api/admin/media/${mediaId}/subtitles/${preview.id}/content`,
+                lang: preview.lang,
+                label: preview.label,
+                default: true,
+              },
+            ]}
+          />
         )}
       </Modal>
+
+      {/* 字幕文本编辑（spec.md §7.6）：按条目改时间轴与正文，保存即就地覆盖同一对象 */}
+      <SubtitleContentEditor
+        mediaId={mediaId}
+        target={contentTarget}
+        onClose={() => setContentTarget(null)}
+        onSaved={() => {
+          void load();
+          onChanged?.();
+        }}
+      />
 
       {/* 上传：选文件 + 语言 + 展示名 + 是否默认 */}
       <Modal

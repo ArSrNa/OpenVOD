@@ -37,4 +37,8 @@
 - `new PrismaClient()` 必须带 `adapter`：测试或脚本里自建客户端走 `@openvod/db` 导出的 `createSQLiteAdapter()`，保证时间戳格式只有一处定义。
 - 客户端改为 ESM-only：admin（Next 16）与 worker（Bun）已验证；将来若有 CJS 消费者，需在 generator 里设 `moduleFormat`。
 - 单例在多个测试文件共享同一进程时会串味（先绑到 mysql 的客户端被后续 sqlite 用例复用）：新增 `resetDb()` 供测试在设好 env 后重建。
+- **构造即读 `DATABASE_URL`**（2026-11-15 实测）：v6 的 `new PrismaClient()` 缺 URL 也能构造（连接时才用），v7 的 adapter 在构造时就抛
+  `DATABASE_URL 未配置`。admin 多个 lib 在模块顶层 `const db = getDb()`，`next build` 的 collect page data 会 import 它们 →
+  没有 env 的构建环境（Docker）直接失败。镜像里以占位值构建（见 deploy-apps.md「待办与待验证」），
+  新代码不要在模块顶层取 `getDb()`，用 `const db = () => getDb<any>()`（`lib/users.ts` / `lib/subtitles.ts` 即此写法）。
 - Prisma 8 转正后需重新评估一次（MySQL / SQLite 状态、contract 格式迁移成本），另开 ADR。

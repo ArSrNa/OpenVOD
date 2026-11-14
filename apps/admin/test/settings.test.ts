@@ -3,7 +3,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PrismaClient } from "../../../packages/db/generated/sqlite";
+import { createSQLiteAdapter } from "@openvod/db";
+import { PrismaClient } from "../../../packages/db/generated/sqlite/client";
 import { wrap, unwrap } from "@openvod/crypto";
 import { checkSettingsOrigin, readSettingsEditor, saveSettingsEditor, settingsRequestBody, type SettingsDatabase, type SettingsEditorDeps } from "../src/lib/settings-editor";
 import { normalizeSettingValue, SettingsError } from "../src/lib/settings";
@@ -27,12 +28,14 @@ beforeAll(async () => {
   const path = join(directory, "test.db");
   await writeFile(path, "");
   const url = `file:${path}`;
-  const proc = Bun.spawn([process.execPath, "--no-env-file", fileURLToPath(new URL("../../../packages/db/node_modules/prisma/build/index.js", import.meta.url)), "db", "push", "--skip-generate", "--schema", fileURLToPath(new URL("../../../packages/db/prisma/schema.sqlite.prisma", import.meta.url))], {
+  // cwd 必须是 packages/db：Prisma 7 CLI 从 CWD 发现 prisma.config.ts（datasource URL 在那里）
+  const proc = Bun.spawn([process.execPath, "--no-env-file", fileURLToPath(new URL("../../../packages/db/node_modules/prisma/build/index.js", import.meta.url)), "db", "push", "--schema", "prisma/schema.sqlite.prisma"], {
+    cwd: fileURLToPath(new URL("../../../packages/db/", import.meta.url)),
     env: { ...process.env, DATABASE_URL: url }, stdout: "pipe", stderr: "pipe",
   });
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   if (code !== 0) throw new Error(`SQLite setup failed: ${out}\n${err}`);
-  db = new PrismaClient({ datasourceUrl: url });
+  db = new PrismaClient({ adapter: createSQLiteAdapter(url) });
 });
 beforeEach(async () => { await db.systemSetting.deleteMany(); await db.auditLog.deleteMany(); invalidations = 0; });
 afterAll(async () => { await db?.$disconnect(); if (directory) await rm(directory, { recursive: true, force: true }); });

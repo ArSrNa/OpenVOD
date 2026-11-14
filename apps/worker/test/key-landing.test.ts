@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDecipheriv } from "node:crypto";
 import { openMediaKey, parseMasterKeys, pickWrappingMasterKey } from "@openvod/crypto";
-import { getDb } from "@openvod/db";
+import { getDb, resetDb } from "@openvod/db";
 import { cleanupJobDir, keyUriPlaceholder, writeKeyFiles } from "../src/key-files";
 import { generateMediaKey, persistMediaKey } from "../src/media-keys";
 import {
@@ -107,6 +107,8 @@ describe("② Prisma 存储：每媒资一份整行替换", () => {
   beforeAll(() => {
     raw = new Database(dbPath);
     raw.exec(DDL);
+    // 其他测试文件可能已在模块加载时按 .env（mysql）绑定过单例，这里按本文件的 sqlite env 重建
+    resetDb();
   });
 
   afterAll(async () => {

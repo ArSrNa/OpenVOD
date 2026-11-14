@@ -61,10 +61,9 @@ task image:player     # docker build -f apps/player/Dockerfile -t openvod-player
    Dockerfile 在**构建期** `test -f` 三份字体（缺则构建失败），Worker 启动时再自检一次并**告警不退出**——
    因为 `drawtext` 的 `fontfile` 不存在时 ffmpeg 不报错而是静默回退系统默认字体，中文会渲染成豆腐块而任务仍报成功。
    自建镜像若裁掉了字体，必须同步改 `WATERMARK_FONT_DIR`（`@openvod/shared`）与映射。
-5. **admin 镜像的构建与运行阶段都必须装 openssl**（2026-09-22 实测踩坑）：Prisma 生成客户端时按检测到的
-   libssl 选择查询引擎——构建阶段缺 openssl 会退化为 `debian-openssl-1.1.x`，与运行阶段（bookworm libssl3）
-   不匹配，启动报 `generated for "debian-openssl-1.1.x", but the actual deployment required "debian-openssl-3.0.x"`，
-   `/healthz` 变 `db:false`。两阶段都装 openssl 即对齐（worker 基于 Debian 全量环境，无此问题）。
+5. **admin 镜像不再需要 openssl**（ADR-0020，2026-11-14）：Prisma 7 去掉了 Rust 查询引擎，
+   改由 `mariadb` / `libsql` 驱动连接，镜像只留 `ca-certificates`（供 HTTPS 校验）。
+   2026-09-22 那条「构建与运行阶段都装 openssl 对齐 libssl」的坑随引擎一起消失，不要再加回来。
 6. **admin 运行时必须带 ffmpeg（ffprobe）**（2026-11-13）：管理端「生成元数据」（spec.md §2.1）与
    「水印图片宽高探测」（spec.md §10.2）都在 **admin 进程内**就地跑 `ffprobe`，镜像里没有就整条功能 500
    「运行环境无法执行 ffprobe」。`apps/admin/Dockerfile` 在 **runtime 阶段** `apt-get install ffmpeg`，

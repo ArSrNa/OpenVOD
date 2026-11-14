@@ -8,10 +8,9 @@
 # 运行时为 **Node 22**（ADR-0013：next build + next start）；bun 只用于安装依赖与跑构建脚本。
 FROM node:22-bookworm-slim AS build
 
-# openssl 必须在**构建阶段**也存在：Prisma 生成客户端时按检测到的 libssl 选择查询引擎
-# （缺 openssl 会退化为 debian-openssl-1.1.x，与运行阶段（libssl3）不匹配 → 引擎加载失败、db:false）
+# Prisma 7 已移除 Rust 查询引擎，不再需要装 openssl（ADR-0020）；ca-certificates 供 HTTPS 校验
 RUN apt-get update \
- && apt-get install -y --no-install-recommends openssl ca-certificates \
+ && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  && npm i -g bun@1
 WORKDIR /app
@@ -24,16 +23,12 @@ RUN bun run --cwd apps/admin build
 
 FROM node:22-bookworm-slim AS runtime
 
-# Prisma 查询引擎需要系统 openssl（bookworm 为 libssl3）：缺失时引擎报
-# "failed to detect the libssl/openssl version ... Defaulting to openssl-1.1.x"，
-# 存在引擎加载失败风险（worker 镜像基于 Debian 全量环境，无此问题）
-#
 # ffmpeg（含 ffprobe）是**管理端运行时硬依赖**（spec.md §2.1 / §10.2）：
 # 「生成元数据」与「水印图片宽高探测」都在 admin 进程内就地跑 ffprobe
 # （源片走 S3 预签名 URL 流，字节不进函数/内存）。镜像缺它 → 两个接口直接 500
 # 「运行环境无法执行 ffprobe」（2026-11-13 实报）。构建阶段不需要：next build 不探测。
 RUN apt-get update \
- && apt-get install -y --no-install-recommends openssl ca-certificates ffmpeg \
+ && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
  && rm -rf /var/lib/apt/lists/* \
  && ffprobe -version > /dev/null
 

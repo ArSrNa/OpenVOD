@@ -2,13 +2,12 @@
 // 双方言纪律：本文件的 enum/model 段必须与 schema.sqlite.prisma 逐字一致（bun --cwd packages/db run parity）
 
 generator client {
-  provider = "prisma-client-js"
+  provider = "prisma-client"
   output   = "../generated/mysql"
 }
 
 datasource db {
   provider = "mysql"
-  url      = env("DATABASE_URL")
 }
 
 enum UserStatus {

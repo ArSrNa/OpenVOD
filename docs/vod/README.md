@@ -72,10 +72,10 @@ flowchart LR
 | [ADR-0017](./decisions/0017-worker-deployment-modes.md) | Worker 部署双模式（常驻轮询 / HTTP 门铃）与 serverless 数据库适配 | 已接受 |
 | [ADR-0018](./decisions/0018-watermark-templates.md) | 水印管理（模板落库 + watermark/ 分区 + ffmpeg 转码烧录） | 已接受 |
 | [ADR-0019](./decisions/0019-signing-mode-pluggable.md) | 资产 URL 签名方式可插拔（S3 预签名 / CDN URL 鉴权 + 自定义提供者） | 已接受（设计定稿，未实现） |
-| [ADR-0020](./decisions/0020-orm-migrate-to-drizzle.md) | ORM 长远目标迁至 Drizzle（未来计划，暂不执行） | 提议（未来计划） |
+| [ADR-0020](./decisions/0020-prisma-7-driver-adapters.md) | Prisma 7.10.1 + 驱动适配器（MySQL / SQLite 双方言） | 已接受 |
 | [ADR-0021](./decisions/0021-media-product-visibility-and-default.md) | 媒资级转码产物展示与默认产物 | 已接受 |
 
-状态语义：**已接受** = 用户已拍板，或沿用仓库既有决策（开发镜像 / 前期文档）；**提议（待复核）** = 本文档给出的推荐方案，specification 前需确认；**提议（未来计划）** = 方向已定但前置条件未触发，暂不执行（当前仅 ADR-0020）。
+状态语义：**已接受** = 用户已拍板，或沿用仓库既有决策（开发镜像 / 前期文档）；**提议（待复核）** = 本文档给出的推荐方案，specification 前需确认。
 
 ## 术语表
 

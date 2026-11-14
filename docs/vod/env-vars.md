@@ -164,7 +164,7 @@ STORAGE_CDN_BASE_URL=""               # 加速域名（可选）
 
 | 变量 | 必填 | 默认 | 说明 |
 |---|---|---|---|
-| `DATABASE_URL` | **是** | 无 | Prisma 连接串（`packages/db/prisma` 的 `datasource.url = env("DATABASE_URL")`）。生产 MySQL，开发可 SQLite `file:./dev.db` |
+| `DATABASE_URL` | **是** | 无 | Prisma 连接串（Prisma 7 起由 `packages/db/prisma.config.ts` 的 `datasource.url` 读取，不再写在 schema 里）。生产 MySQL，开发可 SQLite `file:./dev.db` |
 | `DB_PROVIDER` | 否 | `mysql` | `mysql` \| `sqlite`，决定实例化哪份 Prisma 客户端（`@openvod/db`） |
 | `MASTER_KEYS` | **加密任务必填** | 无 | 加密封装 CEK 的 MK。缺失时启动自检告警，**加密模板任务将失败**（未加密模板不受影响） |
 | `DELIVERY_PUBLIC_BASE_URL` | 否 | 内建占位 | 转码期写 `key_info` 的密钥 URI 占位基址（ADR-0006 §2/§3）；应与 delivery 同值 |

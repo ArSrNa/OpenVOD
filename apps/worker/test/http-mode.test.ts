@@ -138,6 +138,41 @@ test("drain 期间到达的 job_ids 不丢：合并到下一轮", async () => {
   }
 });
 
+test("awaitDrain：/wake 等任务跑完才 200，并发唤醒共享同一轮", async () => {
+  let release = () => {};
+  const gate = new Promise<void>((r) => (release = r));
+  let finished = 0;
+  const worker = createHttpWorker({
+    port: 0,
+    notifySecret: SECRET,
+    awaitDrain: true,
+    onWake: async () => {
+      await gate;
+      finished++;
+    },
+  });
+  await worker.start();
+  try {
+    const url = `http://127.0.0.1:${worker.port()}`;
+    const post = () => fetch(`${url}/wake`, { method: "POST", headers: { authorization: `Bearer ${SECRET}` } });
+    const first = post();
+    await Bun.sleep(10);
+    expect(finished).toBe(0); // 任务未结束，响应不能先返回（否则平台会冻结实例）
+    const second = post(); // drain 期间再来一次唤醒：也应等到同一轮结束
+    await Bun.sleep(10);
+    release();
+    for (const res of await Promise.all([first, second])) {
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ accepted: true, done: true });
+    }
+    expect(finished).toBe(1);
+    expect(worker.isDraining()).toBe(false);
+  } finally {
+    release();
+    await worker.stop();
+  }
+});
+
 test("healthz 与未知路径", async () => {
   const h = await start();
   try {

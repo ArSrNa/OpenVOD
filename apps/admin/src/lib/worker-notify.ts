@@ -47,7 +47,8 @@ export async function postWorkerWake(deps: {
       ...(body ? { body } : {}),
       signal: AbortSignal.timeout(deps.timeoutMs ?? 10_000),
     });
-    if (res.status === 202) return { notified: true };
+    // 202 = 异步受理（立即返回）；200 = 同步等待模式（WORKER_WAKE_SYNC，worker 已把任务跑完）
+    if (res.ok) return { notified: true };
     return { notified: false, reason: `worker 返回 ${res.status}` };
   } catch (e) {
     return { notified: false, reason: (e as Error).message };

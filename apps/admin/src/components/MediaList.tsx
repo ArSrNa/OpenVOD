@@ -4,8 +4,8 @@
 // 上传原视频 → 跳转独立上传页 /media/upload（2026-10-01 起，spec.md §9，本页不再内联上传）；
 // 预览（弹窗播放 original）/ 详情 / 重命名 / 删除 / 设置封面（双模式：手动上传 / 视频截帧，spec.md §2.3） / 生成元数据（ffprobe）；
 // 「更多 → 转码」已实现（M2：选转码模板入队 transcode_jobs，Worker 认领执行，进度见「转码任务」页）；
-// 转码产物：按模板的产物列表（抽屉）→ **解密播放**（走分发端签名链路，管理端不出密钥，spec.md §6）
-// 与**按模板删除**（只删该模板子树，spec.md §5.5）；
+// 转码产物：按模板的产物列表（抽屉）→ **解密播放**（走分发端签名链路，管理端不出密钥，spec.md §6）、
+// **按模板删除**（只删该模板子树，spec.md §5.5）与**播放端展示 / 默认产物**设置（spec.md §6.3/§11.1）；
 // 「更多 → 字幕管理」打开字幕管理抽屉（M4，spec.md §7 / SubtitleManager）；
 // 「更多 → 分类、描述与标签」/ 详情弹窗 → 自定义元数据编辑（分类 / **视频描述** / 标签，spec.md §8；分类树在 /categories 维护）。
 // 「更多 → 修改上传时间」/ 详情弹窗 → 自定义上传时间（spec.md §3.1：管理端展示 + 分发端列表排序第二级回退，可恢复默认）。
@@ -42,6 +42,7 @@ import {
   Popconfirm,
   Select,
   Space,
+  Switch,
   Table,
   Tabs,
   Tag,
@@ -55,6 +56,11 @@ import dayjs, { type Dayjs } from "dayjs";
 import { useRouter } from "next/navigation";
 import { buildCategoryTree, type CategoryTreeNode } from "@/lib/category-tree";
 import { formatSize } from "@/lib/format";
+import {
+  serializeMediaProductSettings,
+  setDefaultProduct,
+  toggleProductVisibility,
+} from "@/lib/media-product-settings";
 import { PRODUCT_LEGACY_ID } from "@/lib/media-products";
 import { uploadViaXhr, UploadUnauthorizedError } from "@/lib/xhr-upload";
 import { CoverFrameCapture } from "./CoverFrameCapture";
@@ -73,6 +79,18 @@ interface MediaProduct {
   objects: number;
   bytes: number;
   variants: string[];
+  /** 对播放端展示（详情接口计算；旧布局不参与） */
+  isVisible?: boolean;
+  /** 媒资级默认产物（详情接口计算；未设置时由分发端回退全局默认） */
+  isDefault?: boolean;
+}
+
+/** 媒资级产物展示与默认设置（API 形态，spec.md §6.3/§11.1） */
+interface MediaProductSettingsDTO {
+  /** 对播放端展示的模板 ID 白名单；null = 全部展示 */
+  visible_template_ids: string[] | null;
+  /** 进入后默认加载的模板产物；null = 未设置（回退全局默认模板 → 列表首项） */
+  default_template_id: string | null;
 }
 
 /** 自定义元数据里的分类引用（含路径快照，spec.md §8.3） */
@@ -130,6 +148,8 @@ interface MediaDetail {
   sourceKey: string | null;
   assets: { proceed: number; cover: number; metadata: number };
   products: MediaProduct[];
+  /** 媒资级产物展示与默认设置（spec.md §6.3/§11.1） */
+  productSettings: MediaProductSettingsDTO;
 }
 
 /** 分类选项（TreeSelect 用；来自 /api/admin/categories 扁平列表） */
@@ -680,6 +700,7 @@ export function MediaList() {
   const [productsTarget, setProductsTarget] = useState<{ id: string; title: string | null } | null>(null);
   const [productsDetail, setProductsDetail] = useState<MediaDetail | null>(null);
   const [productsLoading, setProductsLoading] = useState(false);
+  const [productSettingsSaving, setProductSettingsSaving] = useState(false);
   const [playLoadingKey, setPlayLoadingKey] = useState<string | null>(null);
   const [playing, setPlaying] = useState<{
     title: string;
@@ -711,6 +732,79 @@ export function MediaList() {
     setProductsTarget(record);
     setProductsDetail(null);
     void loadProducts(record.id);
+  };
+
+  // ---- 播放端展示 / 默认产物（spec.md §6.3/§11.1）：只改设置，不删产物、不改鉴权 ----
+  const productSettingsState = (detail: MediaDetail | null) => ({
+    visibleTemplateIds: detail?.productSettings?.visible_template_ids ?? null,
+    defaultTemplateId: detail?.productSettings?.default_template_id ?? null,
+  });
+  const allTemplateProductIds = (detail: MediaDetail | null): string[] =>
+    (detail?.products ?? []).map((p) => p.templateId).filter(Boolean);
+
+  const saveProductSettings = async (
+    next: { visible_template_ids: string[] | null; default_template_id: string | null },
+    successMessage: string,
+  ) => {
+    const target = productsTarget;
+    if (!target) return;
+    setProductSettingsSaving(true);
+    try {
+      await fetchJson(`/api/admin/media/${target.id}/product-settings`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(next),
+      });
+      message.success(successMessage);
+      await loadProducts(target.id);
+    } catch (e) {
+      if ((e as Error).message !== "未登录") {
+        message.error(e instanceof Error ? e.message : "保存产物设置失败");
+      }
+    } finally {
+      setProductSettingsSaving(false);
+    }
+  };
+
+  const handleToggleProductVisible = (p: MediaProduct, checked: boolean) => {
+    const next = toggleProductVisibility(
+      productSettingsState(productsDetail),
+      allTemplateProductIds(productsDetail),
+      p.templateId,
+      checked,
+    );
+    if (!next) {
+      message.warning("至少保留一套对播放端展示的产物");
+      return;
+    }
+    void saveProductSettings(
+      serializeMediaProductSettings(next),
+      checked ? `已对播放端展示「${productLabel(p)}」` : `已隐藏「${productLabel(p)}」`,
+    );
+  };
+
+  const handleSetDefaultProduct = (p: MediaProduct) => {
+    const next = setDefaultProduct(
+      productSettingsState(productsDetail),
+      allTemplateProductIds(productsDetail),
+      p.templateId,
+    );
+    if (!next) {
+      message.warning("先把这套产物设为对播放端展示");
+      return;
+    }
+    void saveProductSettings(
+      serializeMediaProductSettings(next),
+      `默认产物已设为「${productLabel(p)}」`,
+    );
+  };
+
+  const handleClearDefaultProduct = () => {
+    const current = productSettingsState(productsDetail);
+    void saveProductSettings(
+      serializeMediaProductSettings({ ...current, defaultTemplateId: null }),
+      "已取消默认产物（回退全局默认）",
+    );
   };
 
   const handleDeleteProduct = (p: MediaProduct) => {
@@ -808,15 +902,60 @@ export function MediaList() {
     {
       title: "变体",
       dataIndex: "variants",
-      width: 100,
+      width: 90,
       render: (variants: string[]) => (variants.length ? variants.join(" / ") : "—"),
     },
-    { title: "对象数", dataIndex: "objects", width: 80 },
-    { title: "体积", dataIndex: "bytes", width: 110, render: (bytes: number) => formatSize(bytes) },
+    { title: "对象数", dataIndex: "objects", width: 70 },
+    { title: "体积", dataIndex: "bytes", width: 90, render: (bytes: number) => formatSize(bytes) },
+    {
+      // 播放端展示（spec.md §6.3/§11.1）：关闭后 SDK 的 templates[] 不再返回该产物
+      title: "播放端",
+      key: "visible",
+      width: 80,
+      render: (_, p) =>
+        p.templateId ? (
+          <Switch
+            size="small"
+            checked={p.isVisible ?? true}
+            loading={productSettingsSaving}
+            onChange={(checked) => handleToggleProductVisible(p, checked)}
+          />
+        ) : (
+          <Tooltip title="旧布局产物不参与播放端展示">
+            <Switch size="small" disabled />
+          </Tooltip>
+        ),
+    },
+    {
+      // 媒资级默认产物：必须处于展示范围；未设置时回退全局默认模板 → 列表首项
+      title: "默认",
+      key: "isDefault",
+      width: 90,
+      render: (_, p) => {
+        if (!p.templateId) return "—";
+        if (p.isDefault) {
+          return (
+            <Tag color="gold" style={{ marginInlineEnd: 0 }}>
+              默认
+            </Tag>
+          );
+        }
+        return (
+          <Button
+            type="link"
+            size="small"
+            disabled={!p.isVisible || productSettingsSaving}
+            onClick={() => handleSetDefaultProduct(p)}
+          >
+            设为默认
+          </Button>
+        );
+      },
+    },
     {
       title: "操作",
       key: "ops",
-      width: 160,
+      width: 150,
       render: (_, p) => {
         const key = p.templateId || PRODUCT_LEGACY_ID;
         return (
@@ -1581,7 +1720,7 @@ export function MediaList() {
       {/* 转码产物列表（按模板）：播放（分发端签名链路，浏览器本地解密）/ 按模板删除（spec.md §1.3/§5.5/§6） */}
       <Drawer
         open={productsTarget !== null}
-        width={780}
+        width={880}
         title={`转码产物：${productsTarget?.title ?? productsTarget?.id ?? ""}`}
         onClose={() => setProductsTarget(null)}
         destroyOnHidden
@@ -1606,6 +1745,19 @@ export function MediaList() {
           scroll={{ y: "calc(100vh - 320px)" }}
           locale={{ emptyText: <Empty description="尚无转码产物，请在「更多 → 转码」发起" /> }}
         />
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 12, marginBottom: 0 }}>
+          播放端只看到开启展示的产物；未指定清晰度时加载默认产物（未设置则用全局默认模板，再取列表首项）。
+          {productsDetail?.productSettings?.default_template_id && (
+            <Button
+              type="link"
+              size="small"
+              disabled={productSettingsSaving}
+              onClick={handleClearDefaultProduct}
+            >
+              取消默认产物
+            </Button>
+          )}
+        </Typography.Paragraph>
         {/* <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 12, marginBottom: 0 }}>
           播放：管理端只向分发端换一个签名主清单 URL，清单 / 密钥 / 分片直达浏览器——
           明文密钥（CEK）只由分发端下发、浏览器本地解密。若画面不加载：多为分发端 CORS

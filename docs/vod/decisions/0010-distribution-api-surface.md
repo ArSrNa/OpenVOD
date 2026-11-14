@@ -33,7 +33,7 @@
 ### 关键行为约定
 
 - `play` 幂等：同用户同媒资未过期且未吊销会话默认复用（`force_new=true` 强制新建）；并发上限命中 → 409 `session_limit`；媒资非 READY → 409 `not_playable`。
-- 模板产物选择（ADR-0014）：`template_id` 显式指定 / 缺省自动（唯一产物 → 直接用；多套 → `transcode_templates.is_default`；无法唯一确定 → 409 列出可选值）；空串 = 显式请求旧布局产物。
+- 模板产物选择（ADR-0014）：`template_id` 显式指定 / 缺省自动（唯一产物 → 直接用；多套 → `transcode_templates.is_default`；无法唯一确定 → 409 列出可选值）；空串 = 显式请求旧布局产物。**2026-11-15 修订（ADR-0021）**：多套且无默认不再 409（ADR-0014 之后的 2026-10-13 修订已改），且缺省自动的优先级为媒资级默认 → 全局默认 → 排序首项；`templates[]` 只列对播放端展示的产物。
 - m3u8 改写实现：分发端从存储读清单文本 → 行级改写（`EXT-X-KEY` URI、分片行）→ 注入 token 输出；响应体须 ≤6MB（平台 body 上限，极长视频策略见 open-questions #12）。
 - token 传递以 query `t` 为主、header `X-Playback-Token` 兜底（Safari 原生只能走 query）；所有播放资源请求每请求查库校验会话（比 ADR-0006 §6 的 60s 收敛更严格）。
 - 限频：登录与 play 按 IP + 用户维度简单限频（进程内 / DB 计数，v1 无 Redis）——**未实现**（`rate_limited` 为契约保留码）。

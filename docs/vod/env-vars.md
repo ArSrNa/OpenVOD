@@ -139,6 +139,7 @@ DELIVERY_PUBLIC_BASE_URL=""
 WORKER_MODE="resident"           # resident = 常驻轮询；http = HTTP 门铃；invoked = 异步云函数单任务触发
 WORKER_HTTP_PORT="9001"          # http / invoked 模式监听端口
 WORKER_IDLE_EXIT_MINUTES="0"     # 空闲退出分钟数；0 = 不退出（invoked 建议 1~5）
+WORKER_WAKE_SYNC="0"             # 1 = /wake 等任务跑完再响应（SCF Web 函数必开；需配合平台「异步执行」）
 WORKER_JOBS_ROOT=""              # 任务临时目录根；invoked 必填 CFS/NAS 挂载点，空 = os.tmpdir()/openvod-jobs
 WORKER_POLL_INTERVAL_MS="2000"   # 轮询间隔（毫秒，仅 resident 模式）
 WORKER_LEASE_MS="60000"          # 任务 lease 时长（执行期按 1/3 续期，崩溃后过期重派）

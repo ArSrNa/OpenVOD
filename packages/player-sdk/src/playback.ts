@@ -160,7 +160,7 @@ function sanitizeTemplates(value: unknown): PlaybackTemplate[] {
     out.push({
       id: raw.id,
       name: typeof raw.name === "string" ? raw.name : null,
-      is_default: raw.is_default === true,
+      is_default: raw.is_default === true, // 该媒资的有效默认产物（spec.md §6.3）
     });
   }
   return out;

@@ -16,6 +16,19 @@ worker 端口取决于 `WORKER_MODE`（ADR-0017）：`resident`（默认）无�
 `POST /wake` 触发认领（Bearer `WORKER_NOTIFY_SECRET`；载荷 `{job_ids}` 只被 `invoked` 消费，定向认领不扫队列），
 `GET /healthz` 供平台探活。镜像与 compose 均已内置模式感知 HEALTHCHECK（http / invoked 探 /healthz；resident 看进程）。
 
+### SCF WebServer 镜像函数（腾讯云，ADR-0017 §8）
+
+这套部署有四个不能省的配置，少任一项任务都会停在「排队中」：
+
+| 配置 | 值 | 原因 |
+|---|---|---|
+| `WORKER_HTTP_PORT` | `9000` | SCF 只把请求转发到容器 9000；默认 9001 时请求根本到不了 worker（调用日志 499 / Duration 0ms） |
+| 函数「异步执行」 | **创建时**开启 | 开启后调用方立即拿 RequestId、执行上限 900s → 24h；不开时 admin 的 5s 唤醒超时会切断请求并杀实例。创建后无法修改 |
+| `WORKER_WAKE_SYNC` | `1` | Web 函数响应一返回就冻结实例，必须让 `/wake` 等转码跑完再返回 |
+| `WORKER_JOBS_ROOT` | CFS 挂载点 | `/tmp` 只有 512MB，装不下源片 + 全档产物峰值 |
+
+另设 `WORKER_IDLE_EXIT_MINUTES=1~5`，任务跑完主动退出。超过 24h 的任务不在支持范围，改用常驻容器。
+
 ## 构建上下文必须是仓库根
 
 三个 app 都经 `workspace:*` 依赖 workspace 包，且直接消费其 **TS 源码**（admin 走 `transpilePackages`；

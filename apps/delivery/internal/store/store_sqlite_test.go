@@ -29,6 +29,7 @@ var sqliteDDL = []string{
 		status TEXT NOT NULL,
 		probe JSONB,
 		custom_data JSONB,
+		product_settings JSONB,
 		duration_ms INTEGER,
 		poster_key TEXT,
 		published_at DATETIME,
@@ -118,8 +119,8 @@ func seedPrismaRows(t *testing.T, db *sql.DB) {
 		`INSERT INTO users (id, username, password_hash, display_name, status, max_concurrent_sessions, last_login_at, created_at, updated_at)
 		 VALUES ('u1','alice','hash',NULL,'ACTIVE',3,1792231200000,1790000000000,1790000000000)`,
 		// m1 无 published_at → 用 uploaded_at；m2 published_at 更晚；m3 非 READY 不出现
-		`INSERT INTO media (id, title, status, probe, custom_data, duration_ms, poster_key, published_at, uploaded_at, created_at, updated_at)
-		 VALUES ('m1','旧片','READY','{"width":1920}','{"category":{"name":"其他"}}',60000,'cover/m1.jpg',NULL,1790000000000,1780000000000,1780000000000)`,
+		`INSERT INTO media (id, title, status, probe, custom_data, product_settings, duration_ms, poster_key, published_at, uploaded_at, created_at, updated_at)
+		 VALUES ('m1','旧片','READY','{"width":1920}','{"category":{"name":"其他"}}','{"visible_template_ids":["t1"],"default_template_id":"t1"}',60000,'cover/m1.jpg',NULL,1790000000000,1780000000000,1780000000000)`,
 		`INSERT INTO media (id, title, status, probe, custom_data, duration_ms, poster_key, published_at, uploaded_at, created_at, updated_at)
 		 VALUES ('m2','新片','READY',NULL,NULL,90000,NULL,1791000000000,NULL,1780000000000,1780000000000)`,
 		`INSERT INTO media (id, title, status, created_at, updated_at)
@@ -168,6 +169,9 @@ func TestSQLiteReadsPrismaRows(t *testing.T) {
 	}
 	if !m.CustomData.Valid || m.CustomData.String != `{"category":{"name":"其他"}}` {
 		t.Fatalf("custom_data=%+v", m.CustomData)
+	}
+	if !m.ProductSettings.Valid || !strings.Contains(m.ProductSettings.String, `"default_template_id":"t1"`) {
+		t.Fatalf("product_settings=%+v（媒资级产物设置应能读出）", m.ProductSettings)
 	}
 
 	ready, err := st.ListReady(ctx, 10)

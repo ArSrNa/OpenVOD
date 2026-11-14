@@ -4,6 +4,7 @@
 - 日期：2026-09-24
 - 修订：2026-11-13 —— 增加第三模式 `invoked`（异步云函数单任务触发）与任务日志尾部通道，见 §6
 - 修订：2026-11-14 —— admin 侧唤醒改为**限时 await**（原 `void` fire-and-forget 在 serverless admin 上会随响应冻结丢掉外呼，任务入队但函数永不拉起），见 §7
+- 修订：2026-11-14 —— 新增**同步唤醒**（`WORKER_WAKE_SYNC`）：`/wake` 等 drain 跑完再响应，适配 SCF WebServer 镜像函数这类「响应即事件结束」的平台，见 §8
 - 关联：ADR-0008（转码流水线，本 ADR 修订其「常驻容器」前提）、ADR-0003（部署目标）、ADR-0004（数据库与 ORM）、ADR-0011（部署拓扑）、ADR-0015（环境变量与系统设置边界）、spec.md §5.1
 
 ## 背景
@@ -119,3 +120,25 @@ P0 边界重申：**转码禁止上「请求-响应型函数」**（SCF / EdgeOn
 - **改动**：三处改为 `await notifyWorkerWake(...)`；`notifyWorkerWake` 新增 `timeoutMs`（默认 `DEFAULT_WAKE_TIMEOUT_MS = 5000`），超时按「未送达」告警返回，业务响应仍是 202。多模板提交仍逐任务各发一次，总等待仍受单次超时约束（并行发出）。
 - **语义不变**：通知依旧可丢——唤醒失败只影响「何时开跑」，不影响任务事实（DB 兜底 + 人工重启）。
 - **测试**：`worker-notify.test.ts` 增补「不可达地址按上限返回未送达」用例。
+
+## 实现记录（2026-11-14，同步唤醒：SCF WebServer 镜像函数）
+
+问题：worker 部署到 SCF WebServer 镜像函数后，任务永远停在 `QUEUED`。调用日志 `Request was canceled by client` / `statusCode 499` / `Duration 0ms`，worker 侧没有「认领任务」。两个硬约束叠加：
+
+- SCF 镜像函数把请求转发到容器**固定 9000**，worker 默认监听 9001 → 请求进不来（这也解释了 0ms：失败发生在平台转发层）；
+- Web 函数的实例存活期 = 一次请求的响应周期，`/wake` 立即 202 就结束了这次调用，平台冻结实例，后台 drain 里的 ffmpeg 停摆。
+
+改动：
+
+- `createHttpWorker` 新增 `awaitDrain`（env `WORKER_WAKE_SYNC=1`）：`/wake` 等本轮 + 收尾窗口内的唤醒全部跑完才返回 200（`{accepted:true,done:true}`）；并用 `server.timeout(req, 0)` 关闭该请求的 Bun 空闲超时（默认 10s、上限 255s，都撑不住一次转码）。
+- admin 的成功判定从「恰好 202」放宽为 2xx（200 = 同步完成，202 = 异步受理）。
+- 默认仍是 202：常驻容器 / 能后台执行的门铃平台行为不变。
+
+部署侧配套（缺一不可）：
+
+1. `WORKER_HTTP_PORT=9000`（SCF 硬要求，改不了）；
+2. 函数**创建时**勾选「异步执行」——创建后不可改。开启后调用方立即拿 RequestId、函数执行上限从 900s 提到 24h；不开启则 admin 的 5s 超时会切断请求，SCF 记 499 并终止实例；
+3. `WORKER_JOBS_ROOT` 指向 CFS 挂载点（`/tmp` 只有 512MB，装不下源片 + 全档产物）；
+4. `WORKER_IDLE_EXIT_MINUTES=1~5`，任务跑完主动退出，避免按进程存活计费。
+
+边界：这条路径本质仍是「请求-响应型函数跑转码」，只是用异步执行把响应期拉长到 24h。超出 24h 的任务、或平台不给 CFS 的场景，仍应回到常驻容器（`resident`）。

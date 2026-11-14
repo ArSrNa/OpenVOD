@@ -137,19 +137,20 @@ func (s *Store) TouchLastLogin(ctx context.Context, userID string, now time.Time
 // ---- media / 字幕 ----
 
 type Media struct {
-	ID         string         `db:"id"`
-	Title      string         `db:"title"`
-	Status     string         `db:"status"`
-	CustomData sql.NullString `db:"custom_data"`
-	DurationMs sql.NullInt64  `db:"duration_ms"`
-	PosterKey  sql.NullString `db:"poster_key"`
-	Probe      sql.NullString `db:"probe"`
+	ID              string         `db:"id"`
+	Title           string         `db:"title"`
+	Status          string         `db:"status"`
+	CustomData      sql.NullString `db:"custom_data"`
+	DurationMs      sql.NullInt64  `db:"duration_ms"`
+	PosterKey       sql.NullString `db:"poster_key"`
+	Probe           sql.NullString `db:"probe"`
+	ProductSettings sql.NullString `db:"product_settings"` // 播放端产物展示 / 默认（spec.md §6.3/§11.1）
 }
 
 func (s *Store) MediaByID(ctx context.Context, id string) (*Media, error) {
 	var m Media
 	err := s.db.GetContext(ctx, &m,
-		`SELECT id, title, status, custom_data, duration_ms, poster_key, probe
+		`SELECT id, title, status, custom_data, duration_ms, poster_key, probe, product_settings
 		   FROM media WHERE id = ? LIMIT 1`, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound

@@ -229,9 +229,16 @@ async function drainOnce(jobIds: string[] = []): Promise<void> {
 if (mode === "http" || mode === "invoked") {
   // ---- 门铃模式（ADR-0017 §2 + 2026-11-13 修订）：/wake 触发 drain，空闲超时退出加速平台缩零 ----
   const idleExitMinutes = Math.max(0, Number(process.env.WORKER_IDLE_EXIT_MINUTES ?? "0") || 0);
+  /**
+   * 同步唤醒（2026-11-14，SCF WebServer 镜像函数）：这类平台的实例存活期 = 一次请求的响应周期，
+   * 202 一返回就冻结实例，后台 drain 里的 ffmpeg 会被挂起。开 WORKER_WAKE_SYNC=1 让 /wake
+   * 等任务跑完再响应，配合 SCF「异步执行」（调用方立即拿 RequestId、函数最长 24h）才能跑长任务。
+   */
+  const awaitDrain = /^(1|true)$/i.test(process.env.WORKER_WAKE_SYNC?.trim() ?? "");
   const worker = createHttpWorker({
     port: Number(process.env.WORKER_HTTP_PORT ?? "9001") || 9001,
     notifySecret: process.env.WORKER_NOTIFY_SECRET ?? "",
+    awaitDrain,
     onWake: (jobIds) => drainOnce(jobIds),
     idleExitMs: idleExitMinutes > 0 ? idleExitMinutes * 60_000 : 0,
     onIdle: () => {

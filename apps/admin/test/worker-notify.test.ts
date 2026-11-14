@@ -20,11 +20,15 @@ function fakeFetch(status: number): {
   return { fetchImpl, calls };
 }
 
-test("POST {url}/wake 且带 Bearer 密钥；202 视为送达", async () => {
+test("POST {url}/wake 且带 Bearer 密钥；2xx 视为送达（202 异步受理 / 200 同步完成）", async () => {
   const { fetchImpl, calls } = fakeFetch(202);
   const result = await postWorkerWake({ url: "https://worker.example.com/", secret: "s3cret", fetchImpl });
   expect(result).toEqual({ notified: true });
   expect(calls).toEqual([{ url: "https://worker.example.com/wake", authorization: "Bearer s3cret", body: null }]);
+
+  // WORKER_WAKE_SYNC：worker 等任务跑完才响应 200，同样算送达
+  const sync = fakeFetch(200);
+  expect((await postWorkerWake({ url: "https://worker.example.com", secret: "s3cret", fetchImpl: sync.fetchImpl })).notified).toBe(true);
 });
 
 test("带 jobIds 时以 JSON 载荷发送（invoked 模式定向认领）", async () => {
@@ -33,7 +37,7 @@ test("带 jobIds 时以 JSON 载荷发送（invoked 模式定向认领）", asyn
   expect(calls[0]!.body).toBe(JSON.stringify({ job_ids: ["job-a", "job-b"] }));
 });
 
-test("非 202 / 网络错误 / 缺配置：不送达但绝不抛异常", async () => {
+test("非 2xx / 网络错误 / 缺配置：不送达但绝不抛异常", async () => {
   const { fetchImpl } = fakeFetch(503);
   expect((await postWorkerWake({ url: "https://worker.example.com", secret: "s3cret", fetchImpl })).notified).toBe(false);
 

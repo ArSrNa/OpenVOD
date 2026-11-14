@@ -396,7 +396,7 @@ async function askOptional(values: Record<string, string>, defaults: Record<stri
       options: [
         { value: "APP_ENV", label: "APP_ENV", hint: "运行环境：dev | prod" },
         { value: "ADMIN_BASE_URL", label: "ADMIN_BASE_URL", hint: "管理端对外基址（better-auth baseURL）" },
-        { value: "DELIVERY_BASE_URL", label: "DELIVERY_BASE_URL", hint: "admin → delivery 服务端调用地址" },
+        { value: "DELIVERY_BASE_URL", label: "DELIVERY_BASE_URL", hint: "admin → delivery 调用地址兜底（系统设置优先）" },
         { value: "DELIVERY_PUBLIC_BASE_URL", label: "DELIVERY_PUBLIC_BASE_URL", hint: "播放 URL 基址兜底" },
         { value: "URL_SIGN_KEY_HEX", label: "URL_SIGN_KEY_HEX", hint: "播放签名密钥（64 位 hex）" },
         { value: "BETTER_AUTH_SECRET", label: "BETTER_AUTH_SECRET", hint: "管理端会话密钥（≥32 字符）" },

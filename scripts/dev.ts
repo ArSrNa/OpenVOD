@@ -25,6 +25,10 @@
  * 纪律：**worker 必须一起跑**——否则管理端发起的转码任务会一直停在「排队中」
  * （transcode_jobs 无消费者认领）。因此启动 admin 时会自动带上 Worker，`--no-worker` 关闭。
  *
+ * 数据库：启动前自动同步一次结构（改了 Prisma schema 不用记着手动跑命令）——schema 指纹变了就
+ * 重生成 mysql + sqlite 两份客户端，再按方言同步库结构（sqlite → `db push`，mysql → `migrate deploy`）。
+ * 同步失败直接中止启动（带着旧客户端/旧表起 admin 只会撞 P2021）；`--no-db-sync` 跳过本步骤。
+ *
  * Worker 绕过 `--watch`（跑 `start` 而非 `dev`）：Worker 是队列的唯一消费者且**串行**执行任务，
  * `--watch` 会在保存任何被 import 的文件时重启，腰斩正在跑的 ffmpeg——任务留在 ENCODING、
  * lease 过期后被反复重认领（2026-10-17 实测 9 个任务全部卡死）。要热重载 Worker 代码请用
@@ -39,7 +43,7 @@
  *   直接给出 `docker compose stop <服务>` 的提示（分布式容器需自行收尾，见 docs/vod/deploy-apps.md）。
  */
 
-import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { isInteractive, multiselect, select, unwrap } from "./lib/tui";
 
@@ -302,6 +306,132 @@ function ensureDeps(env: Env): void {
       process.exit(1);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// 启动前数据库同步（ADR-0004：Prisma schema 是唯一真相源）
+// 改 schema 后不做这两步，admin 会先报 Module not found（客户端缺失/过期），
+// 再报 P2021 表或列不存在（库结构没跟上）。所以统一收口在启动前：
+//   1. schema 指纹变了 → 重生成 mysql + sqlite 两份客户端；
+//   2. 按 DB_PROVIDER 同步结构：sqlite 走 `db push`，mysql 走 `migrate deploy`
+//      （MySQL 只认迁移，schema 改了却没写迁移时给明确警告）。
+// ---------------------------------------------------------------------------
+const DB_PKG = "packages/db";
+const DB_SCHEMA_FILES = ["prisma/schema.mysql.prisma", "prisma/schema.sqlite.prisma"] as const;
+const DB_MIGRATIONS_DIR = join(ROOT, DB_PKG, "prisma", "migrations");
+const dbStampFile = join(RUN_DIR, "db-sync.json");
+
+type DBProvider = "mysql" | "sqlite";
+
+function dbProvider(env: Env): DBProvider {
+  const raw = (env.DB_PROVIDER || "mysql").toLowerCase();
+  if (raw === "mysql" || raw === "sqlite") return raw;
+  println(red(`[db] DB_PROVIDER 非法：${raw}（应为 mysql | sqlite）`));
+  process.exit(1);
+}
+
+/** 展示用：抹掉连接串里的账号口令 */
+const redactUrl = (url: string) => url.replace(/\/\/[^@/]*@/, "//");
+
+function schemaFingerprint(): string {
+  const hasher = new Bun.CryptoHasher("sha256");
+  for (const file of DB_SCHEMA_FILES) hasher.update(readFileSync(join(ROOT, DB_PKG, file), "utf8"));
+  return hasher.digest("hex").slice(0, 16);
+}
+
+function readDbStamp(): { fingerprint?: string } {
+  try {
+    return JSON.parse(readFileSync(dbStampFile, "utf8")) as { fingerprint?: string };
+  } catch {
+    return {};
+  }
+}
+
+function runDbScript(script: string, env: Env): { ok: boolean; output: string } {
+  const proc = Bun.spawnSync({
+    cmd: ["bun", "run", "--cwd", DB_PKG, script],
+    cwd: ROOT,
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const output = `${proc.stdout.toString()}${proc.stderr.toString()}`.trim();
+  return { ok: (proc.exitCode ?? 1) === 0, output };
+}
+
+/** schema 变了（或生成物缺失）→ 重生成客户端；只更新类型不改库，结构同步见 syncDbStructure */
+function ensurePrismaClients(env: Env, stale: boolean): void {
+  const generatedDir = join(ROOT, DB_PKG, "generated");
+  const missing = (["mysql", "sqlite"] as const).filter((kind) => !existsSync(join(generatedDir, kind)));
+  if (!stale && missing.length === 0) return;
+  const kinds = stale ? (["mysql", "sqlite"] as const) : missing;
+  println(`[db] Prisma schema 已变更，重新生成客户端（${kinds.join(" + ")}）...`);
+  for (const kind of kinds) {
+    const res = runDbScript(`generate:${kind}`, env);
+    if (!res.ok) {
+      println(red(`[db] generate:${kind} 失败：`));
+      if (res.output) println(res.output);
+      process.exit(1);
+    }
+  }
+}
+
+function syncDbStructure(env: Env, provider: DBProvider): void {
+  const script = provider === "sqlite" ? "sync:sqlite" : "migrate:deploy";
+  const where = redactUrl(env.DATABASE_URL || "（DATABASE_URL 未配置）");
+  const res = runDbScript(script, env);
+  if (!res.ok) {
+    println(red(`[db] 结构同步失败（${provider} @ ${where}）：`));
+    if (res.output) println(res.output);
+    println(
+      dim(
+        provider === "sqlite"
+          ? "  手动处理：若提示需要丢数据，确认后执行 bun run --cwd packages/db push:sqlite --accept-data-loss"
+          : "  MySQL 只认迁移：bunx prisma migrate status --schema packages/db/prisma/schema.mysql.prisma 查看，排错见 docs/vod/dev-workflow.md §4.3 / §8",
+      ),
+    );
+    println(dim("  跳过启动前同步：加 --no-db-sync"));
+    process.exit(1);
+  }
+  const notable = res.output
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /Applying migration|No pending migrations|already in sync|now in sync|successfully applied/i.test(line));
+  if (notable.length) for (const line of notable) println(`[db] ${line}`);
+  else println(dim(`[db] 结构无变化（${provider} @ ${where}）`));
+}
+
+/** MySQL 无法从 schema 直接改库：schema 比最新迁移新 = 缺迁移，应用后仍会撞列不存在 */
+function warnSchemaWithoutMigration(): void {
+  try {
+    const schemaMtime = Math.max(...DB_SCHEMA_FILES.map((file) => statSync(join(ROOT, DB_PKG, file)).mtimeMs));
+    const files = readdirSync(DB_MIGRATIONS_DIR, { recursive: true }) as string[];
+    let migrationMtime = 0;
+    for (const file of files) {
+      if (!file.endsWith(".sql")) continue;
+      const mtime = statSync(join(DB_MIGRATIONS_DIR, file)).mtimeMs;
+      if (mtime > migrationMtime) migrationMtime = mtime;
+    }
+    if (schemaMtime > migrationMtime + 2000) {
+      println(yellow("[db] 警告：schema 比最新迁移新，MySQL 结构不会自动跟上"));
+      println(dim("       先 bunx prisma migrate dev --name <变更名> 生成迁移，再重启（或本地开发改用 DB_PROVIDER=sqlite）"));
+    }
+  } catch {
+    /* 迁移目录缺失等：不影响启动 */
+  }
+}
+
+function syncDatabase(env: Env): void {
+  const provider = dbProvider(env);
+  const fingerprint = schemaFingerprint();
+  const stale = readDbStamp().fingerprint !== fingerprint;
+  ensurePrismaClients(env, stale);
+  syncDbStructure(env, provider);
+  if (provider === "mysql") warnSchemaWithoutMigration();
+  writeFileSync(
+    dbStampFile,
+    `${JSON.stringify({ fingerprint, provider, syncedAt: new Date().toISOString() }, null, 2)}\n`,
+  );
 }
 
 /** 版本号唯一真源 = 根 package.json（与发版 tag 同口径，GET /v1/meta 展示用） */
@@ -667,8 +797,11 @@ function printHelp(): void {
       "",
       `${bold("服务")}    admin（:${adminPort(loadEnv())}）/ delivery（:${deliveryPort(loadEnv())}）/ worker（无端口）/ player（:${playerPort(loadEnv())}）`,
       `${bold("选项")}    -d, --background 后台运行；--no-worker 启动 admin 时不自动带 Worker；`,
+      "            --no-db-sync 跳过启动前的数据库结构同步（默认每次启动都会同步）；",
       `            --env-file <路径> 指定 env 文件（默认根 .env；指定后不再读根 .env，如体验底座的 .env.trial）`,
       "",
+      dim("数据库：启动前自动同步结构——schema 变更则重生成 mysql + sqlite 客户端，"),
+      dim("        再按 DB_PROVIDER 同步库结构（sqlite → db push；mysql → migrate deploy）。同步失败即中止启动。"),
       dim("纪律：worker 是 transcode_jobs 的唯一消费者，只起 admin 会让转码任务停在「排队中」。"),
       dim("      worker 特意不用 --watch：保存文件不重启消费者、不腰斩在跑任务（要热重载用 task dev:worker）。"),
       dim("管辖范围：start / stop / status 只管本启动器用 .run/*.pid 起的进程组；"),
@@ -687,6 +820,7 @@ function parseArgs(argv: string[]): {
   services: ServiceName[];
   mode?: "foreground" | "background";
   noWorker: boolean;
+  noDbSync: boolean;
   envFile?: string;
   follow: boolean;
   lines: number;
@@ -695,6 +829,7 @@ function parseArgs(argv: string[]): {
   let command: Command = "run";
   let mode: "foreground" | "background" | undefined;
   let noWorker = false;
+  let noDbSync = false;
   let envFile: string | undefined;
   let follow = true;
   let lines = 50;
@@ -716,6 +851,8 @@ function parseArgs(argv: string[]): {
       mode = "foreground";
     } else if (arg === "--no-worker") {
       noWorker = true;
+    } else if (arg === "--no-db-sync") {
+      noDbSync = true;
     } else if (arg === "--env-file") {
       const value = argv[++i];
       if (value) envFile = value;
@@ -733,7 +870,7 @@ function parseArgs(argv: string[]): {
     }
   }
   // 去重（all + 具体服务混写）
-  return { command, services: [...new Set(services)], mode, noWorker, envFile, follow, lines, rest };
+  return { command, services: [...new Set(services)], mode, noWorker, noDbSync, envFile, follow, lines, rest };
 }
 
 async function main(): Promise<number> {
@@ -778,6 +915,12 @@ async function main(): Promise<number> {
     mode = "background";
   }
   mode ??= services.length === 1 ? "foreground" : "background";
+
+  // player 不碰库；其余服务启动前都要先把客户端与库结构同步到位（admin / worker 直接吃 Prisma）
+  if (services.some((name) => name !== "player")) {
+    if (cli.noDbSync) println(dim("[db] 已跳过启动前数据库同步（--no-db-sync）"));
+    else syncDatabase(env);
+  }
 
   return mode === "foreground"
     ? runForegroundFlow(services[0], env)

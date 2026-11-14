@@ -6,6 +6,7 @@ import {
   ACTIVE_JOB_STATUSES,
   TranscodeJobDTO,
   TranscodeJobLogsResponse,
+  TranscodeJobsDeleteResponse,
   TranscodeSubmitResponse,
   z,
   type DashboardStats,
@@ -16,7 +17,7 @@ import { apiError } from "./api";
 import { assertMediaId, resolveOriginalKey } from "./media";
 import { getTemplate } from "./templates";
 import { getWatermark } from "./watermarks";
-import { jobActionState } from "./job-actions";
+import { jobActionState, partitionDeletableJobs } from "./job-actions";
 import { submitTranscodeWithDeps, TranscodeSubmitError, type SubmitJobRow } from "./transcode-submit";
 
 const db = getDb<any>();
@@ -253,6 +254,41 @@ export async function restartTranscodeJob(id: string): Promise<{ id: string; sta
     throw new TranscodeError("bad_request", "任务状态刚刚发生变化，请刷新后重试", 409);
   }
   return { id, status: "QUEUED" };
+}
+
+/**
+ * 批量删除任务（2026-11-14）：仅**非进行中**（DONE / FAILED / CANCELLED）可删。
+ * 只删 `transcode_jobs` 行——对象存储里的产物与 `hls_keys` 不动，已产出的播放文件继续可用。
+ * 进行中的任务不整体报错，放进 `skipped` 回报（列表里勾选项也会禁用，这里是竞态兜底）。
+ */
+export async function deleteTranscodeJobs(
+  ids: string[],
+): Promise<z.infer<typeof TranscodeJobsDeleteResponse>> {
+  const unique = [...new Set(ids.filter((id) => typeof id === "string" && id.trim() !== ""))];
+  if (!unique.length) throw new TranscodeError("bad_request", "请至少选择一个任务", 400);
+
+  const rows: Array<{ id: string; status: string }> = await db.transcodeJob.findMany({
+    where: { id: { in: unique } },
+    select: { id: true, status: true },
+  });
+  const { deletable, skipped } = partitionDeletableJobs(unique, rows);
+  if (!deletable.length) return { deleted: 0, skipped };
+
+  // CAS 式删除：条件里再挡一次未终结状态，防止「检查后被认领 / 重启」时删掉正在执行的任务行
+  const res = await db.transcodeJob.deleteMany({
+    where: { id: { in: deletable }, status: { notIn: [...ACTIVE_JOB_STATUSES] } },
+  });
+  if (res.count !== deletable.length) {
+    const left: Array<{ id: string }> = await db.transcodeJob.findMany({
+      where: { id: { in: deletable } },
+      select: { id: true },
+    });
+    const stillThere = new Set(left.map((r) => r.id));
+    for (const id of deletable) {
+      if (stillThere.has(id)) skipped.push({ id, reason: "任务刚刚开始执行，未删除" });
+    }
+  }
+  return { deleted: res.count, skipped };
 }
 
 /**

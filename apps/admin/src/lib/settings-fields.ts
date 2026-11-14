@@ -18,7 +18,7 @@ export const SETTINGS_GROUPS = {
   playback: {
     title: "播放设置",
     fields: [
-      { key: "playback_base_url", label: "分发端公开地址", type: "text", placeholder: "https://delivery.example.com", help: "播放视频时请求的 API 地址" },
+      { key: "playback_base_url", label: "分发端公开地址", type: "text", placeholder: "https://delivery.example.com", help: "分发端部署后的访问地址；留空则无法播放" },
       ttl("jwt_ttl_sec", "播放端 JWT 有效期（秒）", "登录后能播放多久，到期需重新登录"),
       ttl("playback_session_ttl_sec", "播放会话有效期（秒）", "一次播放会话的有效期，过期后链接立即失效"),
       ttl("playback_manifest_ttl_sec", "清单签名有效期（秒）", "清单与分片链接的有效期，不能超过播放会话有效期"),

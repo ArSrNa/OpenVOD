@@ -250,10 +250,10 @@ STORAGE_CDN_BASE_URL=""               # 加速域名（原视频 / 封面 302、
 
 # ---- 媒资与播放预览 ----
 MEDIA_ID_LENGTH="8"                              # 媒资数字 ID 位数（4–16，保留前导零）
-DELIVERY_BASE_URL="http://127.0.0.1:9000"        # 「产物 → 播放」预览调用的分发端地址
+DELIVERY_BASE_URL=""                             # 预览调用分发端的兜底地址（系统设置「分发端公开地址」优先）
 DELIVERY_PREVIEW_USERNAME=""                     # 预览账号用户名（bootstrap-playback.ts 创建）；缺失则预览接口 501
 DELIVERY_PREVIEW_PASSWORD=""                     # 预览账号口令
-DELIVERY_PUBLIC_BASE_URL=""                      # /api/admin/settings 回退提示展示用（应与 delivery 同值）
+DELIVERY_PUBLIC_BASE_URL=""                      # 「分发端公开地址」的 env 兜底（应填分发端地址）
 
 # 运行环境依赖（非环境变量）：生成元数据 /api/admin/media/{id}/metadata 需安装 ffprobe
 ```
@@ -268,7 +268,7 @@ DELIVERY_PUBLIC_BASE_URL=""                      # /api/admin/settings 回退提
 | `ADMIN_BASE_URL` | 否 | `http://localhost:{ADMIN_PORT}` | 管理端对外基址（better-auth `baseURL`）。反代场景填外部地址；填错 host 会 403 `Invalid origin` |
 | `ADMIN_TRUSTED_ORIGINS` | 否 | 空 | 额外信任来源（逗号分隔；裸域名展开为 http+https，支持通配符） |
 | `ADMIN_SESSION_TTL_SEC` | 否 | `28800` | 管理端会话有效期（秒），默认 8h |
-| `WORKER_NOTIFY_URL` | worker 为 http 模式时建议配 | 空 | admin 门铃目标：发起转码 / 重启后 fire-and-forget `POST {URL}/wake`（ADR-0017）；失败仅告警，任务留存队列。也可在「系统设置 → 任务设置」配置（DB > env） |
+| `WORKER_NOTIFY_URL` | worker 为 http / invoked 模式时必配 | 空 | admin 门铃目标：发起转码 / 重启后 `POST {URL}/wake`（ADR-0017），限时等待 ≤5s 再返回 202；失败仅告警，任务留存队列。也可在「系统设置 → 任务设置」配置（DB > env） |
 | `WORKER_NOTIFY_SECRET` | 同上 | 空 | `/wake` Bearer 密钥（admin 发通知用；worker 侧 http 模式必填）。「系统设置」里对应键 `worker_notify_secret` 为 MK 封装存储 |
 | `OIDC_ISSUER` | 否 | 空 | 通用 OIDC（genericOAuth）。空 = 仅本地邮箱密码登录 |
 | `OIDC_CLIENT_ID` | OIDC 时必填 | 空 | OIDC 客户端 ID |
@@ -291,10 +291,10 @@ DELIVERY_PUBLIC_BASE_URL=""                      # /api/admin/settings 回退提
 | `STORAGE_CDN_AUTH_TTL_SEC` | 否 | `3600` | 同 delivery |
 | `STORAGE_CUSTOM_SIGNER` | 否 | `custom` | 同 delivery（实现入口 `packages/storage/src/custom-signer.ts`） |
 | `MEDIA_ID_LENGTH` | 否 | `8` | 媒资数字 ID 位数（4–16，保留前导零，spec.md §1.3） |
-| `DELIVERY_BASE_URL` | 预览时必填 | `http://127.0.0.1:9000` | 「产物 → 播放」预览调用的分发端地址（服务端 → 分发端） |
+| `DELIVERY_BASE_URL` | 否 | 空 | 预览调用分发端的**兜底**地址；系统设置 `playback_base_url`（播放设置 → 分发端公开地址）优先，两处皆空则预览接口 501（**不再回退 `127.0.0.1:9000`**，2026-11-14 修订） |
 | `DELIVERY_PREVIEW_USERNAME` | 预览时必填 | 空 | 预览账号用户名（用 `bun apps/admin/scripts/bootstrap-playback.ts` 创建）。缺失时预览接口返回 501 |
 | `DELIVERY_PREVIEW_PASSWORD` | 预览时必填 | 空 | 预览账号口令（同上） |
-| `DELIVERY_PUBLIC_BASE_URL` | 否 | 空 | 仅用于 `/api/admin/settings` 的 `env_public_base_url` 回退提示展示；应与 delivery 同值 |
+| `DELIVERY_PUBLIC_BASE_URL` | 否 | 空 | 系统设置 `playback_base_url` 的 env 兜底（同时用于 `/api/admin/settings` 的 `env_public_base_url` 提示） |
 
 > **运行环境依赖（非环境变量）**：`/api/admin/media/{id}/metadata` 生成元数据需要运行环境安装 **ffprobe**。
 > `task db:generate` 产出的两份 Prisma 客户端（mysql + sqlite）必须同时存在，否则 `next build` / `bun test` 报

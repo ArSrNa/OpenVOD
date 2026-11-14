@@ -285,6 +285,7 @@ submit 时水印内容**现读现快照**进 `transcode_jobs.template_snapshot.w
 | `GET /api/admin/jobs` | —（内部固定取 200 条） | `200 {total, items[]}`；任务 = `{id, media_id, media_title\|null, status, template_id\|null, template_name\|null, attempts, progress\|null, lease_active, cancel_requested_at\|null, last_error\|null, created_at, started_at\|null, finished_at\|null}`；`status ∈ QUEUED\|PROBING\|DOWNLOADING\|ENCODING\|PACKAGING\|DONE\|FAILED\|CANCELLED`；`progress` = 当前阶段百分比（0–100，仅 `DOWNLOADING` / `ENCODING` 阶段有值，其余为 `null`） | `500` |
 | `GET /api/admin/jobs/stream` | —（SSE） | `200 text/event-stream`；头 `Cache-Control: no-store, no-transform`、`X-Accel-Buffering: no`；事件 `jobs`（全量快照，连上即回放）、`ping`（15s 保活）；**10 分钟主动断开**由 EventSource 重连 | `401`（JSON 信封，非 SSE 流） |
 | `POST /api/admin/jobs/{id}/stop` | — | `200 {id, status, cancelling}`：未执行（QUEUED / 租约过期）→ 直接 `status="CANCELLED"`；执行中 → 只写 `cancel_requested_at`、`cancelling=true`（worker 2s 内中断并落 `CANCELLED`） | `404`；`409` 已终结 / 取消请求已在等待中 |
+| `DELETE /api/admin/jobs` | `{ids: string[]}`（1–200，去重；**仅非进行中** DONE / FAILED / CANCELLED 可删） | `200 {deleted, skipped[]}`：`skipped` = `{id, reason}`（进行中 / 不存在），不整体失败；只删任务行，产物与 `hls_keys` 不动 | `400` 参数不合法或空数组；`500` |
 | `POST /api/admin/jobs/{id}/restart` | — | `200 {id, status:"QUEUED"}`（`attempts=0`、清 `cancel_requested_at` / 错误 / 租约）；仅 `FAILED` / `CANCELLED` 可重启 | `404`；`409` 不可重启 |
 | `GET /api/admin/jobs/{id}/logs?after=<seq>` | 查询参数 `after`（上次拿到的 `log_seq`，缺省 0） | `200 {seq, tail}`：Worker 每 2s 覆盖写 `transcode_jobs.log_tail`（最近 48KB）并 `log_seq+1`；`seq` 未变时 `tail=null`（不重传文本）；`no-store` | `404` 任务不存在 |
 
@@ -542,7 +543,7 @@ ffprobe "$MF" && ffmpeg -i "$MF" -c copy /tmp/out.mp4     # 真播放器视角�
 `category.create` 🆕 · `category.update` 🆕 · `category.delete` 🆕 ·
 `template.create` · `template.update` · `template.delete` ·
 `watermark.create` 🆕 · `watermark.update` 🆕 · `watermark.image_upload` 🆕 · `watermark.delete` 🆕 ·
-`key.delete` · `key.rotate_mk` · `transcode.stop` · `transcode.restart` ·
+`key.delete` · `key.rotate_mk` · `transcode.stop` · `transcode.restart` · `transcode.delete` ·
 `user.create` · `user.update` · `user.delete` · `user.password_reset` · `user.revoke_sessions` ·
 `settings.update` · `console.login` · `console.login_failed`
 

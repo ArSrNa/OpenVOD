@@ -10,7 +10,8 @@
 // 签名 URL **原样透出**（SDK 不变量 N2）：播放域名由分发端按系统设置 `playback_base_url` 生成（spec §2.1.2），
 // 管理端不再兜底改写 URL。
 //
-// 配置（ADR-0015）：分发端地址 DELIVERY_BASE_URL（env）；
+// 配置（ADR-0015）：分发端地址取系统设置 `playback_base_url`（控制台「播放设置 → 分发端公开地址」），
+// env DELIVERY_BASE_URL 仅作兜底；两者皆空直接报错，不再静默回退 127.0.0.1（容器 / 端口预览下必然连不上）。
 // 预览账号 delivery_preview_username（明文设置）+ delivery_preview_password（MK 封装设置），
 // env 同名键兜底（预览账号用 apps/admin/scripts/bootstrap-playback.ts 创建，建议专用）。
 import { createPlayerSdk, DeliveryError, PlayerSdkError, type PlaybackHandle, type PlayerSdk } from "openvod-jssdk";
@@ -30,8 +31,27 @@ export class DeliveryPreviewError extends Error {
   }
 }
 
-function baseUrl(): string {
-  return (process.env.DELIVERY_BASE_URL?.trim() || "http://127.0.0.1:9000").replace(/\/+$/, "");
+/**
+ * 分发端地址解析：系统设置优先，env 兜底。
+ * 两者皆空时报 501 而不是回退 127.0.0.1——回环地址在容器 / 端口预览下必然连不上，
+ * 只会把「没配地址」伪装成网络故障（`fetch failed`）。
+ */
+export function resolveBaseUrl(
+  settingBaseUrl: string,
+  envBaseUrl: string | undefined = process.env.DELIVERY_BASE_URL,
+): string {
+  const base = (settingBaseUrl.trim() || (envBaseUrl ?? "").trim()).replace(/\/+$/, "");
+  if (!base) {
+    throw new DeliveryPreviewError(
+      "not_implemented",
+      "未配置分发端地址：到「播放设置 → 分发端公开地址」填写（或设置环境变量 DELIVERY_BASE_URL）",
+      501,
+    );
+  }
+  if (!/^https?:\/\//i.test(base)) {
+    throw new DeliveryPreviewError("bad_request", `分发端地址必须是 http(s) 开头的完整地址：${base}`, 400);
+  }
+  return base;
 }
 
 /**
@@ -56,13 +76,14 @@ async function previewSdk(): Promise<PlayerSdk> {
       501,
     );
   }
-  const key = JSON.stringify([baseUrl(), username, password]);
+  const base = resolveBaseUrl(snap.playbackBaseUrl);
+  const key = JSON.stringify([base, username, password]);
   if (cached?.key !== key) {
     cached?.sdk.dispose();
     cached = {
       key,
       sdk: createPlayerSdk({
-        baseUrl: baseUrl(),
+        baseUrl: base,
         credential: { mode: "password", username, password },
         autoRefresh: false,
       }),

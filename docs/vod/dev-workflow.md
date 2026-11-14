@@ -99,6 +99,10 @@ import { PrismaClient as SQLitePrismaClient } from "../generated/sqlite";
 task db:generate          # = generate:mysql + generate:sqlite
 ```
 
+`bun scripts/dev.ts` 启动前会自动做这两件事（不用再记着手动跑命令）：schema 文件内容变了就重生成
+mysql + sqlite 两份客户端，然后按 `DB_PROVIDER` 同步库结构（SQLite `db push`，MySQL `migrate deploy`）。
+同步失败直接中止启动，`--no-db-sync` 可跳过。跟踪状态记在 `.run/db-sync.json`（gitignore）。
+
 ### 4.2 SQLite（本地开发推荐）
 
 ```env
@@ -205,7 +209,7 @@ MF=$(curl -s -X POST localhost:9000/v1/media/<媒资id>/play -H "authorization: 
 ffprobe "$MF" && ffmpeg -i "$MF" -c copy /tmp/out.mp4
 ```
 
-- **管理端「产物 → 播放」预览**：在同一份 `.env` 里配置 `DELIVERY_BASE_URL`、`DELIVERY_PREVIEW_USERNAME`、`DELIVERY_PREVIEW_PASSWORD`（预览账号用 `bun apps/admin/scripts/bootstrap-playback.ts preview <密码>` 创建，建议专用）；管理端后端经**播放器 SDK**（`openvod-jssdk` password 模式，token 缓存与重登由 SDK 治理）以该账号换签名主清单 URL，浏览器用 hls.js 直连分发端播放（解密仍在浏览器本地）。未配置时预览接口返回 501，其余管理功能不受影响；
+- **管理端「产物 → 播放」预览**：分发端地址在「系统设置 → 播放设置 → 分发端公开地址」填（`.env` 的 `DELIVERY_BASE_URL` 只作兜底，两处皆空则预览 501，**不再回退 `127.0.0.1`**）；预览账号 `delivery_preview_username` / `delivery_preview_password` 同理（env `DELIVERY_PREVIEW_*` 兜底，账号用 `bun apps/admin/scripts/bootstrap-playback.ts preview <密码>` 创建，建议专用）；管理端后端经**播放器 SDK**（`openvod-jssdk` password 模式，token 缓存与重登由 SDK 治理）以该账号换签名主清单 URL，浏览器用 hls.js 直连分发端播放（解密仍在浏览器本地）。未配置时预览接口返回 501，其余管理功能不受影响；
 - 无 token 拉清单 / 取密钥 → 403 `bad_token`（P0 门禁语义）；密钥响应固定 16B + `no-store`；
 - token 以 query `t` 为主（改写后的清单里已自动带上）；App / hls.js 也可用 header `X-Playback-Token`（Safari 原生只能 query）；
 - 多套模板产物时 `play` 可带 `template_id`（不指定则取唯一产物或默认模板产物）；

@@ -54,11 +54,12 @@ export interface PlaybackSubtitle extends MediaSubtitle {
   url: string;
 }
 
-/** 清晰度选项 = 该媒资实际存在的模板产物（旧布局为 `[]`） */
+/** 清晰度选项 = 该媒资实际存在、且管理端对播放端展示的模板产物（旧布局为 `[]`） */
 export interface PlaybackTemplate {
   id: string;
   /** 模板行已删除（历史产物）为 null */
   name: string | null;
+  /** 该媒资的有效默认产物（媒资级默认 → 全局默认模板）；未指定 templateId 时加载这套 */
   is_default: boolean;
 }
 

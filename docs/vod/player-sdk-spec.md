@@ -285,7 +285,7 @@ export interface PlayerSdkStorage {
 
 ### 5.1 数据源与规则
 
-- 选项 = `play` 响应 `templates[]`（「该媒资实际存在的模板产物」，spec.md §11.1）——`name` 可为 `null`（模板行已删）；`is_default` 仅展示；未指定 `templateId` 时播放的是 `templates[0]`（服务端自动选择 = 排序首项，§6.3）；
+- 选项 = `play` 响应 `templates[]`（该媒资实际存在、且管理端对播放端展示的模板产物，spec.md §11.1 / ADR-0021）——`name` 可为 `null`（模板行已删）；`is_default` = 该媒资的有效默认产物（媒资级默认 → 全局默认模板）；未指定 `templateId` 时播放的是 `templates[0]`（服务端自动选择 = 排序首项，§6.3）；
 - SDK 提供 `templateLabel(t)` 辅助：`t.name ?? \`模板 ${t.id.slice(0, 8)}\``；
 - 旧布局（`templates: []` 且 `template_id: ""`）不参与切换，宿主自行给出占位 UI。
 

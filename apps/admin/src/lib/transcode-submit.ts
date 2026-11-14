@@ -90,6 +90,39 @@ export function snapshotOf(
   };
 }
 
+/**
+ * 模板 → 任务快照（含水印的两层校验，spec.md §10.4）。
+ * 发起与**重启**共用：重启按当前模板重建快照，改完模板再重启即生效（2026-11-15）。
+ * 只把「模板自身配置非法」转成 TranscodeSubmitError；水印查询失败原样上抛，
+ * 便于重启侧把「引用的水印已被删」与「配置写错」区分开。
+ */
+export async function snapshotForTemplate(
+  template: z.infer<typeof TranscodeTemplateDTO>,
+  getWatermark: (id: string) => Promise<z.infer<typeof WatermarkTemplateDTO>>,
+): Promise<SubmitJobRow["templateSnapshot"]> {
+  if (template.encrypt && template.format !== "HLS") {
+    throw new TranscodeSubmitError("bad_request", `模板「${template.name}」选择了加密，输出格式必须为 HLS`, 400);
+  }
+  // 水印两层校验之一（任务发起侧）：模板可能被绕过管理端直接改库，故再拦一次
+  if (template.watermark_id && template.keep_original) {
+    throw new TranscodeSubmitError(
+      "bad_request",
+      `模板「${template.name}」为「保持原视频配置」，不重编码无法烧录水印`,
+      400,
+    );
+  }
+  if (!template.watermark_id) return snapshotOf(template, null);
+  const watermark = await getWatermark(template.watermark_id);
+  if (watermark.type === "image" && !watermark.image_key) {
+    throw new TranscodeSubmitError(
+      "bad_request",
+      `模板「${template.name}」关联的水印「${watermark.name}」尚未上传图片，请先上传或解除关联`,
+      400,
+    );
+  }
+  return snapshotOf(template, watermarkSnapshotOf(watermark));
+}
+
 /** 把任意「带 code/status 的业务错误」转成本模块错误；否则原样抛出 */
 function rethrowBusiness(e: unknown): never {
   const err = e as { code?: unknown; status?: unknown; message?: unknown };
@@ -137,34 +170,12 @@ export async function submitTranscodeWithDeps(
 
   // 逐个模板取回并校验非法组合（ADR-0014：模板保存与任务发起各拦一次）——任一非法则整批拒绝
   const templates: Array<z.infer<typeof TranscodeTemplateDTO>> = [];
-  const watermarks: Array<SnapshotWatermark | null> = [];
+  const snapshots: Array<SubmitJobRow["templateSnapshot"]> = [];
   for (const templateId of templateIds) {
     const template = await deps.getTemplate(templateId).catch((e) => rethrowBusiness(e));
-    if (template.encrypt && template.format !== "HLS") {
-      throw new TranscodeSubmitError("bad_request", `模板「${template.name}」选择了加密，输出格式必须为 HLS`, 400);
-    }
-    // 水印两层校验之一（任务发起侧，spec.md §10.4）：模板可能被绕过管理端直接改库，故再拦一次
-    if (template.watermark_id && template.keep_original) {
-      throw new TranscodeSubmitError(
-        "bad_request",
-        `模板「${template.name}」为「保持原视频配置」，不重编码无法烧录水印`,
-        400,
-      );
-    }
-    if (template.watermark_id) {
-      const watermark = await deps.getWatermark(template.watermark_id).catch((e) => rethrowBusiness(e));
-      if (watermark.type === "image" && !watermark.image_key) {
-        throw new TranscodeSubmitError(
-          "bad_request",
-          `模板「${template.name}」关联的水印「${watermark.name}」尚未上传图片，请先上传或解除关联`,
-          400,
-        );
-      }
-      watermarks.push(watermarkSnapshotOf(watermark));
-    } else {
-      watermarks.push(null);
-    }
+    const snapshot = await snapshotForTemplate(template, deps.getWatermark).catch((e) => rethrowBusiness(e));
     templates.push(template);
+    snapshots.push(snapshot);
   }
 
   // 冲突检查：同一媒资 + **同一模板** 只允许一个未终结任务（不同模板产物分树存放，可并行，spec.md §5.1）
@@ -194,7 +205,7 @@ export async function submitTranscodeWithDeps(
       mediaId,
       status: "QUEUED" as const,
       templateId: template.id,
-      templateSnapshot: snapshotOf(template, watermarks[i]),
+      templateSnapshot: snapshots[i],
     })),
   );
 
@@ -203,8 +214,44 @@ export async function submitTranscodeWithDeps(
       job_id: created[i].id,
       template_id: template.id,
       template_name: template.name,
-      watermark_id: watermarks[i]?.id ?? null,
+      watermark_id: snapshots[i].watermark?.id ?? null,
       status: "QUEUED" as const,
     })),
   };
+}
+
+/** 重启时可读到的「当前配置」（装配由调用方注入） */
+export interface RestartSnapshotDeps {
+  getTemplate(id: string): Promise<z.infer<typeof TranscodeTemplateDTO>>;
+  getWatermark(id: string): Promise<z.infer<typeof WatermarkTemplateDTO>>;
+}
+
+/**
+ * 重启任务时按**当前**模板 / 水印重建快照（2026-11-15 用户定）：
+ * 改完模板再重启，用的就是新参数，不必回媒资页重新发起转码。
+ * 边界：
+ *   - 模板已删（templateId 空 / 查不到）或水印已删 → 没有「最新配置」可读，沿用入队时快照，不阻断重启；
+ *   - 新模板配置本身非法（keep_original + 水印 / 图片水印未传图）→ 上抛，要求先修模板；
+ *   - CEK 轮换任务（keyPlan 非空）→ 新模板必须仍加密，否则 key_plan 不被消费，轮换会停在半路（spec.md §4.4）。
+ */
+export async function rebuildSnapshotForRestart(
+  job: { templateId: string | null; templateSnapshot: unknown; keyPlan: unknown },
+  deps: RestartSnapshotDeps,
+): Promise<{ snapshot: unknown; refreshed: boolean }> {
+  if (!job.templateId) return { snapshot: job.templateSnapshot, refreshed: false };
+  try {
+    const template = await deps.getTemplate(job.templateId);
+    if (job.keyPlan != null && !template.encrypt) {
+      throw new TranscodeSubmitError(
+        "bad_request",
+        `任务属于 CEK 轮换批次，模板「${template.name}」必须保持加密，请改回后再重启`,
+        409,
+      );
+    }
+    return { snapshot: await snapshotForTemplate(template, deps.getWatermark), refreshed: true };
+  } catch (e) {
+    if (e instanceof TranscodeSubmitError) throw e;
+    // 模板 / 水印已被删除：沿用它入队时的快照（保持「模板删除后仍可重跑」）
+    return { snapshot: job.templateSnapshot, refreshed: false };
+  }
 }

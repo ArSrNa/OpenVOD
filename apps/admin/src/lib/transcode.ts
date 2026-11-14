@@ -18,7 +18,12 @@ import { assertMediaId, resolveOriginalKey } from "./media";
 import { getTemplate } from "./templates";
 import { getWatermark } from "./watermarks";
 import { jobActionState, partitionDeletableJobs } from "./job-actions";
-import { submitTranscodeWithDeps, TranscodeSubmitError, type SubmitJobRow } from "./transcode-submit";
+import {
+  rebuildSnapshotForRestart,
+  submitTranscodeWithDeps,
+  TranscodeSubmitError,
+  type SubmitJobRow,
+} from "./transcode-submit";
 
 const db = getDb<any>();
 
@@ -230,18 +235,34 @@ export async function stopTranscodeJob(id: string): Promise<StopJobResult> {
  * 重启（重新入队）：仅 FAILED（失败）或 CANCELLED（管理端取消）。
  * attempts 必须清零——否则认领逻辑会立即判「超过重试上限」而秒失败（worker job-store.claim）；
  * cancel_requested_at 必须清空——否则 worker 认领后会立刻再次收到取消。
+ * 快照按**当前**模板重建（2026-11-15）：改完模板 / 水印再重启即生效；模板已删则沿用入队时快照。
  */
-export async function restartTranscodeJob(id: string): Promise<{ id: string; status: "QUEUED" }> {
-  const row = await db.transcodeJob.findUnique({ where: { id }, select: { status: true } }).catch(() => null);
+export async function restartTranscodeJob(
+  id: string,
+): Promise<{ id: string; status: "QUEUED"; snapshotRefreshed: boolean }> {
+  const row = await db.transcodeJob
+    .findUnique({
+      where: { id },
+      select: { status: true, templateId: true, templateSnapshot: true, keyPlan: true },
+    })
+    .catch(() => null);
   if (!row) throw new TranscodeError("not_found", `任务不存在：${id}`, 404);
   const state = jobActionState({ status: row.status, leaseActive: false });
   if (!state.canRestart) {
     throw new TranscodeError("bad_request", state.restartBlocked ?? "该任务当前不可重启", 409);
   }
+  let rebuilt: Awaited<ReturnType<typeof rebuildSnapshotForRestart>>;
+  try {
+    rebuilt = await rebuildSnapshotForRestart(row, { getTemplate, getWatermark });
+  } catch (e) {
+    if (e instanceof TranscodeSubmitError) throw new TranscodeError(e.code, e.message, e.status);
+    throw e;
+  }
   const updated = await db.transcodeJob.updateMany({
     where: { id, status: { in: ["FAILED", "CANCELLED"] } },
     data: {
       status: "QUEUED",
+      templateSnapshot: rebuilt.snapshot,
       attempts: 0,
       lastError: null,
       leaseUntil: null,
@@ -253,7 +274,7 @@ export async function restartTranscodeJob(id: string): Promise<{ id: string; sta
   if (updated.count === 0) {
     throw new TranscodeError("bad_request", "任务状态刚刚发生变化，请刷新后重试", 409);
   }
-  return { id, status: "QUEUED" };
+  return { id, status: "QUEUED", snapshotRefreshed: rebuilt.refreshed };
 }
 
 /**

@@ -168,7 +168,7 @@ export function JobsManager() {
   const handleRestart = (row: JobItem) => {
     modal.confirm({
       title: `确认重启任务 ${row.id.slice(0, 12)}…？`,
-      content: <Typography.Text>将清零尝试次数并重新入队（排队中），由 worker 认领执行。</Typography.Text>,
+      content: <Typography.Text>将清零尝试次数并重新入队（排队中），按当前模板配置重跑。</Typography.Text>,
       okText: "重启",
       cancelText: "取消",
       onOk: async () => {

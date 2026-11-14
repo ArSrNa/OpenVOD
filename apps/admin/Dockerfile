@@ -19,7 +19,11 @@ WORKDIR /app
 COPY . .
 RUN bun install --frozen-lockfile
 RUN bun run --cwd packages/db generate:mysql && bun run --cwd packages/db generate:sqlite
-RUN bun run --cwd apps/admin build
+# 构建期必须给一个**占位** DATABASE_URL（ADR-0020，2026-11-15）：Prisma 7 的 driver adapter
+# 在构造时就读 DATABASE_URL，而 admin 多个 lib 在模块顶层 `const db = getDb()`；
+# next build 的 collect page data 会 import 这些模块 → 缺变量直接失败（Failed to collect page data for /jobs）。
+# 构建期不连库，占位值够用；服务端代码运行时读容器 env，不会被内联进产物
+RUN DATABASE_URL="file:/tmp/openvod-build-placeholder.db" DB_PROVIDER=sqlite bun run --cwd apps/admin build
 
 FROM node:22-bookworm-slim AS runtime
 

@@ -262,8 +262,13 @@ worker 镜像含 `ffmpeg` 与 `fonts-noto-cjk`，层较大，首次推送耗时�
   预构建镜像编排），已在 CNB 云原生开发环境实测（端口预览、大磁盘挂载、公网 DB 连通、worker 正常轮询）。
 - **镜像架构**：流水线跑在 amd64 构建机上，产出 amd64 镜像；Prisma 引擎二进制也是按构建架构下载的，
   换 arm64 构建机时需要改为 `docker buildx build --platform linux/amd64`，否则引擎与运行时架构不匹配。
-- **admin 构建期无需 env**（实测 `next build` 通过，页面为 `ƒ Dynamic` / 两个静态页），
-  但运行时必须有 DB 与 `BETTER_AUTH_SECRET`，否则 `/healthz` 报 `db:false`。
+- **admin 构建期只需要一个占位 `DATABASE_URL`**（2026-11-15 修订；2026-09 那条「构建期无需 env」已失效）：
+  Prisma 7 的 driver adapter 在**构造时**就读该变量，而 admin 多个 lib 在模块顶层 `const db = getDb()`，
+  `next build` 的 collect page data 会 import 这些模块 → 缺变量直接
+  `Error: Failed to collect page data for /jobs`（`packages/db/src/index.ts` 的 `DATABASE_URL 未配置`）。
+  镜像已用 `DATABASE_URL="file:/tmp/openvod-build-placeholder.db" DB_PROVIDER=sqlite` 跑 build，
+  不需要真库；实测该占位值不会进产物（`grep -r openvod-build-placeholder .next` 无命中），运行时读容器 env。
+  运行时仍必须有真 DB 与 `BETTER_AUTH_SECRET`，否则 `/healthz` 报 `db:false`。
 - **player 镜像已实测**（2026-10-13）：`task image:player` 本地构建通过；`docker run --network host --env-file .env`
   启动后 `/healthz` 200、`/api/session` 正常换 JWT、浏览器列表与播放页链路通（容器内即生产构建 `next start`）。
   服务端地址改 env 重启即生效，无需重建镜像。

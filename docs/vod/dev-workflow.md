@@ -245,6 +245,7 @@ task contracts            # 契约生成物变更后需入库（契约门禁）
 | 现象 | 原因 / 处理 |
 |---|---|
 | `Module not found: Can't resolve '../generated/sqlite/client'`（或 mysql） | 只生成了一份客户端；`task db:generate` 生成两份，然后重启 dev |
+| `next build` 报 `Error: Failed to collect page data for /jobs`（或 /categories），栈里是 `packages/db/src/index.ts:74` 的 `DATABASE_URL 未配置` | 构建进程没有 `DATABASE_URL`：Prisma 7 的 driver adapter **构造时**就读它（ADR-0020），而 admin 多个 lib 在模块顶层 `const db = getDb()`，collect page data 会 import 这些模块。镜像已用占位值构建（`apps/admin/Dockerfile`）；本地复现/验证用 `env -u DATABASE_URL -u DB_PROVIDER bun run build`。新代码不要在模块顶层取 `getDb()`，写 `const db = () => getDb<any>()`（`lib/users.ts` 即此写法） |
 | `P2021 The table xxx does not exist` | 目标库未建表；SQLite 用 `task db:push`，MySQL 用 §4.3 迁移/baseline |
 | SQLite 里 `created_at` 变成 `2026-01-02 03:04:05.678` 文本 / Go 读出 1970 年 | 自建 `new PrismaClient({ adapter })` 时没走 `@openvod/db` 的 `createSQLiteAdapter()`，适配器默认存 ISO 8601 文本（ADR-0020） |
 | `The column xxx.yyy does not exist in the current database`（P2021 的列形态） | **改了 Prisma schema 但没把迁移应用到目标库**——生成客户端（`task db:generate`）只更新类型与查询编译器，**不会**改库。MySQL 跑 `task db:migrate`（= `prisma migrate deploy`），SQLite 跑 `task db:push`；先跑 `bunx prisma migrate status --schema prisma/mysql/schema.mysql.prisma`（只读）确认是「not yet been applied」还是 failed / drift。additive 迁移（加列 / 加表）向后兼容，放心补跑 |

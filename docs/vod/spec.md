@@ -1101,7 +1101,7 @@ t = ⌊(now + ttl) / ttl⌋ · ttl + ttl           # V：过期时刻；不论�
 
 - **镜像**：`apps/player/Dockerfile`（`node:22-bookworm-slim` 两阶段：bun 装依赖 + `next build` → 运行时 `next start`），构建上下文是**仓库根**（workspace 源码直引，同 admin）；**不依赖 `packages/db` / Prisma**，构建期无需生成客户端、无需 env（与 admin 镜像的差异，见 deploy-apps.md）；
 - ~~**浏览器直连地址运行时下发**~~（**2026-11-12 废止，见 §11.9**）：原 `GET /api/session` 响应 `delivery_base`（`PLAYER_PUBLIC_DELIVERY_BASE_URL` → `NEXT_PUBLIC_DELIVERY_BASE_URL` → `DELIVERY_BASE_URL`）改为同源代理，浏览器不再需要分发端地址；两个 `*_PUBLIC_DELIVERY_BASE_URL` 键随之退场（保留在 env 中也不再生效）。「镜像一次构建跨环境部署、改 env 即生效」的语义不变，且更彻底——分发端地址只存在服务端；
-- **CNB 流水线**：`.cnb.yml` 新增 `web_trigger_player_docker` 手动按钮（推送 `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/player:latest`）；`tag_push`（打 tag 发版）纳入 player——四镜像（worker → admin → delivery → player）单流水线串行构建、双标签（`:latest` 与 `:<tag名>`）；
+- **CNB 流水线**：`.cnb.yml` 新增 `web_trigger_player_docker` 手动按钮（推送 `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/player:latest`）；`tag_push`（打 tag 发版）纳入 player——四镜像（worker / admin / delivery / player）按本次 tag 相对上一个 tag 的改动并行重建受影响的那些（`scripts/ci/changed-scope.sh`）、双标签（`:latest` 与 `:<tag名>`）；
 - **compose**：根 `docker-compose.yml` 新增 `player` 服务（`PLAYER_PORT` 宿主/容器同端口、`env_file: .env`、`/healthz` 探活、json-file 日志轮转）；`scripts/compose.sh up` 额外打印播放端预览地址（`{{port}}` 换 `PLAYER_PORT`）；
 - **本地等价**：`task image:player`（`docker build -f apps/player/Dockerfile -t openvod-player:latest .`）；`OPENVOD_PLAYER_IMAGE` 可覆盖 compose 镜像地址；
 - **前置（2026-11-12 修订）**：容器形态下只需 `DELIVERY_BASE_URL` 指向容器内可达的分发端地址（§11.9 代理），浏览器不再直连分发端——`DELIVERY_CORS_ORIGINS` 无需放行 player 源站；分片直连对象存储仍需对象桶 CORS 放行播放端源站（§11.2）。

@@ -317,14 +317,28 @@ export function SubtitleTracksPanel({ mediaId, mediaTitle, onChanged }: Subtitle
       key: "lang",
       width: 200,
       render: (_, t) => (
-        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
           <Space size={6}>
             <Tag color="geekblue" style={{ marginInlineEnd: 0 }}>
               {t.lang}
             </Tag>
             {t.is_default ? <Tag color="green">默认</Tag> : null}
           </Space>
-          <Typography.Text ellipsis={{ tooltip: t.label }}>{t.label}</Typography.Text>
+          {/* 编辑语言与展示名就放在展示名后面：入口贴近被改的内容，操作列只留播放 / 正文 / 替换 / 删除 */}
+          <div style={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
+            <Typography.Text ellipsis={{ tooltip: t.label }} style={{ minWidth: 0 }}>
+              {t.label}
+            </Typography.Text>
+            <Tooltip title="编辑语言与展示名">
+              <Button
+                type="text"
+                size="small"
+                icon={<EditOutlined />}
+                aria-label="编辑语言与展示名"
+                onClick={() => openEdit(t)}
+              />
+            </Tooltip>
+          </div>
         </div>
       ),
     },
@@ -410,9 +424,6 @@ export function SubtitleTracksPanel({ mediaId, mediaTitle, onChanged }: Subtitle
               </Button>
             </span>
           </Tooltip>
-          <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openEdit(t)}>
-            编辑
-          </Button>
           <Upload
             accept=".vtt,.srt,text/vtt"
             showUploadList={false}

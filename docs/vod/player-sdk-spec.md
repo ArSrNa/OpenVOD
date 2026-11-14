@@ -460,7 +460,8 @@ export type PlayerSdkEvent =
   `allowExts: .ts`，全量行覆盖率红线 `lines: 95`）上报洞察与徽章；未找到报告或低于红线会阻断后续发布阶段；
 - **发布目标**：npm 官方（`registry.npmjs.org`，令牌 `NPM_TOKEN` 由密钥仓库 `arsrna/env` 的 `npm.yml` 注入）
   与 CNB **组织级** npm 制品库（地址 `CNB_NPM_REGISTRY`，令牌缺省用内置 `CNB_TOKEN`）；
-- **触发**：`tag_push`（与运行镜像同批的独立 job，便于单独重试）+ 仓库页手动按钮「发布播放器SDK」；
+- **触发**：`tag_push`（与运行镜像同批的独立流水线，便于单独重试；`packages/player-sdk` 无改动时整条跳过，
+  判断口径见 `scripts/ci/changed-scope.sh`）+ 仓库页手动按钮「发布播放器SDK」（手动触发一律发布）；
   版本号取**根 `package.json` 的 version**（与 `auto_tag` 同口径），脚本在 tag 流水线中额外校验 tag 名与版本一致；
 - **可复现命令**：`bun run --cwd packages/player-sdk publish:{dry,npm,cnb,both}`（本地与 CI 同一条命令；
   `publish:dry` 不联网、无需令牌，用于演练与产物检查）。

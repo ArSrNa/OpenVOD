@@ -132,8 +132,9 @@ spec.md §6.7）：`s3_presign`（默认，签名在 S3）| `cdn_url_auth`（签
 | **构建delivery（Edgeone）** | `web_trigger_delivery_edgeone` | 构建并检查 `.run/edgeone-delivery/.edgeone` → 固定版本 CLI 上传生产环境 → 真实域名冒烟 |
 
 （其余：开发环境镜像、admin 与 worker（两者各含腾讯云 CCR 同步按钮）、player —— 见 [deploy-apps.md](./deploy-apps.md)。
-发版另有 `tag_push` 事件：一次性串行构建 worker / admin / delivery 三镜像推送制品库，
-各打 `:latest` 与 `:<tag名>` 双标签，见 deploy-apps.md「CNB 一键构建」。）
+发版另有 `tag_push` 事件：按本次 tag 相对上一个 tag 的改动，只重建受影响的镜像——delivery 仅在
+`apps/delivery/` 或根 `package.json` 版本号变动时重建；重建的打 `:latest` 与 `:<tag名>` 双标签，
+见 deploy-apps.md「CNB 一键构建」。）
 
 两处容易踩的点：
 

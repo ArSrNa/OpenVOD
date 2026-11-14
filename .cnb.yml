@@ -188,7 +188,7 @@ include:
 # 播放器 SDK（openvod-jssdk）：单测覆盖率上报 + 发布到 npm 官方与 CNB 制品库。
 # 版本号唯一真源 = 根 package.json 的 version（与 auto_tag 同口径，tag_push 时脚本还会校验 tag 名与版本一致）；
 # 发布清单 / dist 构建 / 产物自包含校验都由 packages/player-sdk/scripts/publish.ts 负责（本地同一条命令可复现）。
-# 触发：tag_push（打 tag 发版，与镜像同批）+ 手动按钮 web_trigger_publish_sdk（补发 / 先只发 npm）。
+# 触发：tag_push（打 tag 发版，与镜像同批，仅当 packages/player-sdk 有改动）+ 手动按钮 web_trigger_publish_sdk（补发 / 先只发 npm，手动触发一律发）。
 .publish-sdk: &publish-sdk
   name: 发布播放器 SDK（单测覆盖率 + npm 官方 / CNB 制品库）
   runner:
@@ -200,10 +200,25 @@ include:
     # 也可改由密钥仓库 env/npm.yml 提供同名变量——同一 job 内 env 优先于 imports。
     CNB_NPM_REGISTRY: https://npm.cnb.cool/arsrna/media/openvod-jssdk/-/packages/
   stages:
+    - name: 判断这次要不要发
+      # 手动按钮 / API 触发一律发布（补发场景）；tag_push 只在 packages/player-sdk 有改动时发，
+      # 跳过时后面几个 stage 全部不跑。变更检测与镜像构建共用同一个脚本，口径一致。
+      script: |
+        if [ "${CNB_EVENT:-}" = "tag_push" ]; then
+          sh scripts/ci/changed-scope.sh
+        else
+          echo "非 tag_push 事件，直接发布"
+          echo "##[set-output scope_sdk=1]"
+        fi
+      exports:
+        scope_sdk: PUBLISH_SDK
     - <<: *install
+      if: '[ "${PUBLISH_SDK:-1}" = "1" ]'
     - name: 单测与覆盖率
+      if: '[ "${PUBLISH_SDK:-1}" = "1" ]'
       script: bun run --cwd packages/player-sdk test:coverage
     - name: 覆盖率上报（CNB 洞察 / 徽章）
+      if: '[ "${PUBLISH_SDK:-1}" = "1" ]'
       type: testing:coverage
       options:
         pattern: packages/player-sdk/coverage/lcov.info
@@ -213,6 +228,7 @@ include:
       exports:
         lines: SDK_COVERAGE
     - name: 构建并发布（npm 官方 + CNB 制品库）
+      if: '[ "${PUBLISH_SDK:-1}" = "1" ]'
       imports:
         - https://cnb.cool/arsrna/env/-/blob/main/npm.yml # NPM_TOKEN；CNB 制品库用内置 CNB_TOKEN
       script:
@@ -322,38 +338,53 @@ $:
   # 手动发布播放器 SDK（补发 / 首次发版前演练：`--registry npm` 可先只发 npm 官方）
   web_trigger_publish_sdk:
     - <<: *publish-sdk
-  # tag_push（打 tag 发版）：一次性构建全部运行镜像并推送制品库。
+  # tag_push（打 tag 发版）：**只构建这次真的改了的镜像**，不再四个全建。
   #
-  # 四个镜像放在**同一个 Stage 的四个并行 job** 里。CNB 并发模型是「Pipeline 之间并发、Stage 之间
-  # 串行、Stage 内 jobs 对象形式 = 并行 / 数组形式 = 串行」，所以把原来的四个 stage 改成
-  # 一个 stage + `jobs:` 对象，四个 docker build 同时开跑，总耗时 ≈ 最慢的那个而不是四者相加。
-  # 任一 job 失败 → 该 Stage 失败 → 流水线失败。
+  # 为什么不用 ifModify：CNB 只在 push / commit.add / PR 事件统计变更文件，tag_push 会直接忽略
+  # ifModify（语法手册：「上述支持事件以外，不适合统计文件变更，会忽略 ifModify 检查」）。
+  # 所以用等价做法：stage 1 跑 scripts/ci/changed-scope.sh，对比「上一个 tag → 本次 tag」，
+  # 结论经 stage exports 注入环境变量，stage 2 的每个并行 job 用 if 决定跑不跑。
+  # 「哪类改动触发哪个镜像」全在那个脚本的 *_PATHS 正则里，改依赖范围只改它。
   #
-  # 为什么不把四条构建拆成四条独立 Pipeline 并发：
-  #   - 并行 job 共用本 Pipeline 的**同一个构建节点**和**同一个 DinD daemon**（`runner.cpus` 是整条
-  #     Pipeline 的总配额，由四个 job 分摊），省节点、基础镜像层只拉一次；
-  #   - 拆成四条 Pipeline 会各自占一个节点、各自拉一遍 node:22 / golang:1.26 / oven/bun，且其中
-  #     一条失败时另外三条照样会把镜像推上去，更容易留下「半个版本」。
-  # 代价是四个 build 共享配额：重负载下单 build 拿不到全部核心，故 runner.cpus 从 32 抬到 64
-  # （单次构建仍是"一个节拍"内做完，不会出现四个 build 串行等同一个节点的排队）。
+  # 四个镜像仍在**同一个 Stage 的四个并行 job** 里（jobs 对象形式 = 并行）：跳过的 job 不占构建时间，
+  # 最坏情况仍是一个节拍做完，最好情况（只改一个应用）只付一个镜像的构建时间。
   #
-  # 每个镜像同时打 :latest 与 :${CNB_BRANCH}（tag 名）双标签。
+  # 标签：重建的镜像同时打 :latest 与 :${CNB_BRANCH}（tag 名）；没重建的镜像由 stage 3 把上一版的
+  # tag 复制成本次版本 tag（只搬 manifest，秒级），「按 tag 回滚」的语义不受影响。
+  #
+  # 例外：根 package.json 的 version 在构建期烘焙进 admin（页脚展示）与 delivery（/v1/meta），
+  # 所以「只改版本号」的一版仍会重建这两个镜像。想连这也省掉：把 changed-scope.sh 里的
+  # package.json 从 ADMIN_PATHS / DELIVERY_PATHS 删掉，代价是版本号停在各自上次构建时的值。
   tag_push:
-    - name: 发布全部运行镜像（worker / admin / delivery / player）
+    - name: 发版（只构建有改动的镜像）
       runner:
-        cpus: 64 # 总配额（内存 = 核数 × 2G），四个并行 docker build 分摊；调小会显著拉长最慢的 build
+        cpus: 64 # 四镜像并行时的总配额上限（内存 = 核数 × 2G）；只建一两个时用不到，不是预留
       services:
         - docker
       stages:
-        - name: 并行构建并推送四个运行镜像
+        - name: 计算本次变更范围
+          # 要 git 才做得了 diff；默认构建镜像不保证带 git，用仓库开发镜像
+          image: docker.cnb.cool/arsrna/media/openvod/dev:latest
+          script: sh scripts/ci/changed-scope.sh
+          exports:
+            scope_worker: BUILD_WORKER
+            scope_admin: BUILD_ADMIN
+            scope_delivery: BUILD_DELIVERY
+            scope_player: BUILD_PLAYER
+            retag_targets: RETAG_TARGETS
+            prev_tag: PREV_TAG
+        - name: 并行构建有改动的镜像
           # 对象形式 = 并行；job 的 key 即 CNB_BUILD_JOB_NAME / 日志里的任务名
           jobs:
             worker:
               name: docker build worker
+              # 条件里的默认值 1 是兜底：变量没导出成功时照旧全建，绝不静默跳过发版
+              if: '[ "${BUILD_WORKER:-1}" = "1" ]'
               script:
                 - docker build -f apps/worker/Dockerfile -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/worker:latest -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/worker:${CNB_BRANCH} . --push
             admin:
               name: docker build admin
+              if: '[ "${BUILD_ADMIN:-1}" = "1" ]'
               script:
                 - docker build -f apps/admin/Dockerfile -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/admin:latest -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/admin:${CNB_BRANCH} . --push
             # 构建上下文必须是 apps/delivery（Dockerfile 的 COPY 路径相对该目录）。
@@ -361,6 +392,7 @@ $:
             #   docker buildx build --platform linux/amd64 --push -t .../delivery:latest -t .../delivery:${CNB_BRANCH} apps/delivery
             delivery:
               name: docker build delivery
+              if: '[ "${BUILD_DELIVERY:-1}" = "1" ]'
               script:
                 - cd apps/delivery
                 # 版本信息注入 GET /v1/meta（唯一真源 = 根 package.json）。
@@ -372,17 +404,40 @@ $:
                 - docker build --build-arg VERSION="$VERSION" --build-arg COMMIT="$COMMIT" --build-arg BUILD_TIME="$BUILD_TIME" -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:latest -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/delivery:${CNB_BRANCH} . --push
             player:
               name: docker build player
+              if: '[ "${BUILD_PLAYER:-1}" = "1" ]'
               script:
                 - docker build -f apps/player/Dockerfile -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/player:latest -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/player:${CNB_BRANCH} . --push
+        - name: 未重建镜像：把上一版的 tag 复制成本次版本 tag
+          # 不重建，只在本仓库制品库内搬 manifest：给「没改动却要有本版本 tag」的镜像补齐，
+          # 保证任意一版发出去之后四个镜像都能按 tag 取到。补不上只告警，不阻断发版。
+          if: '[ -n "${RETAG_TARGETS:-}" ]'
+          script: |
+            set -eu
+            REG=${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}
+            # 口令走 --password-stdin，避免 -p 把令牌回显进日志（同 push-worker-ccr）
+            if [ -n "${CNB_TOKEN:-}" ]; then
+              printf '%s' "$CNB_TOKEN" | docker login "$CNB_DOCKER_REGISTRY" --username "${CNB_TOKEN_USER_NAME:-cnb}" --password-stdin
+            fi
+            for img in $(printf '%s' "$RETAG_TARGETS" | tr ',' ' '); do
+              SRC="$REG/$img:${PREV_TAG}"
+              if ! docker buildx imagetools inspect "$SRC" >/dev/null 2>&1; then
+                # 上一版没有该 tag 时退回 latest：本次没重建它，内容一致
+                SRC="$REG/$img:latest"
+              fi
+              echo "$img：$SRC → $REG/$img:${CNB_BRANCH}"
+              docker buildx imagetools create -t "$REG/$img:${CNB_BRANCH}" "$SRC" \
+                || echo "警告：$REG/$img:${CNB_BRANCH} 未补齐，需要该版本镜像时手动点对应构建按钮"
+            done
 
-    # 播放器 SDK 发版（与镜像同批的**独立 job**）：单测覆盖率上报 + 发布 openvod-jssdk 到
+    # 播放器 SDK 发版（与镜像同批的**独立流水线**）：单测覆盖率上报 + 发布 openvod-jssdk 到
     # npm 官方与 CNB 制品库，版本取根 package.json 的 version（并校验与 tag 名一致）。
-    # 独立 job 便于 SDK 发布失败时单独重试（或用「发布播放器SDK」按钮补发），不影响镜像推送。
+    # 独立流水线便于 SDK 发布失败时单独重试（或用「发布播放器SDK」按钮补发），不影响镜像推送。
+    # tag_push 下它自己判断 packages/player-sdk 有没有改动，没改动则整条跳过。
     - <<: *publish-sdk
 
 # 默认分支名下的配置（CNB 按**分支名**匹配 auto_tag 的流水线配置，`$` 兜底会被忽略）。
 # auto_tag 生效链路：Tag 列表页「自动生成 Tag」→ 本任务读根 package.json 的 version → 打同名 tag →
-# 触发 tag_push（四镜像 + 播放器 SDK 发布；SDK 侧还会校验 tag 名与该 version 一致，不一致拒绝发布）。
+# 触发 tag_push（按变更只构建改到的镜像 + 播放器 SDK 发布；SDK 侧还会校验 tag 名与该 version 一致，不一致拒绝发布）。
 main:
   # 默认触发（每次 push 到 main）跑播放器 SDK 单测并上报覆盖率——README 顶部「单测覆盖率」徽章的取数来源。
   # tag_push 只在发版时跑，缺了这条徽章会一直是 unknown。

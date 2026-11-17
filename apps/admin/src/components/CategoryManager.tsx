@@ -292,10 +292,10 @@ export function CategoryManager() {
               description={
                 <div style={{ maxWidth: 280 }}>
                   {row.media_count > 0
-                    ? `${row.media_count} 个直属媒资会归入默认分类「其他」（媒资不会被删除，仅同步刷新自定义元数据里的分类投影）`
+                    ? `${row.media_count} 个直属媒资会归入默认分类「其他」`
                     : "该分类下暂无直属媒资"}
                   <br />
-                  分类本身不可恢复。
+                  不会删除媒资本身，分类不可恢复！
                 </div>
               }
               okText="删除"
@@ -314,7 +314,7 @@ export function CategoryManager() {
   return (
     <ProCard
       title="媒资分类"
-      subTitle={`共 ${items.length} 个分类（无限层级；未设置分类的媒资归入默认分类「其他」；删除分类不会删除媒资）`}
+      subTitle={`共 ${items.length} 个分类`}
       bordered={false}
       extra={
         <Space>

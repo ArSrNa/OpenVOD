@@ -393,7 +393,7 @@ export function JobsManager() {
         </Button>
         <Tag color={CONN_META[conn].color}>{CONN_META[conn].label}</Tag>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          <ThunderboltOutlined /> 任务由 Worker 认领执行；同一媒资同时只允许一个进行中的任务（发起入口在「媒资管理 → 更多 → 转码」）
+          <ThunderboltOutlined /> 同一媒资同时只允许一个进行中的转码任务
         </Typography.Text>
       </Space>
 

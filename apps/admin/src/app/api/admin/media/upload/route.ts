@@ -1,4 +1,6 @@
 // POST /api/admin/media/upload：原视频上传入库（spec.md §1.3 / §2，M1）
+// **2026-11-17 起管理端不再调用**：上传改为浏览器直传对象存储（upload/init → PUT → upload/complete，
+// 见 lib/presigned-upload.ts 与 ADR-0005）。本端点保留兼容（外部脚本 / 历史集成）。
 // 协议：原始文件字节流作为请求体（Content-Type: application/octet-stream），
 // 文件名 / 展示名走查询参数——流式直传不经过 multipart 缓冲，大文件内存占用恒定：
 //   POST /api/admin/media/upload?filename=video.mp4&title=标题
@@ -6,7 +8,7 @@
 // 2026-09-30：上传完毕后**异步自动生成元数据**（ffprobe → probe.json + media.probe/duration_ms，spec.md §2.1）：
 // 响应立即返回（`metadata.status="pending"`），探测在 `after()` 中于响应发送后执行；best-effort ——
 // 探测失败只告警（可手动「生成元数据」重跑），前端按递增间隔轮询详情直至 probe 就绪（lib/metadata-poll.ts）。
-// 大文件 S3 分片直传（presignPut multipart）留待后续（ADR-0005 上传路径演进）。
+// multipart 分片 / 断点续传仍为演进项（ADR-0005 上传路径）。
 import { after, NextRequest, NextResponse } from "next/server";
 import { apiError, apiJson, auditAction, getAdminSession, unauthorized } from "@/lib/api";
 import { mediaErrorResponse, uploadOriginal } from "@/lib/media";

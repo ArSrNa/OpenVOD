@@ -1,6 +1,7 @@
 // 受保护的控制台业务 API（ADR-0010 端点语义平移到 /api/admin/*）
 // 已实现的具体路由优先于本 catch-all；未列出的路径统一会话守卫 + 501 占位。
-//   已实现（M1 媒资管理）：/api/admin/media、/media/upload、/media/[id]（GET/PATCH/DELETE）、
+//   已实现（M1 媒资管理）：/api/admin/media、/media/upload（旧流式上传，保留兼容）、
+//                         /media/upload/init|complete|abort（浏览器直传对象存储，ADR-0005）、/media/[id]（GET/PATCH/DELETE）、
 //                         /media/[id]/original、/media/[id]/cover、/media/[id]/metadata（生成元数据）
 //   已实现（M3 产物）：/media/[id]/preview-play（解密播放预览，走分发端签名链路）、
 //                      /media/[id]/products/[templateId]（DELETE 删除一套模板产物）

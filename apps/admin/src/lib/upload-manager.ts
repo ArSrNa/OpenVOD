@@ -5,14 +5,12 @@
 // 并发上限 UPLOAD_CONCURRENCY = 2（前端常量，非服务端配置）：UPLOADING 占槽位，
 // 上传结束（→ METADATA）即让出槽位接续下一个；元数据轮询独立进行，不占上传槽位。
 // 切页不中断：单例存活于整个页面会话，组件卸载只解除订阅、不中止 XHR（spec.md §9.1 / §9.4）。
-// 不做跨刷新持久化：刷新即丢（无进行中任务丢失由服务端「请求中断 → 按存储写入失败回滚」兜底，§2.1）。
+// 不做跨刷新持久化：刷新即丢（未完成的直传由 abort 端点清理占位，§2.1）。
+// 2026-11-17：上传改为浏览器直传对象存储（lib/presigned-upload.ts，ADR-0005 上传路径），
+// 管理端只发 init / complete / abort 三个小请求，文件字节不经过管理端。
 import { pollMetadataReady } from "./metadata-poll";
-import {
-  calcUploadPct,
-  uploadViaXhr,
-  UploadCanceledError,
-  UploadUnauthorizedError,
-} from "./xhr-upload";
+import { uploadToStorage } from "./presigned-upload";
+import { UploadCanceledError, UploadUnauthorizedError } from "./xhr-upload";
 
 /** 上传并发槽位数（前端常量，spec.md §9.4：单请求流式上传独占出口带宽，2 路为折中） */
 export const UPLOAD_CONCURRENCY = 2;
@@ -65,7 +63,7 @@ export type UploadExecutor = (
 ) => UploadHandle;
 
 export interface UploadManagerDeps {
-  /** 上传执行器（缺省：XHR 流式上传 POST /api/admin/media/upload?filename=…，§2 协议） */
+  /** 上传执行器（缺省：浏览器直传对象存储，lib/presigned-upload.ts） */
   upload?: UploadExecutor;
   /** 元数据就绪轮询（缺省：复用 pollMetadataReady 按递增间隔查详情，spec.md §2.1 / §9.4） */
   pollMetadata?: (mediaId: string) => Promise<boolean>;
@@ -88,23 +86,8 @@ function newTaskId(): string {
 
 function defaultDeps(): Required<UploadManagerDeps> {
   return {
-    upload: (file, filename, onProgress) => {
-      const handle = uploadViaXhr(
-        `/api/admin/media/upload?filename=${encodeURIComponent(filename)}`,
-        file,
-        (loaded, total) => onProgress(loaded, calcUploadPct(loaded, total)),
-      );
-      return {
-        promise: handle.promise.then((body) => {
-          const mediaId = (body as { id?: unknown } | null)?.id;
-          if (typeof mediaId !== "string" || !mediaId) {
-            throw new Error("上传成功但响应缺少媒资 ID");
-          }
-          return { mediaId };
-        }),
-        abort: handle.abort,
-      };
-    },
+    // 缺省执行器：浏览器直传对象存储（init → PUT → complete），字节不经过管理端（ADR-0005）
+    upload: (file, filename, onProgress) => uploadToStorage(file, filename, onProgress),
     pollMetadata: (mediaId) =>
       pollMetadataReady(mediaId, {
         fetchDetail: async (id) => {

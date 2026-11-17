@@ -79,7 +79,7 @@ root 下按资产类别分四个分区，互不嵌套：
 ## 2. 管理端 API（控制面，`/api/admin/*`）
 
 - 复用 better-auth 会话守卫（Cookie），未登录 401；错误响应统一 `{ error: { code, message } }`，错误码沿用 `@openvod/shared ERROR_CODES`（含 `bad_request`，2026-09-18 扩充）；
-- 上传协议（M1）：原视频 / 封面上传以**原始文件字节流**为请求体（`Content-Type: application/octet-stream`），文件名 / 展示名走查询参数——流式直传不经过 multipart 缓冲，服务端内存占用与文件大小无关；
+- 上传协议（2026-11-17 修订，ADR-0005 上传路径）：原视频为**浏览器直传对象存储**——管理端只发三个小请求（§2.1 `upload/init` 生成媒资 ID 与预签名 PUT URL、`upload/complete` 确认对象、`upload/abort` 清理），**文件字节从浏览器直接进对象存储，不经过管理端**；M1 的流式端点 `POST /api/admin/media/upload`（原始字节流请求体）保留兼容，管理端不再调用。封面上传仍为原始字节流（`Content-Type: application/octet-stream`，文件名走查询参数）；
 - 管理端 API 响应一律 `Cache-Control: no-store`；敏感操作（上传 / 重命名 / 删除 / 封面）落 `audit_logs`（open-questions #14）。
 
 > **端到端接口清单**（全部端点的方法 / 请求 / 响应 / 错误码 / 示例，含 2026-09-24 新增的分类与自定义元数据）
@@ -90,7 +90,10 @@ root 下按资产类别分四个分区，互不嵌套：
 | 端点 | 方法 | 说明 |
 |---|---|---|
 | `/api/admin/media` | GET | 媒资列表（§1.4 存储视角 + DB 展示名/状态合并）；每条含 `products[]`——按模板分组的转码产物（模板名 / 对象数 / 体积 / 变体），旧布局产物归入 `template_id=""`；另含 `subtitleCount`（该媒资字幕对象数，§7.2）与 `category`（分类引用含路径）/ `description` / `tags`（自定义元数据，§8.3） |
-| `/api/admin/media/upload` | POST | 原视频上传（§1.3）：生成数字 ID（主键冲突即重取）→ 流式写 `original/{id}.{ext}` → `media` 行落库；存储失败回滚 DB 行；**上传完毕后异步自动生成元数据**（2026-09-30 增：与 `/{id}/metadata` 同源，ffprobe → `metadata/{id}/probe.json` + `media.probe` / `duration_ms`）——响应立即返回 `metadata.status="pending"`，探测在响应发送后由后台任务执行（Next `after()`）；**best-effort**：失败只告警（上传仍成功，可手动重跑），管理端以递增间隔轮询详情直至 `probe` 就绪。**2026-10-01 增**：上传入口为独立上传页 + 客户端上传队列（§9）——客户端并发上限 2、取消 = 中止请求（服务端按「存储写入失败」回滚占位行）；端点、协议与并发语义本身不变 |
+| `/api/admin/media/upload` | POST | 原视频上传（§1.3）：生成数字 ID（主键冲突即重取）→ 流式写 `original/{id}.{ext}` → `media` 行落库；存储失败回滚 DB 行；**上传完毕后异步自动生成元数据**（2026-09-30 增：与 `/{id}/metadata` 同源，ffprobe → `metadata/{id}/probe.json` + `media.probe` / `duration_ms`）——响应立即返回 `metadata.status="pending"`，探测在响应发送后由后台任务执行（Next `after()`）；**best-effort**：失败只告警（上传仍成功，可手动重跑），管理端以递增间隔轮询详情直至 `probe` 就绪。**2026-10-01 增**：上传入口为独立上传页 + 客户端上传队列（§9）——客户端并发上限 2、取消 = 中止请求（服务端按「存储写入失败」回滚占位行）；端点、协议与并发语义本身不变；**2026-11-17 起管理端不再调用本端点**（保留兼容），改用下列三个直传端点 |
+| `/api/admin/media/upload/init` | POST | 直传第一步（`?filename=…&title=…`）：生成数字媒资 ID + `media` 占位行 → 返回 `{id, title, ext, key, uploadUrl, expiresAt}`；`uploadUrl` 为 `original/{id}.{ext}` 的预签名 PUT（TTL 6h，恒走存储端点，不经 CDN）。占位行在 `complete` 前不出现在列表（列表以 `original/` 对象为准，§1.4） |
+| `/api/admin/media/upload/complete` | POST | 直传第三步（JSON `{id}`）：HEAD 确认对象已写入（缺失 → 409）→ 导出 `metadata/{id}/custom.json` → 响应发送后异步自动生成元数据（同上传端点，`metadata.status="pending"`）；审计 `media.upload` |
+| `/api/admin/media/upload/abort` | POST | 直传清理（JSON `{id}`）：取消 / 失败后删残留对象与占位行；已产生 `proceed/{id}/` 产物 → 409（此时走 `DELETE /api/admin/media/{id}`）；审计 `media.upload_abort` |
 | `/api/admin/media/{id}` | GET | 详情：存储资产计数 + DB 元数据合并 + `products[]`（每套模板产物的模板名 / 变体 / 对象数 / 体积，模板 ID 可追溯到 `proceed/{id}/{模板id}/`；**2026-11-15 增**每项 `isVisible` / `isDefault`）+ `productSettings`（媒资级展示白名单 / 默认产物，§6.3）+ `custom`（自定义元数据**恒三项**：分类含 `id/name/path` / 描述 / 标签，§8.3）+ `customData`（稀疏投影原文） |
 | `/api/admin/media/{id}` | PATCH | 媒资字段部分更新（`contracts UpdateMediaRequest`）：`title` = 重命名（仅改 `media.title`，绝不改动 original 文件名与媒资 ID）；`description` / `tags` / `category_id` = 自定义元数据设置（§8.2：服务端重算 `custom_data` 投影并导出 `metadata/{id}/custom.json`；**`category_id: null` = 归入默认分类「其他」**）；`uploaded_at` = 自定义上传时间（**2026-09-30 增**，ISO 8601，`null` = 恢复默认：管理端「上传时间」展示与分发端列表排序回退链使用，**不进入**元数据投影 / 分发端下发）；至少一个字段，否则 400。审计 `media.rename` / `media.metadata_update` / `media.uploaded_at_update` |
 | `/api/admin/categories` | GET | 分类扁平列表（§8.1）：`id` / `name` / `description` / `parent_id`（层级由它表达，客户端组树）/ `sort_order` / `is_system`（系统默认分类「其他」= true，前端禁用删除）/ `media_count`（直属，含未设置分类的历史媒资计入「其他」）/ `descendant_media_count`（含子孙；**保留字段，当前 UI 不展示**）/ 时间戳；**默认分类缺失时幂等补建** |
@@ -761,9 +764,8 @@ t = ⌊(now + ttl) / ttl⌋ · ttl + ttl           # V：过期时刻；不论�
 ## 9. 上传页与上传任务（客户端队列，2026-10-01）
 
 > 决策（用户 2026-10-01 定）：上传从媒资列表的内联按钮升级为**独立页面「上传视频」**（`/media/upload`）；
-> 上传任务由**管理端浏览器侧的客户端队列**承载（**无新端点、无 DB 迁移、无服务端任务表**）。
-> 服务端上传协议与端点**不变**（§2 原始字节流 `application/octet-stream`；§2.1 `/api/admin/media/upload`），`docs/vod/api.md` 无需改动；
-> 本功能不引入新 ADR（不改服务端协议与数据模型），演进项（分片直传）挂 ADR-0005「上传路径演进」。
+> 上传任务由**管理端浏览器侧的客户端队列**承载（**无 DB 迁移、无服务端任务表**）。
+> **2026-11-17 修订**：队列不变，传输改为**浏览器直传对象存储**（ADR-0005 上传路径）——新增 `upload/init` / `upload/complete` / `upload/abort` 三个端点（§2.1），旧流式端点保留兼容；`docs/vod/api.md` 同步更新。
 
 ### 9.1 页面与入口
 
@@ -789,10 +791,10 @@ t = ⌊(now + ttl) / ttl⌋ · ttl + ttl           # V：过期时刻；不论�
 | `CANCELED` | 用户取消（中止 XHR） | 重试、移除 |
 
 - `DONE` 且 `metadata=timeout`（轮询序列耗尽）：展示黄色告警「元数据仍在生成或已失败，可在媒资页「更多 → 生成元数据」手动重跑」（语义同 §2.1 现有实现）；
-- **取消** = `xhr.abort()` → `CANCELED`；服务端语义（§2.1）：请求中断 → `uploadOriginal` 按「存储写入失败」回滚占位行；但存在「存储已写完、响应未返回」的窗口——该窗口内取消**媒资已入库**。故取消后提示「若该文件已上传完成，媒资仍会出现在列表」（列表页每次挂载重新拉取，无需额外机制）；
-- **重试**：仅 `FAILED / CANCELED` 可重试 → 重新入队（新 XHR、`pct` 归零、清 `error`），复用同一 `File` 对象（不重新读盘）；
+- **取消** = `xhr.abort()`（中止预签名 PUT）→ `CANCELED`，并向 `upload/abort` 发一次清理请求丢弃占位行与残留对象；`complete` 已响应的任务不再清理（此时媒资已成立，删除走媒资页）。故取消后提示「若该文件已上传完成，媒资仍会出现在列表」（列表页每次挂载重新拉取，无需额外机制）；
+- **重试**：仅 `FAILED / CANCELED` 可重试 → 重新入队（重新 init + 新 PUT、`pct` 归零、清 `error`），复用同一 `File` 对象（不重新读盘）；
 - **移除**：仅终态可移除；「清空已完成」批量移除 `DONE / FAILED / CANCELED`；
-- **不做跨刷新 / 跨标签页持久化**（v1）：状态仅存内存单例；刷新 / 关闭页面即中断（进行中任务丢失，服务端按中断语义回滚；见 open-questions #20）。
+- **不做跨刷新 / 跨标签页持久化**（v1）：状态仅存内存单例；刷新 / 关闭页面即中断（未完成的直传留下占位行，不出现在列表）；见 open-questions #20。
 
 ### 9.3 页面交互
 
@@ -813,15 +815,15 @@ t = ⌊(now + ttl) / ttl⌋ · ttl + ttl           # V：过期时刻；不论�
 - React 绑定用 `useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)`：快照必须**不可变替换**（变更时整体换新引用）并提供稳定的 `getServerSnapshot`（SSR 首帧空列表），避免无限重渲染；页面卸载只移除订阅者，**不中止 XHR**——这是「切换页面不影响上传」的实现前提；
 - **并发上限 2**（前端常量 `UPLOAD_CONCURRENCY = 2`，非服务端配置）：超出排队，任务结束后自动接续下一个；动机：单请求流式上传独占出口带宽，且服务端每请求在 `after()` 内跑一次 ffprobe，2 路是吞吐与资源的折中；
 - **两段式执行（2026-10-01 用户定）**：入队只加列表（`PENDING`）不占并发槽位；「开始上传」把全部 `PENDING` 批量转入 `QUEUED`，**并发槽位只消费 `QUEUED`**——重试与运行批次接续都不会拉起未开始（`PENDING`）的任务；
-- 上传实现沿用现有 XHR 范式（`POST /api/admin/media/upload?filename=…`、`xhr.send(file)`、`upload.onprogress`），从 `MediaList.tsx` 抽出并扩展 `abort()`、错误分类与队列调度；
+- 上传实现为 `lib/presigned-upload.ts`：`upload/init` → XHR `PUT` 预签名 URL（`xhr.send(file)`、`upload.onprogress`）→ `upload/complete`；错误分类与队列调度沿用 `lib/xhr-upload.ts` 的 `UploadCanceledError` / `UploadUnauthorizedError`（`abort()` 同时中止 PUT 与清理占位）；
 - **元数据阶段**复用 `lib/metadata-poll.ts` 的 `pollMetadataReady`（依赖注入不变）：任务成功后置 `METADATA` → 轮询详情 → `probe` 就绪置 `DONE(metadata=ready)`；序列耗尽置 `DONE(metadata=timeout)`；
 - 认证与错误：401 → 跳 `/login` 并终止队列（进行中任务置 `FAILED`，原因「登录已过期」），不再继续接续排队任务。
 
 ### 9.5 边界与非目标
 
-- **v1 非目标**：断点续传 / 分片直传（`presignPut` multipart，ADR-0005 上传路径演进）、上传任务跨刷新 / 跨标签页持久化、服务端上传任务表与查询 API（open-questions #20）、暂停 / 恢复、上传限速；
-- 上传端点、协议、服务端并发语义不变：**无新端点、无 DB 迁移、无 Go 侧改动**；
-- 单文件大小沿用平台现状（上传路由 `maxDuration = 600`；S3 侧分片由 `@aws-sdk/lib-storage` 内部处理），本页不新增限制；
+- **v1 非目标**：断点续传 / multipart 分片直传（ADR-0005 上传路径演进）、上传任务跨刷新 / 跨标签页持久化、服务端上传任务表与查询 API（open-questions #20）、暂停 / 恢复、上传限速；
+- 直传端点见 §2.1；**无 DB 迁移、无 Go 侧改动**；
+- 单文件受 S3 单次 PUT 上限约束（5GB）；存储桶需允许管理端源站的 `PUT` 跨域请求，否则浏览器直接报错无法上传；
 - 上传任务与转码任务（`/jobs`，DB + SSE）是两条独立链路，不复用其模型。
 
 ### 9.6 验收与测试

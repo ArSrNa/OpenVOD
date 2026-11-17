@@ -44,8 +44,11 @@ PresignGet(key, ttl)        # 下载 / 播放签名 URL（可经 STORAGE_CDN_BAS
 
 ### 上传路径
 
-- v1：管理端后台上传 —— `PresignPut` 预签名直传（大文件走 S3 multipart 分片 / 断点续传），完成后登记媒资并入队探测 / 转码。
+- 管理端后台上传（2026-11-17 实现，浏览器直传）：`POST /api/admin/media/upload/init` 生成媒资 ID + 占位行并返回 `original/{id}.{ext}` 的 `PresignPut` URL（TTL 6h、恒走存储端点），浏览器 `PUT` 上传完再调 `upload/complete` 登记（HEAD 校验 + `custom.json` 导出 + 异步探测）；失败 / 取消调 `upload/abort` 丢弃占位。**文件字节不经管理端**（与分片直出同一条 P0 纪律）。
+- 单文件受 S3 单次 PUT 上限（5GB）；multipart 分片 / 断点续传仍为演进项。
+- 2026-11-17 之前为 M1 实现：管理端流式转发（`POST /api/admin/media/upload`，原始字节流请求体），端点保留兼容，管理端不再调用。
 - 播放端不提供上传。
+- 前提：存储桶 CORS 规则必须允许管理端源站 `PUT`（`Content-Type` 触发预检）。
 
 ### 分片服务路径
 
@@ -53,6 +56,7 @@ PresignGet(key, ttl)        # 下载 / 播放签名 URL（可经 STORAGE_CDN_BAS
 
 ### 修订记录
 
+- **2026-11-17（上传路径落地为浏览器直传）**：原视频上传从「管理端流式转发」改为「浏览器直传对象存储」——新增 `upload/init` / `upload/complete` / `upload/abort` 三个端点，文件字节不经过管理端（M1 流式端点保留兼容）。单文件受 S3 单次 PUT 上限 5GB；multipart 分片与断点续传仍未实现。存储桶需放行管理端源站的 `PUT` 跨域请求。
 - **2026-10-17（EO 鉴权以 `cdn_url_auth` 重新纳入）**：本条 2026-09-20 的「放弃 EO TypeA」修订**部分改变**——ADR-0019（2026-10-06 定稿 / 2026-10-09 实现 / 2026-10-17 扩展）把 EO Token 鉴权以**管理端可配置的 `cdn_url_auth` 模式**重新纳入，官方 5 种方式（A/B/C/D/V）全内置（`storage_cdn_auth_type` 选择）；`EO_TYPEA_KEY` 环境变量与 `signing_keys.kind=EO_TYPEA` 仍为废弃载体（密钥改走 `storage_cdn_auth_key` / `STORAGE_CDN_AUTH_KEY`），s3 预签名仍为默认形态。详见 ADR-0019 与 spec.md §6.7。
 - **2026-09-22（管理端首页存储统计）**：S3 首页只展示当前 root 下四个业务分区对象大小之和，不假设固定桶配额，不展示占用百分比或分区进度条；说明固定为「包含媒体、转码、字幕、元数据等产物」。统计复用适配器分页列举的对象元信息，不下载内容；同次请求复用于媒资 / 字幕 / 转码产物 / 元数据计数，具体口径见 spec.md §2.1 与 intent.md「控制台总览」。
 - **2026-09-20（放弃 EO TypeA，s3 预签名转正）**：

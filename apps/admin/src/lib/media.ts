@@ -201,6 +201,145 @@ export async function uploadOriginal(input: {
   throw new MediaError("internal", "媒资 ID 冲突重试次数过多，请重试", 500);
 }
 
+// ---- 前端直传（ADR-0005 上传路径：预签名 PUT，字节不经过管理端） ----
+// 三步：init（生成 ID + 占位行 + 预签名 URL）→ 浏览器 PUT 到对象存储 → complete（校验对象 + 投影导出）。
+// 取消 / 失败调 abort 丢弃占位行与残留对象；complete 之前的媒资不在列表里（列表以 original/ 对象为准，§1.4）。
+
+/** 预签名 PUT 有效期（秒）：覆盖单个大文件的上传耗时；过期由前端重新发起（新任务） */
+export const UPLOAD_PRESIGN_TTL_SEC = 6 * 60 * 60;
+
+export interface BeginUploadResult {
+  id: string;
+  title: string;
+  ext: string;
+  /** original 相对键（不含全局 root 前缀） */
+  key: string;
+  /** 预签名 PUT URL（上传预签名恒走存储端点，不经 CDN，ADR-0005） */
+  uploadUrl: string;
+  /** URL 过期时刻（ISO 8601） */
+  expiresAt: string;
+}
+
+/** 开启直传：生成媒资 ID（主键冲突即重取，spec.md §1.3）→ 占位行 → 预签名 PUT URL */
+export async function beginUpload(input: {
+  filename: string;
+  title?: string | null;
+}): Promise<BeginUploadResult> {
+  const ext = sanitizeExt(input.filename);
+  if (!ext) {
+    throw new MediaError("bad_request", `无法从文件名识别扩展名：${input.filename}`, 400);
+  }
+  const storage = await getStorage();
+  // ADR-0015：媒资 ID 位数从 system_settings 解析（DB > env MEDIA_ID_LENGTH > 默认 8）
+  const idLen = (await getSettingsSnapshot()).admin.mediaIdLength;
+  const title = (input.title ?? "").trim() || input.filename.replace(/\.[^.]+$/, "").trim();
+  // 新媒资默认归入系统默认分类「其他」（spec.md §8.1 修订）：占位行即写好分类与投影
+  const defaultCategory = pickCategoryRef(await loadCategoryLookup(), null);
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const id = generateMediaId(idLen);
+    const key = STORAGE_KEYS.original(id, ext);
+    const displayName = title || id;
+    const customData = mergeCustomData(null, {
+      category: defaultCategory,
+      description: null,
+      tags: [],
+    });
+    try {
+      await db.media.create({
+        data: {
+          id,
+          title: displayName,
+          status: "UPLOADED",
+          sourceKey: key,
+          categoryId: defaultCategory?.id ?? null,
+          customData,
+        },
+      });
+    } catch (e) {
+      if (isUniqueViolation(e)) continue; // ID 冲突：重取（spec.md §1.3）
+      throw new MediaError("internal", `数据库写入失败：${(e as Error).message}`, 500);
+    }
+    try {
+      const uploadUrl = await storage.presignPut(key, UPLOAD_PRESIGN_TTL_SEC);
+      return {
+        id,
+        title: displayName,
+        ext,
+        key,
+        uploadUrl,
+        expiresAt: new Date(Date.now() + UPLOAD_PRESIGN_TTL_SEC * 1000).toISOString(),
+      };
+    } catch (e) {
+      await db.media.delete({ where: { id } }).catch(() => {}); // 回滚占位行
+      throw new MediaError("internal", `预签名生成失败：${(e as Error).message}`, 500);
+    }
+  }
+  throw new MediaError("internal", "媒资 ID 冲突重试次数过多，请重试", 500);
+}
+
+/** 完成直传：确认对象已写入（HEAD）→ 导出 custom.json（best-effort，spec.md §8.3） */
+export async function completeUpload(id: string): Promise<UploadResult> {
+  assertMediaId(id);
+  const row = await db.media
+    .findUnique({
+      where: { id },
+      select: { id: true, title: true, sourceKey: true, customData: true },
+    })
+    .catch(() => null);
+  if (!row?.sourceKey) {
+    throw new MediaError("not_found", `媒资不存在或未入库：${id}`, 404);
+  }
+  const storage = await getStorage();
+  // 对象没到 = 上传没成功（中断 / 未发起）；占位行留着无意义，交给 abort 清理
+  const stat = await storage.stat(row.sourceKey);
+  if (!stat) {
+    throw new MediaError("bad_request", "文件未上传完成，请重试", 409);
+  }
+  try {
+    await storage.put(
+      STORAGE_KEYS.metadataCustom(id),
+      serializeCustomData(row.customData),
+      "application/json",
+    );
+  } catch (e) {
+    console.warn(`[media] custom.json 导出失败（${id}）：${(e as Error).message}`);
+  }
+  return {
+    id,
+    title: row.title,
+    ext: ORIGINAL_RE.exec(row.sourceKey)?.[2]?.toLowerCase() ?? "",
+    key: row.sourceKey,
+    size: stat.size,
+  };
+}
+
+/**
+ * 丢弃直传占位：删残留对象 + DB 行（取消 / 失败 / 过期）。
+ * 已产生转码产物则拒绝（409）——此时媒资已真正成立，删除走 DELETE /api/admin/media/{id}。
+ */
+export async function abortUpload(id: string): Promise<{ aborted: boolean }> {
+  assertMediaId(id);
+  const row = await db.media
+    .findUnique({ where: { id }, select: { sourceKey: true } })
+    .catch(() => null);
+  if (!row) return { aborted: false };
+  const storage = await getStorage().catch(() => null);
+  if (storage) {
+    const proceeds = await storage
+      .listObjects(`${STORAGE_PARTITIONS.proceed}/${id}/`)
+      .catch(() => []);
+    if (proceeds.length) {
+      throw new MediaError("bad_request", "该媒资已开始转码，请改用删除媒资", 409);
+    }
+  }
+  if (storage && row.sourceKey) {
+    await storage.delete(row.sourceKey).catch(() => {}); // 残留对象（含未完成分片）删除失败不阻断
+  }
+  await db.media.delete({ where: { id } }).catch(() => {});
+  return { aborted: true };
+}
+
 // ---- 转码产物按模板归组（spec.md §1.3：proceed/{媒资id}/{模板id}/…） ----
 // 纯函数在 lib/media-products.ts（不碰 DB，便于单测）；这里只负责补模板名。
 

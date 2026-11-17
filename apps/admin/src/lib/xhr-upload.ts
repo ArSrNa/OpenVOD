@@ -1,7 +1,8 @@
 // XHR 流式上传公共实现（spec.md §2 上传协议；§9.4 客户端队列复用）：
 // File / Blob 直接作请求体（服务端按 application/octet-stream 流式接收，不经 multipart 缓冲），
 // 原实现抽自 MediaList.tsx 的 uploadTo，扩展 abort() 与错误分类（401 / 用户取消）。
-// 使用方：上传队列（lib/upload-manager.ts）、封面手动上传（components/MediaList.tsx）。
+// 使用方：封面手动上传（components/MediaList.tsx，服务端中转）；上传队列改走直传（lib/presigned-upload.ts），
+// 但继续复用这里的错误类型与进度换算，保证取消 / 401 语义一致。
 
 /** 401（未登录 / 会话过期）：上传队列据此终止整条队列并跳登录页（spec.md §9.4） */
 export class UploadUnauthorizedError extends Error {
